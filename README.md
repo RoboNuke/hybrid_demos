@@ -1,14 +1,9 @@
 # robonuke_project_template
 
 The starting point for a research project built on
-[robonuke_rl_core](https://github.com/RoboNuke/robonuke_rl_core). One paper = one repo made
-from this template.
-
+[robonuke_rl_core](https://github.com/RoboNuke/robonuke_rl_core). 
 ## Start a project
 
-0. Once, if the button in step 1 is missing: this repo's GitHub page -> **Settings ->
-   General -> check "Template repository"**. That setting is what makes GitHub show
-   **Use this template** on the repo's main page (green button, next to Code).
 1. GitHub: **Use this template -> Create a new repository** -> name the new repo after
    the project. This copies the files into a fresh repo with no shared history — it is
    not a fork, so the new project never shows up as one.
