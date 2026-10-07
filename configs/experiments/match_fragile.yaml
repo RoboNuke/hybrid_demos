@@ -1,0 +1,29 @@
+# The MATCH variant of hybrid_fragile.yaml: the selection-conditioned distribution plus
+# the supervised selection loss (BCE between the per-axis probability of force control
+# and that axis's ground-truth contact, published by the contact wrapper).
+#
+#   python scripts/train.py --config configs/experiments/match_fragile.yaml --headless
+base: hybrid_fragile.yaml
+
+wandb:
+  group: match_fragile
+
+model:
+  actor:
+    selection_distribution: match
+    # sigmoid(-2.2) ~= 0.1: start ~90% position-dominant; force control is earned
+    selection_init_bias: -2.2
+
+sac:
+  # match scores 7 continuous dims (4 free pose + one member of each of the 3 pairs),
+  # so -|scored continuous|/2 = -3.5, not the product run's -5.0
+  target_entropy: -3.5
+
+losses:
+  terms:
+    - name: supervised_selection
+      target: policy
+      weight: 1.0
+      kwargs:
+        # the number of force-eligible axes (sum of controller.force_axes)
+        num_axes: 3

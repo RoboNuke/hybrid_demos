@@ -1,0 +1,18 @@
+# Base config every experiment in this project shares.
+base: hpc.yaml
+
+task:
+  name: Isaac-Forge-DemoPegInsert-Direct-v0
+  cfg:
+    decimation: 8
+    episode_length_s: 10.0
+
+wandb:
+  entity: hur
+  project: template_demo
+
+trainer:
+  learner: sac
+  total_timesteps: 10000
+  write_interval: 150
+  checkpoint_interval: 2500

@@ -1,0 +1,17 @@
+# A small eval: 8 fresh-condition episodes on 4 envs, deterministic actions.
+#   python scripts/eval.py --run hur/template_demo/<run> --eval_config configs/eval/quick.yaml
+# The hpc chain is for launchers/launch_eval.py, which reads an eval job's resources from
+# the eval config's own chain; a heavier eval (recording, say) overrides hpc.time / hpc.mem.
+base: ../base/hpc.yaml
+
+eval:
+  num_rollouts: 8
+
+task:
+  cfg:
+    scene:
+      num_envs: 4
+
+wrappers:
+  efficient_reset:
+    enabled: false
