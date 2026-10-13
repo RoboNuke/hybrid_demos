@@ -1,0 +1,18 @@
+# residual_sac_history_ensemble + the demo-warmed critic of residual_sac_demo_critic: all three
+# changes, nothing else. Its demo transitions carry the history, so it has its own file
+# (converted offline from the same recorded demos).
+#
+#   python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_all.yaml
+#   python scripts/train.py --config configs/experiments/residual_sac_all.yaml --headless
+#   python scripts/watch_residual_eval.py --run runs/hybrid_demo_pih/residual_sac_all/residual_sac_all_a0
+base: residual_sac_history_ensemble.yaml
+
+wandb:
+  group: residual_sac_all
+
+sac:
+  learning_starts: 0
+  policy_learning_starts: 1000
+  demo_transitions: data/expert_demos_forge_pih_search/transitions/residual_sac_all.pt
+  demo_sampling_start: 0
+  demo_sampling_end: 22400

@@ -1,0 +1,18 @@
+# residual_sac + an RLPD / REDQ critic: 10 critics (SimBa: LayerNorm in every block, as the
+# baseline already had), the target a min over a random 2 of them, 10 critic updates per env
+# step; the actor keeps the baseline's one update per env step (policy_delay = gradient_steps)
+# and trains on the ensemble's mean Q. The only change from residual_sac.
+#
+#   python scripts/train.py --config configs/experiments/residual_sac_ensemble.yaml --headless
+#   python scripts/watch_residual_eval.py --run runs/hybrid_demo_pih/residual_sac_ensemble/residual_sac_ensemble_a0
+base: residual_sac.yaml
+
+wandb:
+  group: residual_sac_ensemble
+
+sac:
+  num_critics: 10
+  critic_subset: 2
+  actor_q_reduction: mean
+  gradient_steps: 10
+  policy_delay: 10

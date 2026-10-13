@@ -1,0 +1,36 @@
+# residual_sac_all with hybrid force/position control: the residual also picks, per step and per
+# translation axis, position or force control, and a force target (my_project/cfg.py: HybridCfg).
+# The base and its demos are residual_sac_all's; the base still gives only the pose. The agent's
+# action is [x, y, z, yaw correction | force-or-position choice x, y, z | force target x, y, z]:
+# a choice > 0 is force control, a force target in [-1, 1] is +-10 N. Naive: no MATCH, no
+# selection loss, constant gains (Forge's pose gains, force gain 0.1), and the choice starts 50/50
+# (model.actor.selection_init_bias at its default 0). The demos ran under position control, so
+# their transitions choose position on every axis with a zero force target.
+#
+#   python scripts/make_demo_transitions.py --config configs/experiments/residual_hybrid_all.yaml
+#   python scripts/train.py --config configs/experiments/residual_hybrid_all.yaml --headless
+#   python scripts/watch_residual_eval.py --run runs/hybrid_demo_pih/residual_hybrid_all/residual_hybrid_all_a0
+base: residual_sac_history_ensemble.yaml
+
+wandb:
+  group: residual_hybrid_all
+
+sac:
+  learning_starts: 0
+  policy_learning_starts: 1000
+  demo_transitions: data/expert_demos_forge_pih_search/transitions/residual_hybrid_all.pt
+  demo_sampling_start: 0
+  demo_sampling_end: 22400
+  # 10 action dims: -|A| / 2, as residual_sac's -2.0 for its 4
+  target_entropy: -5.0
+
+hybrid:
+  enabled: true
+  # force on x, y, z; orientation always position-controlled
+  force_axes: [1, 1, 1, 0, 0, 0]
+  force_target_bounds: [10.0, 10.0, 10.0, 5.0, 5.0, 5.0]
+
+model:
+  actor:
+    # the force-or-position choices: after the 4-wide world pose (hybrid.validate checks this)
+    bernoulli_action_dims: [4, 5, 6]

@@ -1,0 +1,29 @@
+# Record teleoperated peg-insert demos with an Xbox controller, in stock Forge with fixed
+# dynamics (configs/base/forge_fixed_dyn.yaml): the physics is constant; the kinematic draws
+# (hole pose, start pose, peg in hand), observation noise and the force threshold vary.
+#
+#   python scripts/record_demos.py --config configs/demos/forge_demo_collection.yaml \
+#       record.dataset_dir=~/demos/peg_insert
+#
+# Every session draws a random experiment.seed.
+base: ../base/forge_fixed_dyn.yaml
+
+wandb:
+  group: demos
+
+task:
+  cfg:
+    sim:
+      # draw the GUI once per control step, not once per physics substep (no physics effect)
+      render_interval: 8
+    # 60 s per attempt: time to line up by hand (stock is 10 s)
+    episode_length_s: 60.0
+    scene:
+      num_envs: 1
+    viewer:
+      # in front of the robot, looking back at the hole: left stick up moves away from you
+      eye: [1.25, 0.0, 0.45]
+      lookat: [0.6, 0.0, 0.08]
+
+record:
+  input: gamepad

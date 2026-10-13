@@ -9,10 +9,10 @@ task:
 
 wandb:
   entity: hur
-  project: template_demo
+  project: hybrid_demo_pih
 
 trainer:
   learner: sac
-  total_timesteps: 10000
+  total_timesteps: 5000
   write_interval: 150
-  checkpoint_interval: 2500
+  checkpoint_interval: 500

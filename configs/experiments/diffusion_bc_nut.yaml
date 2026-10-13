@@ -1,0 +1,48 @@
+# Diffusion-policy behaviour cloning on nut threading: the peg-insert recipe
+# (diffusion_bc.yaml + diffusion_bc_search.yaml, robust-rearrangement's state
+# diffusion-transformer: 5000 epochs x 1000 steps, batch 256, checkpoints every 500 epochs),
+# on the 50 forge-v1 NutThread demos replayed in our env (configs/demos/forge_v1_nut_replay.yaml).
+# Rollouts run in the full problem (2 mm bolt-estimate error, the nut's stock offset in the
+# gripper), which the demos leave out. Training is capped at 12 GPU hours: ~25 s per epoch plus a
+# ~150 s rollout every 10 epochs makes 1000 epochs about 11 h, and bc.max_hours stops it regardless.
+#
+#   python scripts/train_bc.py --config configs/experiments/diffusion_bc_nut.yaml --headless
+base: ../base/forge_nut_fixed_dyn.yaml
+
+experiment:
+  seed: 42
+
+wandb:
+  group: diffusion_bc_nut_bolt_relative
+
+task:
+  cfg:
+    scene:
+      # rollout envs: one round of eval.num_rollouts episodes
+      num_envs: 64
+
+trainer:
+  learner: diffusion_bc
+  # gradient steps (1000 epochs x bc.steps_per_epoch)
+  total_timesteps: 1000000
+  checkpoint_interval: 100000
+
+model:
+  architecture: diffusion_transformer
+  actor:
+    # every chunk from pure noise, as in training
+    warm_start: false
+
+bc:
+  # relative to the project root, where the scripts run from; 17-dim observation, bolt-relative
+  # [x, y, z] + yaw actions
+  dataset: data/forge_v1_nut_bolt_relative
+  # all 50 demos: 3 (ceil(0.05 x 50)) are held out for the test loss, 47 train
+  num_demos: 50
+  # roll out every 10 epochs whatever the test loss (the 0.1 gate is the reference's)
+  rollout_loss_threshold: 1000.0
+  # the hard stop under the 12 GPU-hour budget (startup and the last epoch fit in the rest)
+  max_hours: 11.75
+
+eval:
+  num_rollouts: 64

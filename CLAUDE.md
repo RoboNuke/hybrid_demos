@@ -29,6 +29,31 @@ Never create a new conda env; never vendor a copy of the package into this repo.
 * `my_project/cfg.py` — project config sections (`@dataclass`, `validate`), registered in
   `setup()`.
 * `my_project/losses.py` — project `AuxLoss` subclasses, `@register_loss` at import time.
+* `my_project/models/` — the diffusion policy: `transformer.py` (near copy of
+  robust-rearrangement's), `diffusion_policy.py` (normalizer, DDPM/DDIM, chunked acting),
+  `cfg.py` (`model.architecture: diffusion_transformer`). Plain single-agent modules, never
+  `VmapEnsemble`.
+* `my_project/bc/` — the `diffusion_bc` learner: `dataset.py` (LeRobot parquet → windows),
+  `train.py` (the loop, run by `scripts/train_bc.py`). Its own entry point because the
+  package's `train.main` runs only sac / ppo. A field both the policy and the trainer read
+  goes in `model.actor`, never also in `bc`.
+* `my_project/wrappers.py` — the policy's action meaning (`action.*`: world-pose actions),
+  applied by the recorder, replay and BC rollouts through `apply_policy_wrappers`.
+  `my_project/obs_terms.py` adds named Factory/Forge observation terms (`hole_estimate`), so
+  the observation layout is `task.cfg.obs_order` config; installed in every script's `setup()`.
+* `my_project/residual.py` — residual RL on a frozen diffusion policy (`residual.*`); its
+  wrapper reaches the package's train / eval / debug through `register_env_wrapper`
+  (`project_env_wrappers` in `my_project/wrappers.py`, registered in every script's `setup()`).
+  `history.*` (`ObservationHistory`, same file) goes on outermost, after the residual, so the
+  base's input never changes. `my_project/residual_demos.py` (`scripts/make_demo_transitions.py`)
+  converts recorded demo frames offline (no sim) into an experiment's `sac.demo_transitions`, reusing `residual_observation` and `HistoryBuffer`, and
+  `project_env_wrappers` refuses a file whose fingerprint is another setup's. The critic is
+  asymmetric (Forge's `state_order`: privileged sim state).
+* `my_project/demos/` — hand-teleoperated demos: `teleop.py` (velocity → Forge action),
+  `gamepad.py`, `writer.py` (LeRobot-style dataset), `state.py` (episode start snapshot /
+  restore), `record.py` and `replay.py` (run by `scripts/record_demos.py` /
+  `scripts/replay_demos.py`). The env is bare `gym.make`: no package wrappers. Fixed
+  dynamics are config only (`configs/base/forge_fixed_dyn.yaml`), never task code.
 * `configs/base/` — what every experiment shares; `configs/experiments/` — one file per
   experiment, `base:` chained, only non-defaults set; `configs/eval/` — eval conditions.
 * `scripts/` — thin callers of `robonuke_rl_core.{train,eval,debug}.main(setup=setup)`.

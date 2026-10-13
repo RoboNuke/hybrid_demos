@@ -1,0 +1,30 @@
+# Replay the forge-v1 NutThread demos in the fixed-dynamics NutThread env and keep the ones our
+# env scores as successes (my_project/demos/import_forge_v1.py):
+#
+#   python scripts/import_forge_v1.py --config configs/demos/forge_v1_nut_replay.yaml --headless
+base: ../base/forge_nut_fixed_dyn.yaml
+
+experiment:
+  # the replay's own draws (observation noise, force threshold); the demos fix everything else
+  seed: 0
+
+wandb:
+  group: demos
+  mode: disabled
+
+task:
+  cfg:
+    scene:
+      num_envs: 1
+    obs_rand:
+      # the demos know the bolt exactly (the problem: 2 mm estimate error)
+      fixed_asset_pos: [0.0, 0.0, 0.0]
+    task:
+      # the nut sits centred in the gripper; the replay follows each demo's nut-centred path
+      # (stock: [0, 3, 3] mm)
+      held_asset_pos_noise: [0.0, 0.0, 0.0]
+
+forge_v1:
+  source_dir: data/forge_v1
+  dataset_dir: data/forge_v1_nut_bolt_relative
+  num_demos: 50

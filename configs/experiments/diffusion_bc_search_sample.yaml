@@ -1,0 +1,13 @@
+# The search run with the clean-plan target (the network predicts the plan, not the noise).
+# It did much worse (peak 12.5%): the spiral search is ambiguous, and a clean-plan target
+# learns the average plan.
+#
+#   python scripts/train_bc.py --config configs/experiments/diffusion_bc_search_sample.yaml --headless
+base: diffusion_bc_search.yaml
+
+wandb:
+  group: diffusion_bc_search_sample
+
+model:
+  actor:
+    prediction_type: sample

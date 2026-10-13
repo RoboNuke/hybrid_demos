@@ -1,0 +1,11 @@
+# residual_sac_ensemble + residual_sac_history: both changes, nothing else.
+#
+#   python scripts/train.py --config configs/experiments/residual_sac_history_ensemble.yaml --headless
+#   python scripts/watch_residual_eval.py --run runs/hybrid_demo_pih/residual_sac_history_ensemble/residual_sac_history_ensemble_a0
+base: residual_sac_ensemble.yaml
+
+wandb:
+  group: residual_sac_history_ensemble
+
+history:
+  enabled: true

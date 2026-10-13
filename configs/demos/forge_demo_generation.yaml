@@ -1,0 +1,16 @@
+# Generate peg-insert demos with the scripted expert (my_project/demos/expert.py), headless, in
+# the same env and format as hand teleoperation (configs/demos/forge_demo_collection.yaml).
+#
+#   python scripts/record_demos.py --config configs/demos/forge_demo_generation.yaml --headless \
+#       record.dataset_dir=~/demos/peg_insert_expert record.num_episodes=50
+base: forge_demo_collection.yaml
+
+task:
+  cfg:
+    # stock Forge episode length (the collection config gives a person 60 s)
+    episode_length_s: 10.0
+
+record:
+  input: expert
+  # nobody is watching: step as fast as the sim allows
+  realtime: false

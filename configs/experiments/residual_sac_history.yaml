@@ -1,0 +1,13 @@
+# residual_sac + a short observation history for the agent (actor and critic), the only change:
+# the previous 8 steps (~0.5 s) of the noisy fingertip estimate and the noisy force, appended
+# after the base action (my_project/wrappers.py: ObservationHistory). The base never sees it.
+#
+#   python scripts/train.py --config configs/experiments/residual_sac_history.yaml --headless
+#   python scripts/watch_residual_eval.py --run runs/hybrid_demo_pih/residual_sac_history/residual_sac_history_a0
+base: residual_sac.yaml
+
+wandb:
+  group: residual_sac_history
+
+history:
+  enabled: true

@@ -1,0 +1,66 @@
+# Stock Forge peg insert with fixed **dynamics**, set entirely through config: the action
+# smoothing, controller gains and step limits, dead zone, peg mass and hole friction are
+# constant. Normal world uncertainty stays stock: the hole pose, the hand's start pose, the
+# peg's offset in the gripper, observation noise and the force threshold still vary. Demos are
+# recorded here and policies trained on them roll out here.
+#
+# The controller dead zone is drawn as rand * ctrl.default_dead_zone, so it is held constant by
+# setting that to 0.
+base: forge_pih_hd.yaml
+
+task:
+  name: Isaac-Forge-PegInsert-Direct-v0
+  cfg:
+    # the policy observation, in this order: noisy fingertip estimate and orientation, noisy
+    # hole estimate (my_project/obs_terms.py), finite-difference velocities, force, force
+    # threshold: 20 dims (no previous action: action.observe_previous_action).
+    obs_order:
+      - fingertip_pos
+      - fingertip_quat
+      - hole_estimate
+      - ee_linvel
+      - ee_angvel
+      - ft_force
+      - force_threshold
+    ctrl:
+      # no action smoothing: every action is applied as sent (stock: U(0.025, 0.1) per episode)
+      ema_factor_range: [1.0, 1.0]
+      task_prop_gains_noise_level: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      pos_threshold_noise_level: [0.0, 0.0, 0.0]
+      rot_threshold_noise_level: [0.0, 0.0, 0.0]
+      default_dead_zone: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    #obs_rand:
+    #  fingertip_pos: 0.0
+    #  fingertip_rot_deg: 0.0
+    #  ft_force: 0.0
+    #  fixed_asset_pos: [0.0, 0.0, 0.0]
+    #task:
+    #  # the peg's offset in the gripper and the hole's yaw (stock: up to 3 mm, 360 deg)
+    #  held_asset_pos_noise: [0.0, 0.0, 0.0]
+    #  fixed_asset_init_orn_range_deg: 0.0
+    task:
+      # Forge's success-prediction penalty switches on once this share of envs succeeds; the
+      # world-pose action fixes the prediction at -1, so it would punish every success.
+      # Above 1 it never switches on.
+      delay_until_ratio: 2.0
+    events:
+      object_scale_mass:
+        params:
+          # stock adds U(-5 g, 5 g) to the peg each reset
+          mass_distribution_params: [0.0, 0.0]
+      fixed_physics_material:
+        params:
+          # stock draws the hole's static friction from U(0.25, 1.25) into 128 buckets
+          static_friction_range: [0.75, 0.75]
+          dynamic_friction_range: [0.25, 0.25]
+          restitution_range: [0.0, 0.0]
+          num_buckets: 1
+
+
+action:
+  # the policy's action is the fingertip's world pose [x, y, z, yaw] (env / robot base frame),
+  # converted into Forge's 7-d action by my_project/wrappers.py; the observation's previous
+  # action becomes the smoothed action the env applied, as a world pose
+  world_pose: true
+  # no previous action in the observation (it let BC copy its own last command): 20 dims
+  observe_previous_action: false

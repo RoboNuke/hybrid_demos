@@ -3,7 +3,7 @@
 # own registered env.
 #
 #   python scripts/train.py --config configs/experiments/hybrid_fragile.yaml --headless
-base: ../base/forge_demo.yaml
+base: ../base/forge_pih_hd.yaml
 
 experiment:
   num_agents: 3

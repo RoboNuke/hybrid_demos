@@ -1,0 +1,42 @@
+# Diffusion-policy behaviour cloning on the scripted expert's Forge peg-insert demos --
+# robust-rearrangement's state diffusion-transformer recipe (experiment/state/diff_tran.yaml):
+# 5000 epochs x 1000 steps, batch 256, checkpoints every 500 epochs. Pure pose control, no
+# hybrid controller. Rollouts run in the env the demos were recorded in (fixed dynamics).
+#
+#   python scripts/train_bc.py --config configs/experiments/diffusion_bc.yaml --headless
+base: ../base/forge_fixed_dyn.yaml
+
+experiment:
+  seed: 42
+
+wandb:
+  group: diffusion_bc
+
+task:
+  cfg:
+    scene:
+      # rollout envs: one round of eval.num_rollouts episodes
+      num_envs: 64
+
+trainer:
+  learner: diffusion_bc
+  # gradient steps (5000 epochs x bc.steps_per_epoch)
+  total_timesteps: 5000000
+  checkpoint_interval: 500000
+
+model:
+  architecture: diffusion_transformer
+  actor:
+    # every chunk from pure noise, as in training (the reference's warm start noises the old
+    # plan to step 50 but denoises from step 90)
+    warm_start: false
+
+bc:
+  # relative to the project root, where the scripts run from
+  # recorded with no action smoothing and no previous action in the observation (20 dims)
+  dataset: data/expert_demos_forge_pih_noema
+  # all 50 demos: 3 (ceil(0.05 x 50)) are held out for the test loss, 47 train
+  num_demos: 50
+
+eval:
+  num_rollouts: 64

@@ -1,0 +1,21 @@
+# residual_sac + a critic warmed up on the demos, the only change: the critic trains from the
+# first step, its batches half demo transitions (all demo while the replay memory holds under
+# half a batch) until step 22400 (100 episodes), online only after. The actor starts at step
+# 1000 like the baseline and only ever trains on online data.
+#
+# Convert the recorded demos into this run's transition format first (offline, no sim):
+#   python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_demo_critic.yaml
+#   python scripts/train.py --config configs/experiments/residual_sac_demo_critic.yaml --headless
+#   python scripts/watch_residual_eval.py --run runs/hybrid_demo_pih/residual_sac_demo_critic/residual_sac_demo_critic_a0
+base: residual_sac.yaml
+
+wandb:
+  group: residual_sac_demo_critic
+
+sac:
+  # critic from the first step; the actor at the baseline's 1000
+  learning_starts: 0
+  policy_learning_starts: 1000
+  demo_transitions: data/expert_demos_forge_pih_search/transitions/residual_sac_demo_critic.pt
+  demo_sampling_start: 0
+  demo_sampling_end: 22400

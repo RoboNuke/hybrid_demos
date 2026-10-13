@@ -1,0 +1,16 @@
+# Generate peg-insert demos with the searching expert (my_project/demos/search_expert.py): it
+# sees only the noisy observations, flies to where it believes the hole is and spirals until
+# the peg drops. Headless, same env and format as the other demos.
+#
+#   python scripts/record_demos.py --config configs/demos/forge_demo_generation_search.yaml --headless \
+#       record.dataset_dir=data/expert_demos_forge_pih_search record.num_episodes=50
+base: forge_demo_generation.yaml
+
+task:
+  cfg:
+    # a search can take longer than the stock 10 s; a policy trained on these demos needs the
+    # same episode length in its rollouts
+    episode_length_s: 30.0
+
+record:
+  input: search_expert
