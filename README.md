@@ -237,6 +237,32 @@ python scripts/record_demos.py --config configs/demos/forge_demo_generation_sear
 | `record.search_expert.drop_depth` | float | `0.002` | inserting once the fingertip is this far below the contact height, m |
 | `record.search_expert.insert_push_depth` | float | `0.003` | the same lead while inserting, m |
 
+## FurnitureBench one_leg (fixed dynamics)
+
+`configs/base/furniture_fixed_dyn.yaml`: `Isaac-Furniture-OneLeg-v0` from
+[Robonuke_Furniture_Bench](https://github.com/RoboNuke/Robonuke_Furniture_Bench) (`pip install -e`
+that checkout; the scripts' `setup()` imports `furniture_lab.tasks`), at the settings the
+scripted-servo demos were collected with (parts friction 0.5, table 0.4, the env's finger
+drive). The env is manager-based: none of the package's Forge-family wrappers and none of the
+project's Forge-bound policy wrappers (`action.world_pose`, `hybrid`, `history`,
+`episode.reset_on_success`) apply, and the observation (56) and action (7: `pose_rel` OSC +
+binary gripper) are the env's own.
+
+**Demos** come from that repo's collector (`scripts/collect_scripted.py`, FurnitureBench's pkl
+format) and are converted, with no Isaac Sim, into the recorder's dataset layout:
+
+```bash
+python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos --out data/furniture_one_leg
+```
+
+Per frame: `observation.state` (49) is FurnitureBench's own low-dim policy input
+(`DEFAULT_STATE_OBS`: `ee_pos, ee_quat (xyzw), ee_pos_vel, ee_ori_vel, gripper_width,
+parts_poses` in the AprilTag frame) and `action` (8) the action as recorded
+(`[dpos 3, dquat 4 (xyzw, EE frame), gripper]`, FurnitureBench's); raw material beside them:
+`observation.joint_positions`, `observation.next_state`, `reward`, `skill`.
+`meta/episodes.jsonl` carries each demo's success and source file; re-running appends only
+new files. `--include_failures` also imports `fails/*.pkl` (success false).
+
 ## Nut threading (fixed dynamics)
 
 `configs/base/forge_nut_fixed_dyn.yaml` is the base for all nut-threading work: stock

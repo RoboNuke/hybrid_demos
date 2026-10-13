@@ -1,0 +1,37 @@
+# FurnitureBench one_leg (Robonuke_Furniture_Bench, pip install -e; registered by the
+# scripts' setup()) with fixed dynamics: the settings the scripted-servo demos were collected
+# with. The env is manager-based, so none of the package's Forge-family wrappers apply
+# (controller, fragile, efficient reset, contact, task_metrics); the project's policy
+# wrappers (action.world_pose, hybrid, history, episode.reset_on_success) are Forge-bound too
+# and stay off. Observation (56) and action (7, pose_rel OSC + binary gripper) are the env's own.
+#
+# Demos: python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos --out data/furniture_one_leg
+base: hpc.yaml
+
+task:
+  name: Isaac-Furniture-OneLeg-v0
+  cfg:
+    episode_length_s: 30.0
+    furniture:
+      # collection settings (scripts/collect_scripted.py --part_friction 0.5 --table_friction 0.4);
+      # the env's FurnitureSim defaults are 0.15 / 0.10
+      part_friction: 0.5
+      table_friction: 0.4
+      # finger drive: stiffness N/m, damping, effort limit N (the env's defaults)
+      gripper_stiffness: 600.0
+      gripper_damping: 40.0
+      gripper_effort_limit: 30.0
+
+wandb:
+  entity: hur
+  project: hybrid_demo_furniture
+
+trainer:
+  learner: sac
+  total_timesteps: 5000
+  write_interval: 150
+  checkpoint_interval: 500
+
+wrappers:
+  task_metrics:
+    enabled: false

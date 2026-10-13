@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make my_project 
 
 def setup() -> None:
     import my_project.tasks  # noqa: F401  -- gym.register (imports Isaac Lab)
+    import furniture_lab.tasks  # noqa: F401  -- Isaac-Furniture-*-v0 (pip install -e ~/Robonuke_Furniture_Bench)
     import my_project.losses  # noqa: F401  -- @register_loss
     from my_project.obs_terms import install_obs_terms
 
