@@ -13,13 +13,14 @@ eval:
   video_height: 360
   # every video is the full 600 steps, the end held with its cause (the package default),
   # at the control rate (video_fps null, the default): real time
-  # a sphere light at the camera, in every env; the scene's dome light stays. Brighter or
-  # dimmer: change the intensity
-  video_light_intensity: 100000.0
-  video_light_radius: 0.1
 
 task:
   cfg:
     scene:
       num_envs: 4
       clone_in_fabric: false
+      # the dark grey work table, also for runs trained before it was the default
+      table:
+        spawn:
+          visual_material:
+            diffuse_color: [0.08, 0.08, 0.08]
