@@ -2,6 +2,8 @@
 
     python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos --out data/furniture_one_leg
     python scripts/import_furniture_demos.py --src ~/fb_demos --out data/furniture_one_leg_all --include_failures
+    python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos_resip --out data/furniture_one_leg_resip \
+        --control_hz 10 --task_name Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
 
 Reads ``<src>/<task>/<stamp>/<stamp>.pkl`` (and ``<src>/<task>/fails/*.pkl`` with
 ``--include_failures``) as ``scripts/collect_scripted.py`` writes them, and appends each one
@@ -24,8 +26,11 @@ def main(argv=None) -> int:
     parser.add_argument("--include_failures", action="store_true", help="also import <task>/fails/*.pkl (success=false)")
     parser.add_argument("--max_demos", type=int, default=None)
     parser.add_argument("--task_name", default="Isaac-Furniture-OneLeg-v0")
+    parser.add_argument("--control_hz", type=float, default=20.0, help="the collector's control rate (--sim resip: 10)")
     args = parser.parse_args(argv)
-    result = import_demos(Path(args.src), Path(args.out), args.include_failures, args.task_name, args.max_demos)
+    result = import_demos(
+        Path(args.src), Path(args.out), args.include_failures, args.task_name, args.max_demos, control_hz=args.control_hz
+    )
     print(
         f"[import] {result['root']}: +{result['saved']} episodes ({result['skipped']} already there); "
         f"now {result['episodes']} episodes, {result['frames']} frames",

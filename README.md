@@ -287,6 +287,16 @@ To watch or record a checkpoint: `scripts/debug.py --local <run dir> --checkpoin
 (live viewer), or `scripts/eval.py --local <run dir> --eval_config configs/eval/furniture_record.yaml
 --checkpoint actor_chkpt_last.pt --headless` (mp4s under the run's `eval/`).
 
+**ResiP's setup** (`configs/base/furniture_resip.yaml`, `Isaac-Furniture-OneLeg-FBAbs-ResiP-v0`:
+10 Hz, differential IK into joint PD, FurnitureSim friction, 13 N gripper, 70 s) with the U-Net
+and ResiP's training recipe (`configs/experiments/diffusion_bc_furniture_resip.yaml`):
+
+```bash
+python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos_resip --out data/furniture_one_leg_resip \
+    --control_hz 10 --task_name Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
+python scripts/train_bc.py --config configs/experiments/diffusion_bc_furniture_resip.yaml --headless
+```
+
 `diffusion_bc_furniture` is the peg-insert recipe on `data/furniture_one_leg` (1000 epochs,
 checkpoints every 100; the action-error breakdown is `pos` / `rot` / `gripper`).
 `residual_sac_furniture` is `residual_sac_nut` over the 8 FurnitureBench action dims (the
@@ -615,6 +625,25 @@ package's SAC / PPO pipeline (no `VmapEnsemble`). There is no `model.critic` gro
 | `model.actor.warm_start` | bool | `true` | start each chunk from the previous chunk's unexecuted tail, noised to `warm_start_timestep` (the reference); `false`: pure noise |
 | `model.actor.warm_start_timestep` | int | `50` | noise level the warm start re-noises to; in [0, `num_diffusion_iters`) |
 | `model.actor.obs_clip` | float | `3.0` | normalized observations are clipped to ±`obs_clip` when acting (never in training) |
+
+### Fields for `model.architecture: diffusion_unet`
+
+The same policy around the 1-D temporal U-Net (`my_project/models/unet.py`, a port of
+robust-rearrangement's / Diffusion Policy's `ConditionalUnet1D`), the network ResiP's state
+results come from (paper Table IV). The horizons, the diffusion process, inference and warm
+start are the shared fields above (`horizon` ... `action_horizon`, `num_diffusion_iters` ...
+`obs_clip`, same defaults); the network's own fields:
+
+| field | type | default | what it does |
+| --- | --- | --- | --- |
+| `model.actor.down_dims` | list[int] | `[256, 512, 1024]` | channels per level; each level but the last halves the sequence, so `horizon` must divide by `2 ** (len - 1)` |
+| `model.actor.diffusion_step_embed_dim` | int | `256` | width of the timestep embedding (concatenated with the flattened observations for FiLM); even and >= 4 |
+| `model.actor.kernel_size` | int | `5` | Conv1d kernel; odd |
+| `model.actor.n_groups` | int | `8` | GroupNorm groups; must divide every `down_dims` entry |
+
+The BC trainer, eval, the residual's base loader and `scripts/analyze_bc_chunks.py` take either
+architecture (`my_project.models.cfg.DIFFUSION_ARCHITECTURES`, registered by `register_all()`
+in every script's `setup()`).
 
 ### Fields of the `bc` section
 

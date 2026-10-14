@@ -1,4 +1,7 @@
-"""The diffusion policy: the noise-prediction transformer plus everything around it.
+"""The diffusion policy: a noise-prediction network plus everything around it.
+
+The network is the architecture's (:func:`build_noise_net`: the transformer or the 1-D
+U-Net, chosen by the actor cfg's type); everything else here is architecture-agnostic.
 
 A port of robust-rearrangement's state-based ``DiffusionPolicy`` / ``Actor``
 (``src/behavior/diffusion.py``, ``src/behavior/base.py``): DDPM noising for the training loss,
@@ -36,7 +39,42 @@ from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
 from .transformer import DiffusionTransformer
 
-__all__ = ["MinMaxNormalizer", "DiffusionPolicy", "ChunkedBase"]
+__all__ = ["MinMaxNormalizer", "DiffusionPolicy", "ChunkedBase", "build_noise_net"]
+
+
+def build_noise_net(actor_cfg: Any, obs_dim: int, action_dim: int) -> nn.Module:
+    """The architecture's network, ``forward(sample, timestep, global_cond) -> prediction``,
+    from the actor cfg's type (``my_project.models.cfg.DIFFUSION_ARCHITECTURES``)."""
+    from .cfg import DiffusionTransformerActorCfg, DiffusionUnetActorCfg
+
+    if isinstance(actor_cfg, DiffusionUnetActorCfg):
+        from .unet import ConditionalUnet1D
+
+        return ConditionalUnet1D(
+            input_dim=action_dim,
+            global_cond_dim=actor_cfg.n_obs_steps * obs_dim,
+            diffusion_step_embed_dim=actor_cfg.diffusion_step_embed_dim,
+            down_dims=list(actor_cfg.down_dims),
+            kernel_size=actor_cfg.kernel_size,
+            n_groups=actor_cfg.n_groups,
+        )
+    if isinstance(actor_cfg, DiffusionTransformerActorCfg):
+        return DiffusionTransformer(
+            input_dim=action_dim,
+            output_dim=action_dim,
+            horizon=actor_cfg.horizon,
+            n_obs_steps=actor_cfg.n_obs_steps,
+            cond_dim=obs_dim,
+            n_layer=actor_cfg.n_layer,
+            n_head=actor_cfg.n_head,
+            n_emb=actor_cfg.n_emb,
+            p_drop_emb=actor_cfg.p_drop_emb,
+            p_drop_attn=actor_cfg.p_drop_attn,
+            causal_attn=actor_cfg.causal_attn,
+            time_as_cond=actor_cfg.time_as_cond,
+            n_cond_layers=actor_cfg.n_cond_layers,
+        )
+    raise TypeError(f"no diffusion network for actor cfg {type(actor_cfg).__name__}")
 
 
 class MinMaxNormalizer(nn.Module):
@@ -87,21 +125,7 @@ class DiffusionPolicy(nn.Module):
         self.n_obs_steps = actor_cfg.n_obs_steps
         self.action_horizon = actor_cfg.action_horizon
 
-        self.model = DiffusionTransformer(
-            input_dim=self.action_dim,
-            output_dim=self.action_dim,
-            horizon=actor_cfg.horizon,
-            n_obs_steps=actor_cfg.n_obs_steps,
-            cond_dim=self.obs_dim,
-            n_layer=actor_cfg.n_layer,
-            n_head=actor_cfg.n_head,
-            n_emb=actor_cfg.n_emb,
-            p_drop_emb=actor_cfg.p_drop_emb,
-            p_drop_attn=actor_cfg.p_drop_attn,
-            causal_attn=actor_cfg.causal_attn,
-            time_as_cond=actor_cfg.time_as_cond,
-            n_cond_layers=actor_cfg.n_cond_layers,
-        )
+        self.model = build_noise_net(actor_cfg, self.obs_dim, self.action_dim)
         self.normalizer = MinMaxNormalizer(self.obs_dim, self.action_dim)
 
         schedule = dict(

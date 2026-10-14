@@ -57,12 +57,12 @@ def analyze(args) -> Dict[str, Dict[str, float]]:
     from robonuke_rl_core.evaluation import resolved_config_path
 
     from my_project.bc.dataset import WindowedSplit, load_lerobot, split_episodes
-    from my_project.models.cfg import DiffusionTransformerActorCfg
+    from my_project.models.cfg import actor_cfg_from
     from my_project.models.diffusion_policy import DiffusionPolicy
 
     run_dir = Path(args.run).expanduser()
     resolved = OmegaConf.load(resolved_config_path(run_dir))
-    actor_cfg = OmegaConf.to_object(OmegaConf.merge(OmegaConf.structured(DiffusionTransformerActorCfg), resolved.model.actor))
+    actor_cfg = actor_cfg_from(resolved.model)
     if args.inference_steps:
         actor_cfg.inference_steps = args.inference_steps
     device = torch.device(args.device)

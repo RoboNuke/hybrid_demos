@@ -46,11 +46,9 @@ def setup() -> None:
     register_eval_policy(BC_LEARNER, build_bc_eval_policy)  # eval / debug of BC runs
     register_learner(BC_LEARNER)  # scripts/train_bc.py
 
-    from robonuke_rl_core.models.cfg import register_architecture
+    from my_project.models.cfg import register_all
 
-    from my_project.models.cfg import DiffusionTransformerModelCfg
-
-    register_architecture("diffusion_transformer", DiffusionTransformerModelCfg)
+    register_all()  # every diffusion architecture (my_project/models/cfg.py)
 
 
 if __name__ == "__main__":

@@ -85,6 +85,7 @@ def import_demos(
     task_name: str = "Isaac-Furniture-OneLeg-v0",
     max_demos: Optional[int] = None,
     files: Optional[Iterable[Path]] = None,
+    control_hz: float = CONTROL_HZ,
 ) -> Dict[str, Any]:
     """Convert every demo under ``src`` into the dataset at ``out`` (created or appended)."""
     files = list(files) if files is not None else find_demos(src, include_failures)
@@ -94,12 +95,12 @@ def import_demos(
         raise FileNotFoundError(f"no demo pkls under {src} (looked for <task>/<stamp>/<stamp>.pkl)")
     writer = DemoWriter(
         out,
-        fps=CONTROL_HZ,
+        fps=control_hz,
         info={
             "task": task_name,
-            "control_dt": 1.0 / CONTROL_HZ,
+            "control_dt": 1.0 / control_hz,
             "physics_dt": 1.0 / 120.0,
-            "decimation": 6,
+            "decimation": round(120.0 / control_hz),
             "source": "Robonuke_Furniture_Bench scripts/collect_scripted.py (FurnitureBench pkl)",
             "observation.state": list(STATE_KEYS),
             "action": "[dpos 3 (m, robot frame), dquat 4 (xyzw, EE frame), gripper (<0 open)]",

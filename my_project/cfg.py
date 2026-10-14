@@ -323,10 +323,12 @@ class BCCfg:
                 f"trainer.learner: {BC_LEARNER} trains one policy; experiment.num_agents must "
                 f"be 1, got {cfg.experiment.num_agents}"
             )
-        if cfg.model.architecture != "diffusion_transformer":
+        from my_project.models.cfg import DIFFUSION_ARCHITECTURES
+
+        if cfg.model.architecture not in DIFFUSION_ARCHITECTURES:
             raise ValueError(
-                f"trainer.learner: {BC_LEARNER} needs model.architecture: "
-                f"diffusion_transformer, got {cfg.model.architecture!r}"
+                f"trainer.learner: {BC_LEARNER} needs a diffusion model.architecture "
+                f"({sorted(DIFFUSION_ARCHITECTURES)}), got {cfg.model.architecture!r}"
             )
         for name in ("batch_size", "steps_per_epoch", "eval_every", "sample_every"):
             if getattr(self, name) < 1:

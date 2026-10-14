@@ -36,7 +36,7 @@ def load_base_policy(run_dir: str | Path, checkpoint: str, device: Any):
 
     from robonuke_rl_core.evaluation import resolved_config_path
 
-    from my_project.models.cfg import DiffusionTransformerActorCfg
+    from my_project.models.cfg import DIFFUSION_ARCHITECTURES, actor_cfg_from
     from my_project.models.diffusion_policy import DiffusionPolicy
 
     run_dir = Path(run_dir).expanduser()
@@ -45,9 +45,9 @@ def load_base_policy(run_dir: str | Path, checkpoint: str, device: Any):
         available = sorted(p.name for p in (run_dir / "checkpoints").glob("*.pt"))
         raise FileNotFoundError(f"no base checkpoint {path}; {run_dir / 'checkpoints'} has {available}")
     resolved = OmegaConf.load(resolved_config_path(run_dir))
-    if resolved.model.architecture != "diffusion_transformer":
+    if resolved.model.architecture not in DIFFUSION_ARCHITECTURES:
         raise ValueError(f"{run_dir} is not a diffusion policy run (model.architecture={resolved.model.architecture})")
-    actor_cfg = OmegaConf.to_object(OmegaConf.merge(OmegaConf.structured(DiffusionTransformerActorCfg), resolved.model.actor))
+    actor_cfg = actor_cfg_from(resolved.model)
     state = torch.load(path, map_location=device, weights_only=False)
     policy = DiffusionPolicy(actor_cfg, state["obs_dim"], state["action_dim"]).to(device)
     policy.load_state_dict(state["model_state_dict"])

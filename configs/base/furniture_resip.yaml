@@ -1,0 +1,29 @@
+# FurnitureBench one_leg in ResiP's sim (FurnitureRLSimEnv): Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
+# from Robonuke_Furniture_Bench (assembly_env_cfg.apply_resip). Everything is the task id's
+# own: a 10 Hz policy (1/120 s x 12), differential IK into joint PD 1000/200, friction
+# 0.15 parts / 0.10 table, a 13 N gripper with ResiP's hysteresis (0.019), 70 s episodes
+# (their 700-step cap); the interface is ResiP's -- absolute EE targets with rot6d (action
+# 10), rot6d orientations in the observation (61). Success is FurnitureBench's latch (soft).
+#
+# Demos (collected in the same sim):
+#   python scripts/collect_scripted.py --sim resip --out_dir ~/Robonuke_Furniture_Bench/demos_resip --num_demos 50   (furniture repo)
+#   python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos_resip --out data/furniture_one_leg_resip \
+#       --control_hz 10 --task_name Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
+base: hpc.yaml
+
+task:
+  name: Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
+
+wandb:
+  entity: hur
+  project: hybrid_demo_furniture
+
+trainer:
+  learner: sac
+  total_timesteps: 5000
+  write_interval: 150
+  checkpoint_interval: 500
+
+wrappers:
+  task_metrics:
+    enabled: false
