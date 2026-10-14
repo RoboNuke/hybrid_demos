@@ -241,7 +241,8 @@ python scripts/record_demos.py --config configs/demos/forge_demo_generation_sear
 
 `configs/base/furniture_fixed_dyn.yaml`: `Isaac-Furniture-OneLeg-FB-v0` from
 [Robonuke_Furniture_Bench](https://github.com/RoboNuke/Robonuke_Furniture_Bench) (`pip install -e`
-that checkout; the scripts' `setup()` imports `furniture_lab.tasks`), at the settings the
+that checkout, plus `pip install "pyarrow<21"` in the Isaac Sim env, whose NumPy is 1.x; the
+scripts' `setup()` imports `furniture_lab.tasks`), at the settings the
 scripted-servo demos were collected with (parts friction 0.5, table 0.4, the env's finger
 drive). The `-FB-v0` task speaks FurnitureBench's own interface, the one the demos hold:
 observation 49 (`ee_pos, ee_quat (xyzw), ee_pos_vel, ee_ori_vel, gripper_width, parts_poses`
@@ -276,6 +277,10 @@ python scripts/train_bc.py --config configs/experiments/diffusion_bc_furniture.y
 python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_furniture.yaml
 python scripts/train.py --config configs/experiments/residual_sac_furniture.yaml --headless
 ```
+
+To watch or record a checkpoint: `scripts/debug.py --local <run dir> --checkpoint actor_chkpt_last.pt`
+(live viewer), or `scripts/eval.py --local <run dir> --eval_config configs/eval/furniture_record.yaml
+--checkpoint actor_chkpt_last.pt --headless` (mp4s under the run's `eval/`).
 
 `diffusion_bc_furniture` is the peg-insert recipe on `data/furniture_one_leg` (1000 epochs,
 checkpoints every 100; the action-error breakdown is `pos` / `rot` / `gripper`).
