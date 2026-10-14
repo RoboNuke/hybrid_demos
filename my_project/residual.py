@@ -75,44 +75,40 @@ def residual_observation(normalizer, obs: torch.Tensor, base_action: torch.Tenso
 class ResidualPolicyWrapper(gym.Wrapper):
     def __init__(self, env: Any, cfg: Any) -> None:
         super().__init__(env)
+        from my_project.envhooks import hooks_for
+        from my_project.families import action_layout
         from my_project.models.diffusion_policy import ChunkedBase
-        from my_project.wrappers import _rebuild_spaces
 
-        unwrapped = env.unwrapped
+        hooks = hooks_for(env.unwrapped)
         rc = cfg.residual
-        policy = load_base_policy(rc.base_run, rc.base_checkpoint, unwrapped.device)
-        obs_width = int(unwrapped.single_observation_space["policy"].shape[-1])
+        policy = load_base_policy(rc.base_run, rc.base_checkpoint, hooks.device)
+        obs_width = hooks.obs_width()
         #: the env's action past the pose (``hybrid``'s selection and force blocks)
         self.extra_dims = cfg.hybrid.extra_dims
-        act_width = int(unwrapped.single_action_space.shape[-1]) - self.extra_dims
+        act_width = hooks.action_width() - self.extra_dims
         if (obs_width, act_width) != (policy.obs_dim, policy.action_dim):
             raise ValueError(
                 f"the base policy ({rc.base_run}) was trained on obs {policy.obs_dim} / action "
                 f"{policy.action_dim}; this env has obs {obs_width} / action {act_width} "
                 f"(+{self.extra_dims} hybrid dims)"
             )
-        self.base = ChunkedBase(policy, unwrapped.num_envs)
+        self.base = ChunkedBase(policy, hooks.num_envs)
         self.normalizer = policy.normalizer
         self.scale = residual_scale(policy, rc.action_scale, rc.action_scale_fraction)
-        self.base_action = torch.zeros((unwrapped.num_envs, policy.action_dim), device=unwrapped.device)
+        self.base_action = torch.zeros((hooks.num_envs, policy.action_dim), device=hooks.device)
+        self.layout = action_layout(cfg.task_name)
 
         # the agent's observation and critic state each gain the normalized base action
-        unwrapped.cfg.observation_space += policy.action_dim
-        if getattr(unwrapped.cfg, "state_space", 0):
-            unwrapped.cfg.state_space += policy.action_dim
-        _rebuild_spaces(unwrapped)
-        self.observation_space = unwrapped.observation_space
-        self.action_space = unwrapped.action_space
-        self._original_get_observations = unwrapped._get_observations
-        unwrapped._get_observations = self._get_observations
+        hooks.add_obs_dims(policy.action_dim)
+        self.observation_space = hooks.observation_space
+        self.action_space = hooks.action_space
+        self._hooks = hooks
+        hooks.hook_observations(self._observations)
         print(f"[residual] base {rc.base_run}/{rc.base_checkpoint}; scale {self.scale.tolist()}", flush=True)
 
-    def _get_observations(self):
-        observations = self._original_get_observations()
-        unwrapped = self.env.unwrapped
+    def _observations(self, observations):
         obs = observations["policy"]
-        fresh = unwrapped.episode_length_buf == 0
-        self.base_action = self.base.actions(obs, fresh)
+        self.base_action = self.base.actions(obs, self._hooks.fresh())
         observations["policy"], base_n = residual_observation(self.normalizer, obs, self.base_action)
         if "critic" in observations:
             observations["critic"] = torch.cat((observations["critic"], base_n), dim=-1)
@@ -128,6 +124,10 @@ class ResidualPolicyWrapper(gym.Wrapper):
         observations, rewards, terminated, truncated, infos = self.env.step(sent)
         if isinstance(infos, dict):
             metrics = infos.setdefault("metrics_to_log", {})
-            metrics["residual/position_mm"] = correction[:, 0:3].norm(dim=-1) * 1000.0
-            metrics["residual/yaw_deg"] = correction[:, 3].abs() * (180.0 / torch.pi)
+            metrics["residual/position_mm"] = correction[:, self.layout["pos"]].norm(dim=-1) * 1000.0
+            if "yaw" in self.layout:
+                metrics["residual/yaw_deg"] = correction[:, self.layout["yaw"]].abs() * (180.0 / torch.pi)
+            else:  # a quaternion delta's size: the angle of the correction's rotation part
+                q = correction[:, self.layout["quat_xyzw"]]
+                metrics["residual/rot_deg"] = 2.0 * torch.atan2(q[:, 0:3].norm(dim=-1), q[:, 3].abs()) * (180.0 / torch.pi)
         return observations, rewards, terminated, truncated, infos

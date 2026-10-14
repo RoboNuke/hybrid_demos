@@ -239,14 +239,20 @@ python scripts/record_demos.py --config configs/demos/forge_demo_generation_sear
 
 ## FurnitureBench one_leg (fixed dynamics)
 
-`configs/base/furniture_fixed_dyn.yaml`: `Isaac-Furniture-OneLeg-v0` from
+`configs/base/furniture_fixed_dyn.yaml`: `Isaac-Furniture-OneLeg-FB-v0` from
 [Robonuke_Furniture_Bench](https://github.com/RoboNuke/Robonuke_Furniture_Bench) (`pip install -e`
 that checkout; the scripts' `setup()` imports `furniture_lab.tasks`), at the settings the
 scripted-servo demos were collected with (parts friction 0.5, table 0.4, the env's finger
-drive). The env is manager-based: none of the package's Forge-family wrappers and none of the
-project's Forge-bound policy wrappers (`action.world_pose`, `hybrid`, `history`,
-`episode.reset_on_success`) apply, and the observation (56) and action (7: `pose_rel` OSC +
-binary gripper) are the env's own.
+drive). The `-FB-v0` task speaks FurnitureBench's own interface, the one the demos hold:
+observation 49 (`ee_pos, ee_quat (xyzw), ee_pos_vel, ee_ori_vel, gripper_width, parts_poses`
+in the AprilTag frame) and action 8 (`[dpos 3, dquat 4 (xyzw, EE frame), gripper]`, the env
+maps it onto its `pose_rel` OSC and binary gripper). The env is manager-based, so the two env
+families differ underneath: `my_project/families.py` (which family a task name is, its
+observation layout, its action layout) and `my_project/envhooks.py` (how a wrapper reaches a
+Direct env vs. a manager-based one) hold the differences, and the residual, the history and
+the demo conversion run on both. The Forge-only pieces stay Forge-only: the package's
+controller / fragile / contact / task_metrics wrappers, `action.world_pose`, `hybrid`,
+`episode.reset_on_success` (the furniture env ends an episode on assembly itself).
 
 **Demos** come from that repo's collector (`scripts/collect_scripted.py`, FurnitureBench's pkl
 format) and are converted, with no Isaac Sim, into the recorder's dataset layout:
@@ -255,13 +261,29 @@ format) and are converted, with no Isaac Sim, into the recorder's dataset layout
 python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos --out data/furniture_one_leg
 ```
 
-Per frame: `observation.state` (49) is FurnitureBench's own low-dim policy input
-(`DEFAULT_STATE_OBS`: `ee_pos, ee_quat (xyzw), ee_pos_vel, ee_ori_vel, gripper_width,
-parts_poses` in the AprilTag frame) and `action` (8) the action as recorded
-(`[dpos 3, dquat 4 (xyzw, EE frame), gripper]`, FurnitureBench's); raw material beside them:
-`observation.joint_positions`, `observation.next_state`, `reward`, `skill`.
-`meta/episodes.jsonl` carries each demo's success and source file; re-running appends only
-new files. `--include_failures` also imports `fails/*.pkl` (success false).
+Per frame: `observation.state` (49) and `action` (8) as above; raw material beside them:
+`observation.joint_positions`, `observation.next_state`, `reward` (the env's sparse assembly
+reward), `skill`. `meta/episodes.jsonl` carries each demo's success and source file;
+re-running appends only new files. `--include_failures` also imports `fails/*.pkl` (success
+false). Imported demos carry no recording session (no env snapshot), so a residual run's
+`--check_in_sim` replay is Forge-only.
+
+**Training** is the Forge pipeline with the furniture configs:
+
+```bash
+python scripts/train_bc.py --config configs/experiments/diffusion_bc_furniture.yaml --headless
+# then, with residual.base_run pointing at that run:
+python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_furniture.yaml
+python scripts/train.py --config configs/experiments/residual_sac_furniture.yaml --headless
+```
+
+`diffusion_bc_furniture` is the peg-insert recipe on `data/furniture_one_leg` (1000 epochs,
+checkpoints every 100; the action-error breakdown is `pos` / `rot` / `gripper`).
+`residual_sac_furniture` is `residual_sac_nut` over the 8 FurnitureBench action dims (the
+residual's rotation part is logged as `residual/rot_deg`, the angle of the quaternion
+correction), with an 8-step history of `ee_pos` and `ee_pos_vel`; its demo transitions use
+the recorded reward (nothing is recomputed) and every action's recorded next state, with
+the last transition `terminated` when the demo succeeded.
 
 ## Nut threading (fixed dynamics)
 

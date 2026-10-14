@@ -146,26 +146,23 @@ class WorldPoseAction(gym.Wrapper):
         return self.env.step(torch.cat((self.forge_action(pose), extra.to(self.env.unwrapped.device)), dim=-1))
 
 
-def obs_term_slices(unwrapped: Any) -> dict:
-    """``{term: slice}`` of each ``obs_order`` term in the policy observation, from the env's
-    live ``obs_order`` and Factory's width table (the observation starts with those terms in
-    that order; anything appended after them is not a term)."""
-    from isaaclab_tasks.direct.factory.factory_env_cfg import OBS_DIM_CFG
+def obs_term_slices(unwrapped: Any, task_name: str | None = None) -> dict:
+    """``{term: slice}`` of each leading term of the policy observation: Forge's ``obs_order``
+    with Factory's width table, or FurnitureBench's fixed layout (``my_project.families``;
+    anything appended after the terms is not a term)."""
+    from my_project.families import obs_term_slices_of
 
-    slices, start = {}, 0
-    for name in unwrapped.cfg.obs_order:
-        width = OBS_DIM_CFG[name]
-        slices[name] = slice(start, start + width)
-        start += width
-    return slices
+    if task_name is None:
+        task_name = "Isaac-Furniture" if hasattr(unwrapped, "observation_manager") else "forge"
+    return obs_term_slices_of(task_name, unwrapped.cfg)
 
 
-def history_index(unwrapped_cfg: Any, terms) -> torch.Tensor:
-    """Column indices of ``terms`` in the policy observation (``obs_order`` positions)."""
-    slices = obs_term_slices(SimpleNamespace(cfg=unwrapped_cfg))
+def history_index(unwrapped_cfg: Any, terms, task_name: str = "forge") -> torch.Tensor:
+    """Column indices of ``terms`` in the policy observation (their positions in the layout)."""
+    slices = obs_term_slices(SimpleNamespace(cfg=unwrapped_cfg), task_name)
     missing = [t for t in terms if t not in slices]
     if missing:
-        raise ValueError(f"history.terms {missing} are not in the env's obs_order {list(slices)}")
+        raise ValueError(f"history.terms {missing} are not observation terms of the env: {list(slices)}")
     return torch.cat([torch.arange(slices[t].start, slices[t].stop) for t in terms])
 
 
@@ -201,35 +198,32 @@ class ObservationHistory(gym.Wrapper):
     """Append the previous ``history.length`` values of ``history.terms`` to the agent's
     observation and, when the env has one, to the critic state (:class:`HistoryBuffer`).
 
-    Outermost of the project wrappers: it reads the terms at their ``obs_order`` positions in
-    the observation the agent gets (with the residual on, the base's normalized observation,
+    Outermost of the project wrappers: it reads the terms at their positions in the
+    observation the agent gets (with the residual on, the base's normalized observation,
     whose layout is the same), so the base policy's own input is untouched. An env whose
-    episode just began (``episode_length_buf == 0``) gets its current value repeated.
+    episode just began gets its current value repeated. Either env family
+    (``my_project/envhooks.py``).
     """
 
     def __init__(self, env: Any, cfg: Any) -> None:
         super().__init__(env)
-        unwrapped = env.unwrapped
-        _require_forge(unwrapped, "history")
+        from my_project.envhooks import hooks_for
+
+        hooks = hooks_for(env.unwrapped)
         hc = cfg.history
         self.history = HistoryBuffer(
-            history_index(unwrapped.cfg, hc.terms), hc.length, unwrapped.num_envs, unwrapped.device
+            history_index(env.unwrapped.cfg, hc.terms, cfg.task_name), hc.length, hooks.num_envs, hooks.device
         )
         added = self.history.width
-        unwrapped.cfg.observation_space += added
-        if getattr(unwrapped.cfg, "state_space", 0):
-            unwrapped.cfg.state_space += added
-        _rebuild_spaces(unwrapped)
-        self.observation_space = unwrapped.observation_space
-        self.action_space = unwrapped.action_space
-        self._original_get_observations = unwrapped._get_observations
-        unwrapped._get_observations = self._get_observations
+        hooks.add_obs_dims(added)
+        self.observation_space = hooks.observation_space
+        self.action_space = hooks.action_space
+        self._hooks = hooks
+        hooks.hook_observations(self._observations)
         print(f"[history] {self.history.length} previous steps of {list(hc.terms)} (+{added} dims)", flush=True)
 
-    def _get_observations(self):
-        observations = self._original_get_observations()
-        unwrapped = self.env.unwrapped
-        past = self.history.step(observations["policy"], unwrapped.episode_length_buf == 0)
+    def _observations(self, observations):
+        past = self.history.step(observations["policy"], self._hooks.fresh())
         observations["policy"] = torch.cat((observations["policy"], past), dim=-1)
         if "critic" in observations:
             observations["critic"] = torch.cat((observations["critic"], past), dim=-1)

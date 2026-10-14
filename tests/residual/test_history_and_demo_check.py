@@ -51,9 +51,9 @@ def test_the_wrapper_appends_the_same_history_to_the_observation_and_the_critic_
     wrapper = ObservationHistory.__new__(ObservationHistory)
     wrapper.env = env
     wrapper.history = make_history(length=2, index=(0,), num_envs=1)
-    wrapper._original_get_observations = env.produce
+    wrapper._hooks = SimpleNamespace(fresh=lambda: env.episode_length_buf == 0)
     env.next = {"policy": torch.tensor([[4.0, 1.0]]), "critic": torch.zeros(1, 3)}
-    out = wrapper._get_observations()
+    out = wrapper._observations(env.produce())
     assert out["policy"].tolist() == [[4.0, 1.0, 4.0, 4.0]]
     assert out["critic"].tolist() == [[0.0, 0.0, 0.0, 4.0, 4.0]]
 
@@ -67,8 +67,11 @@ def test_history_cfg_rejects_a_bad_value(fields, match):
         HistoryCfg(enabled=True, **fields).validate(None)
 
 
-def test_history_terms_must_be_in_the_obs_order():
-    cfg = SimpleNamespace(task_cfg=SimpleNamespace(obs_order=["fingertip_pos", "ft_force"]))
+def test_history_terms_must_be_in_the_obs_order(monkeypatch):
+    from my_project import families
+
+    monkeypatch.setattr(families, "obs_layout", lambda name, task_cfg: [(t, 3) for t in task_cfg.obs_order])
+    cfg = SimpleNamespace(task_name="Isaac-Forge-Fake", task_cfg=SimpleNamespace(obs_order=["fingertip_pos", "ft_force"]))
     HistoryCfg(enabled=True).validate(cfg)
     with pytest.raises(ValueError, match="joint_pos"):
         HistoryCfg(enabled=True, terms=["joint_pos"]).validate(cfg)

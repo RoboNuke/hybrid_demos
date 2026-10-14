@@ -157,7 +157,8 @@ class ResidualCfg:
     base_run: Optional[str] = None
     #: the checkpoint file in ``<base_run>/checkpoints/``
     base_checkpoint: str = "actor_chkpt_best_success_rate.pt"
-    #: largest correction per step, [x, y, z, yaw] in m and rad; null: action_scale_fraction
+    #: largest correction per step, one value per action dim (Forge: [x, y, z, yaw] in m and
+    #: rad; FurnitureBench: [dpos 3, dquat 4, gripper]); null: action_scale_fraction
     #: of the base policy's normalized action range per dim
     action_scale: Optional[List[float]] = None
     #: with action_scale null: the correction bound as a fraction of the base's normalized
@@ -186,12 +187,21 @@ class ResidualCfg:
             raise ValueError("residual.base_run is required: the BC run directory of the base policy")
         if cfg.trainer.learner == BC_LEARNER:
             raise ValueError(f"residual.enabled trains a residual with sac / ppo, not {BC_LEARNER}")
-        if not cfg.action.world_pose:
+        from my_project.families import FORGE, action_layout, family_of
+
+        family = family_of(cfg.task_name)
+        if family == FORGE and not cfg.action.world_pose:
             raise ValueError("residual.enabled needs action.world_pose: the base acts in world poses")
+        if family != FORGE and cfg.action.world_pose:
+            raise ValueError(f"action.world_pose is a Forge interface; {cfg.task_name} acts in its own (FurnitureBench) action")
+        width = action_layout(cfg.task_name)["dim"]
         if self.action_scale is not None and (
-            len(self.action_scale) != 4 or min(self.action_scale) <= 0
+            len(self.action_scale) != width or min(self.action_scale) <= 0
         ):
-            raise ValueError(f"residual.action_scale must be four positive values (m, m, m, rad), got {self.action_scale}")
+            raise ValueError(
+                f"residual.action_scale must be {width} positive values (one per action dim of {cfg.task_name}), "
+                f"got {self.action_scale}"
+            )
 
 
 @dataclass
@@ -208,8 +218,9 @@ class HistoryCfg:
     enabled: bool = False
     #: previous steps kept per term (15 Hz control: 8 is ~0.5 s)
     length: int = 8
-    #: ``task.cfg.obs_order`` term names, taken from the policy observation (Forge's
-    #: ``fingertip_pos`` is the noisy fingertip estimate, ``ft_force`` the noisy 3-d force)
+    #: observation term names (Forge: ``task.cfg.obs_order``, where ``fingertip_pos`` is the
+    #: noisy fingertip estimate and ``ft_force`` the noisy 3-d force; FurnitureBench:
+    #: ``ee_pos, ee_quat, ee_pos_vel, ee_ori_vel, gripper_width, parts_poses``)
     terms: List[str] = field(default_factory=lambda: ["fingertip_pos", "ft_force"])
 
     def validate(self, cfg: Any) -> None:
@@ -221,10 +232,12 @@ class HistoryCfg:
             raise ValueError(f"history.terms must be distinct obs_order names, got {list(self.terms)}")
         if cfg is None:
             return
-        order = list(cfg.task_cfg.obs_order)
+        from my_project.families import obs_layout
+
+        order = [name for name, _ in obs_layout(cfg.task_name, cfg.task_cfg)]
         unknown = [t for t in self.terms if t not in order]
         if unknown:
-            raise ValueError(f"history.terms {unknown} are not in task.cfg.obs_order {order}")
+            raise ValueError(f"history.terms {unknown} are not observation terms of {cfg.task_name}: {order}")
 
 
 #: the ``trainer.learner`` value of the diffusion-policy behaviour cloning loop
@@ -295,10 +308,10 @@ class BCCfg:
     show_waypoints: bool = False
 
     #: named action-dim groups for the sampled-action MSE breakdown
-    #: (``action_sample/<split>_action_mse_error_<name>``)
-    action_metric_groups: Dict[str, List[int]] = field(
-        default_factory=lambda: {"pos": [0, 1, 2], "yaw": [3]}
-    )
+    #: (``action_sample/<split>_action_mse_error_<name>``); null: the task family's own
+    #: (Forge ``pos`` [0, 1, 2] / ``yaw`` [3]; FurnitureBench ``pos`` / ``rot`` [3..6] /
+    #: ``gripper`` [7]). A config's entries merge over the default, so set it only to add.
+    action_metric_groups: Optional[Dict[str, List[int]]] = None
 
     def validate(self, cfg: Any) -> None:
         if cfg is None or cfg.trainer.learner != BC_LEARNER:
@@ -349,6 +362,10 @@ class BCCfg:
                     f"trainer.{name} ({value}) counts gradient steps for {BC_LEARNER} and must "
                     f"be a multiple of bc.steps_per_epoch ({self.steps_per_epoch})"
                 )
+        if self.action_metric_groups is None:
+            from my_project.families import action_metric_groups
+
+            self.action_metric_groups = action_metric_groups(cfg.task_name)
         for group, dims in self.action_metric_groups.items():
             if not dims or min(dims) < 0:
                 raise ValueError(f"bc.action_metric_groups.{group} must list dims >= 0, got {dims}")

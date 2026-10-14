@@ -37,6 +37,15 @@ the same RNG, so in practice the first demo is the exact one). The one approxima
 Forge's asset action penalty (scale 0.001), which uses the fingertip at the last physics
 substep, here the next frame's. Measured on the search demos: 1.4e-5 at most per step.
 
+**FurnitureBench demos** (``Isaac-Furniture-*-FB-v0``, imported by
+``scripts/import_furniture_demos.py``) go through the same conversion with the family's
+columns: the recorded next state is in the row (``observation.next_state``), so every one of
+the ``T`` actions makes a transition; the reward is the recorded one (the env's own sparse
+assembly reward, not recomputed); the critic state is the policy observation (the env has no
+critic group); the last transition is ``terminated`` when the demo succeeded (the env ends an
+episode on assembly). Imported demos carry no recording session, so there is nothing to compare
+the experiment's task config with, and ``--check_in_sim`` is Forge-only.
+
 ``meta["fingerprint"]`` records what the transitions depend on (the residual, the history,
 the action interface, the task config); :func:`check_demo_transitions` refuses a file whose
 fingerprint differs from the run's, at env build (``my_project/wrappers.py``).
@@ -78,7 +87,13 @@ TASK_NARROWER_ALLOWED = (
     "task.held_asset_pos_noise",
 )
 
-#: recorded columns the conversion reads, with their widths
+#: recorded columns the conversion reads, per env family, with their widths
+FURNITURE_COLUMNS = {
+    "observation.state": None,  # width from the base policy
+    "action": 8,
+    "observation.next_state": None,
+    "reward": 1,
+}
 COLUMNS = {
     "observation.state": None,  # the policy observation; width from the base policy
     "observation.critic": None,  # the critic state; width from the env cfg's state_order
@@ -92,6 +107,7 @@ COLUMNS = {
     "observation.peg_pos": 3,
     "observation.peg_quat": 4,
 }
+FORGE_COLUMNS = COLUMNS
 
 
 # ---------------------------------------------------------------------- the fingerprint
@@ -299,7 +315,13 @@ def _make(args, overrides, setup) -> int:
     episodes = [json.loads(line) for line in lines if line]
     if not episodes:
         raise ValueError(f"{dataset} has no episodes")
-    _check_sessions(dataset, episodes, cfg)
+    from my_project.families import FORGE, family_of
+
+    family = family_of(cfg.task_name)
+    if family == FORGE:
+        _check_sessions(dataset, episodes, cfg)
+    elif args.check_in_sim:
+        raise ValueError("--check_in_sim replays Forge recordings; an imported FurnitureBench demo has no env snapshot to replay from")
 
     # the check's env is built first, under the recording session's seed: a demo replays
     # exactly only in an env made like the recorder's (measured: 0.0 mm under the session seed,
@@ -312,10 +334,10 @@ def _make(args, overrides, setup) -> int:
     torch.manual_seed(int(cfg.experiment.seed))
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     policy = load_base_policy(cfg.residual.base_run, cfg.residual.base_checkpoint, device)
-    frames = [_read_episode(dataset, e, policy.obs_dim, device) for e in episodes]
+    frames = [_read_episode(dataset, e, policy.obs_dim, device, family) for e in episodes]
     limit = _episode_limit(cfg)
     for episode, f in zip(episodes, frames):
-        if f["action"].shape[0] - 1 > limit:
+        if f["transitions"] > limit:
             raise ValueError(
                 f"episode {episode['episode_index']} has {f['action'].shape[0]} frames; the experiment's "
                 f"episodes end after {limit} steps: lengthen task.cfg.episode_length_s or drop the demo"
@@ -336,7 +358,7 @@ def _make(args, overrides, setup) -> int:
         f"[demos] mean return per demo {meta['mean_return']:.2f}; success reached in "
         f"{meta['success_rate']:.0%} of demos\n[demos] residual action beyond the policy's [-1, 1] "
         f"on {meta['beyond_scale_fraction']:.1%} of demo steps ({meta['demo_actions_beyond_scale']}d); "
-        f"per dim [x, y, z, yaw]: " + ", ".join(f"{v:.1%}" for v in meta["beyond_scale_fraction_per_dim"])
+        f"per dim: " + ", ".join(f"{v:.1%}" for v in meta["beyond_scale_fraction_per_dim"])
         + "; largest |action| per dim: " + ", ".join(f"{v:.2f}" for v in meta["max_abs_action"]),
         flush=True,
     )
@@ -368,20 +390,24 @@ def _build_check_env(args, overrides, episodes):
 
 
 def _episode_limit(cfg) -> int:
-    """Steps in one of the experiment's episodes (Forge ends one before ``max_episode_length``)."""
+    """Steps in one of the experiment's episodes (Forge ends one before ``max_episode_length``;
+    a manager-based env at it)."""
     import math
 
+    from my_project.families import FORGE, family_of
+
     task = cfg.task_cfg
-    return math.ceil(task.episode_length_s / (task.sim.dt * task.decimation)) - 1
+    steps = math.ceil(task.episode_length_s / (task.sim.dt * task.decimation))
+    return steps - 1 if family_of(cfg.task_name) == FORGE else steps
 
 
-def _read_episode(dataset: Path, episode: dict, obs_dim: int, device) -> Dict[str, Any]:
+def _read_columns(dataset: Path, episode: dict, columns: Dict[str, Any], device) -> Dict[str, Any]:
     import pyarrow.parquet as pq
     import torch
 
     table = pq.read_table(dataset / episode["file"])
     out = {}
-    for name, width in COLUMNS.items():
+    for name, width in columns.items():
         if name not in table.column_names:
             raise KeyError(f"{dataset / episode['file']} has no column {name!r}: recorded before it existed?")
         column = table.column(name).combine_chunks()
@@ -390,12 +416,36 @@ def _read_episode(dataset: Path, episode: dict, obs_dim: int, device) -> Dict[st
         if width is not None and values.shape[1] != width:
             raise ValueError(f"{episode['file']}: {name} is {values.shape[1]} wide, expected {width}")
         out[name.split(".", 1)[-1] if name != "action" else "action"] = values
+    return out
+
+
+def _read_episode(dataset: Path, episode: dict, obs_dim: int, device, family: str = "forge") -> Dict[str, Any]:
+    """One demo's frames: ``state`` (one more than the transitions), ``critic``, ``action``,
+    ``transitions`` (how many ``t -> t+1`` the demo yields) and the family's reward material."""
+    import torch
+
+    from my_project.families import FURNITURE
+
+    if family == FURNITURE:
+        out = _read_columns(dataset, episode, FURNITURE_COLUMNS, device)
+        if out["state"].shape[1] != obs_dim:
+            raise ValueError(f"{episode['file']}: observation.state is {out['state'].shape[1]} wide; the base policy takes {obs_dim}")
+        if out["next_state"].shape[1] != obs_dim:
+            raise ValueError(f"{episode['file']}: observation.next_state is {out['next_state'].shape[1]} wide, expected {obs_dim}")
+        # every action has its next state: T transitions over T + 1 states
+        out["transitions"] = out["action"].shape[0]
+        out["state"] = torch.cat((out["state"], out["next_state"][-1:]), dim=0)
+        out["critic"] = out["state"]  # the env has no critic group
+        out["success"] = bool(episode.get("success", False))
+        return out
+    out = _read_columns(dataset, episode, FORGE_COLUMNS, device)
     if out["state"].shape[1] != obs_dim:
         raise ValueError(f"{episode['file']}: observation.state is {out['state'].shape[1]} wide; the base policy takes {obs_dim}")
     if torch.isnan(out["applied"]).any():
         raise ValueError(f"{episode['file']}: action.applied has NaN rows (an episode that hit the time limit)")
     state = torch.load(dataset / episode["state_file"], map_location=device, weights_only=False)
     out["prev_applied"] = state["attrs"]["prev_actions"].to(device, torch.float32).reshape(1, -1)
+    out["transitions"] = out["action"].shape[0] - 1  # the last frame's next state was never recorded
     return out
 
 
@@ -417,19 +467,23 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
     from my_project.residual import residual_observation, residual_scale
     from my_project.wrappers import HistoryBuffer, history_index, hybrid_demo_block
 
+    from my_project.families import FORGE, family_of
+
     env_cfg = cfg.task_cfg
-    slices = _state_slices(env_cfg)
-    for name in ("fixed_pos", "fixed_quat"):
-        if name not in slices:
-            raise ValueError(f"task.cfg.state_order must hold {name}: the reward needs the hole's base pose, from the recorded critic state")
+    forge = family_of(cfg.task_name) == FORGE
+    if forge:
+        slices = _state_slices(env_cfg)
+        for name in ("fixed_pos", "fixed_quat"):
+            if name not in slices:
+                raise ValueError(f"task.cfg.state_order must hold {name}: the reward needs the hole's base pose, from the recorded critic state")
     scale = residual_scale(policy, cfg.residual.action_scale, cfg.residual.action_scale_fraction).to(device)
-    n, longest = len(frames), max(f["action"].shape[0] for f in frames)
+    n, longest = len(frames), max(f["state"].shape[0] for f in frames)
 
     # the base on every demo at once, each on its own chunk clock from its first frame; a
     # finished demo keeps repeating its last frame (its outputs are not used)
     base = ChunkedBase(policy, n)
     history = (
-        HistoryBuffer(history_index(env_cfg, cfg.history.terms), cfg.history.length, n, device)
+        HistoryBuffer(history_index(env_cfg, cfg.history.terms, cfg.task_name), cfg.history.length, n, device)
         if cfg.history.enabled
         else None
     )
@@ -455,7 +509,7 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
     beyond_rows, kept_rows, per_episode = 0, 0, []
     drop = cfg.residual.demo_actions_beyond_scale == "drop"
     for e, f in enumerate(frames):
-        steps = f["action"].shape[0] - 1  # transitions t -> t+1
+        steps = f["transitions"]  # transitions t -> t+1
         now, nxt = slice(0, steps), slice(1, steps + 1)
         residual = (f["action"][now] - torch.stack([base_actions[t][e] for t in range(steps)])) / scale
         beyond = residual.abs() > 1.0
@@ -463,21 +517,27 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
         beyond_rows += int(beyond.any(dim=-1).sum())
         keep = ~beyond.any(dim=-1) if drop else torch.ones(steps, dtype=torch.bool, device=device)
         kept_rows += int(keep.sum())
-        critic_next = f["critic"][nxt]
-        reward = forge_rewards(
-            env_cfg,
-            held_pos=f["peg_pos"][nxt],
-            held_quat=f["peg_quat"][nxt],
-            fixed_pos=critic_next[:, slices["fixed_pos"]],
-            fixed_quat=critic_next[:, slices["fixed_quat"]],
-            actions=f["applied"][now],
-            prev_actions=torch.cat((f["prev_applied"], f["applied"][: steps - 1]), dim=0),
-            hole_estimate=f["noisy_hole_pos"][now],
-            fingertip_pos=f["fingertip_pos"][nxt],
-            fingertip_quat=f["fingertip_quat"][nxt],
-            force=f["wrench"][nxt, 0:3],
-            force_threshold=f["force_threshold"][now],
-        )
+        terminated = torch.zeros(steps, 1, dtype=torch.bool, device=device)
+        if forge:
+            critic_next = f["critic"][nxt]
+            reward = forge_rewards(
+                env_cfg,
+                held_pos=f["peg_pos"][nxt],
+                held_quat=f["peg_quat"][nxt],
+                fixed_pos=critic_next[:, slices["fixed_pos"]],
+                fixed_quat=critic_next[:, slices["fixed_quat"]],
+                actions=f["applied"][now],
+                prev_actions=torch.cat((f["prev_applied"], f["applied"][: steps - 1]), dim=0),
+                hole_estimate=f["noisy_hole_pos"][now],
+                fingertip_pos=f["fingertip_pos"][nxt],
+                fingertip_quat=f["fingertip_quat"][nxt],
+                force=f["wrench"][nxt, 0:3],
+                force_threshold=f["force_threshold"][now],
+            )
+        else:  # the recorded (sparse) reward; the env ends a successful episode on assembly
+            total = f["reward"][now, 0]
+            reward = {"total": total, "curr_success": total > 0}
+            terminated[-1, 0] = f["success"]
         columns["observations"].append(torch.stack([agent_obs[t][e] for t in range(steps)])[keep])
         columns["next_observations"].append(torch.stack([agent_obs[t + 1][e] for t in range(steps)])[keep])
         columns["states"].append(torch.stack([agent_state[t][e] for t in range(steps)])[keep])
@@ -487,7 +547,7 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
             residual = torch.cat((residual, hybrid_demo_block(cfg.hybrid.axes, steps, device)), dim=-1)
         columns["actions"].append(residual[keep])
         columns["rewards"].append(reward["total"].reshape(-1, 1)[keep])
-        columns["terminated"].append(torch.zeros(steps, 1, dtype=torch.bool, device=device)[keep])
+        columns["terminated"].append(terminated[keep])
         columns["truncated"].append(torch.zeros(steps, 1, dtype=torch.bool, device=device)[keep])
         per_episode.append({
             "episode_index": episodes[e]["episode_index"],

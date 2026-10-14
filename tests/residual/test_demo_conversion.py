@@ -66,6 +66,7 @@ def frames(length: int, offset: float) -> dict:
         "fingertip_quat": torch.zeros(length, 4),
         "peg_pos": t[:, None].expand(-1, 3) + offset,
         "peg_quat": torch.zeros(length, 4),
+        "transitions": length - 1,
     }
 
 
@@ -78,8 +79,9 @@ def run(monkeypatch, history: bool, beyond: str = "store", hybrid=None):
 
     monkeypatch.setattr(residual_demos, "forge_rewards", fake_rewards)
     monkeypatch.setattr(residual_demos, "_state_slices", lambda env_cfg: {"fixed_pos": slice(0, 1), "fixed_quat": slice(1, 2)})
-    monkeypatch.setattr(wrappers, "obs_term_slices", lambda unwrapped: {"a": slice(0, 1), "b": slice(1, 3)})
+    monkeypatch.setattr(wrappers, "obs_term_slices", lambda unwrapped, task_name=None: {"a": slice(0, 1), "b": slice(1, 3)})
     cfg = SimpleNamespace(
+        task_name="Isaac-Forge-Fake",
         task_cfg=SimpleNamespace(),
         residual=SimpleNamespace(action_scale=[0.5, 1.0], action_scale_fraction=0.1, demo_actions_beyond_scale=beyond),
         history=SimpleNamespace(enabled=history, terms=["a"], length=2),

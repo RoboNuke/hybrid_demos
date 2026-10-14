@@ -1,15 +1,17 @@
 # FurnitureBench one_leg (Robonuke_Furniture_Bench, pip install -e; registered by the
 # scripts' setup()) with fixed dynamics: the settings the scripted-servo demos were collected
-# with. The env is manager-based, so none of the package's Forge-family wrappers apply
-# (controller, fragile, efficient reset, contact, task_metrics); the project's policy
-# wrappers (action.world_pose, hybrid, history, episode.reset_on_success) are Forge-bound too
-# and stay off. Observation (56) and action (7, pose_rel OSC + binary gripper) are the env's own.
+# with. The -FB-v0 task speaks FurnitureBench's own interface, the one the demo pkls hold:
+# observation 49 (ee_pos, ee_quat xyzw, ee_pos_vel, ee_ori_vel, gripper_width, parts_poses 35
+# in the AprilTag frame), action 8 (dpos 3, dquat 4 xyzw in the EE frame, gripper). The env is
+# manager-based, so none of the package's Forge-family wrappers apply (controller, fragile,
+# efficient reset, contact, task_metrics), nor the project's Forge-bound ones (action.world_pose,
+# hybrid, episode.reset_on_success); the residual and the history work on either family.
 #
 # Demos: python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos --out data/furniture_one_leg
 base: hpc.yaml
 
 task:
-  name: Isaac-Furniture-OneLeg-v0
+  name: Isaac-Furniture-OneLeg-FB-v0
   cfg:
     episode_length_s: 30.0
     furniture:
