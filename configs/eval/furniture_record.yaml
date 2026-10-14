@@ -8,6 +8,15 @@ base: ../base/hpc.yaml
 eval:
   num_rollouts: 8
   record: true
+  # twice the package's 240x180
+  video_width: 480
+  video_height: 360
+  # every video is the full 600 steps, the end held with its cause (the package default),
+  # at the control rate (video_fps null, the default): real time
+  # a sphere light at the camera, in every env; the scene's dome light stays. Brighter or
+  # dimmer: change the intensity
+  video_light_intensity: 100000.0
+  video_light_radius: 0.1
 
 task:
   cfg:
