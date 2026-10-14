@@ -25,6 +25,7 @@ def furniture_layout(monkeypatch):
     assembly = ModuleType("furniture_lab.tasks.assembly")
     cfg = ModuleType("furniture_lab.tasks.assembly.assembly_env_cfg")
     cfg.FB_OBS_LAYOUT = FB_LAYOUT
+    cfg.FBABS_OBS_LAYOUT = (("ee_pos", 3), ("ee_rot6d", 6), ("ee_pos_vel", 3), ("ee_ori_vel", 3), ("gripper_width", 1), ("parts_poses", 45))
     for name, mod in (("furniture_lab", pkg), ("furniture_lab.tasks", tasks),
                       ("furniture_lab.tasks.assembly", assembly), ("furniture_lab.tasks.assembly.assembly_env_cfg", cfg)):
         monkeypatch.setitem(sys.modules, name, mod)
@@ -44,6 +45,11 @@ def test_the_furniture_observation_layout_is_furniturebenchs_and_the_action_is_8
     layout = families.action_layout("Isaac-Furniture-OneLeg-FB-v0")
     assert layout["dim"] == 8 and layout["quat_xyzw"] == slice(3, 7) and layout["gripper"] == 7
     assert families.action_layout("forge-x") == {"dim": 4, "pos": slice(0, 3), "yaw": 3}
+    # the absolute rot6d interface
+    assert families.is_abs("Isaac-Furniture-OneLeg-FBAbs-v0") and not families.is_abs("Isaac-Furniture-OneLeg-FB-v0")
+    assert families.obs_term_slices_of("Isaac-Furniture-OneLeg-FBAbs-v0", None)["parts_poses"] == slice(16, 61)
+    assert families.action_layout("Isaac-Furniture-OneLeg-FBAbs-v0") == {"dim": 10, "pos": slice(0, 3), "rot6d": slice(3, 9), "gripper": 9}
+    assert families.action_metric_groups("Isaac-Furniture-OneLeg-FBAbs-v0") == {"pos": [0, 1, 2], "rot": [3, 4, 5, 6, 7, 8], "gripper": [9]}
 
 
 def test_history_terms_are_checked_against_the_familys_layout(furniture_layout):

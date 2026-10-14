@@ -76,6 +76,12 @@ def test_import_writes_the_dataset_and_the_loader_reads_it(tmp_path):
     assert info["fps"] == 20.0 and info["task"] == "Isaac-Furniture-OneLeg-v0"
     assert info["features"]["observation.state"] == STATE_DIM and info["features"]["action"] == ACTION_DIM
     assert info["features"]["observation.next_state"] == STATE_DIM
+    assert info["features"]["observation.state_abs"] == 61 and info["features"]["action.abs"] == 10
+    assert info["features"]["observation.next_state_abs"] == 61
+    from my_project.bc.dataset import load_lerobot
+
+    abs_demos = load_lerobot(str(out), "observation.state_abs", "action.abs")
+    assert abs_demos.obs_dim == 61 and abs_demos.action_dim == 10
     episodes = [json.loads(l) for l in (out / "meta" / "episodes.jsonl").read_text().splitlines()]
     assert [e["success"] for e in episodes] == [True, True, False]
     assert [e["length"] for e in episodes] == [12, 7, 5]

@@ -262,9 +262,14 @@ format) and are converted, with no Isaac Sim, into the recorder's dataset layout
 python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos --out data/furniture_one_leg
 ```
 
-Per frame: `observation.state` (49) and `action` (8) as above; raw material beside them:
-`observation.joint_positions`, `observation.next_state`, `reward` (the env's sparse assembly
-reward), `skill`. `meta/episodes.jsonl` carries each demo's success and source file;
+Per frame: `observation.state` (49) and `action` (8) as above, plus ResiP's interface derived
+exactly from the same frames (`furniture_lab.demos.fb_abs_frames`): `observation.state_abs` (61,
+every orientation as rot6d) and `action.abs` (10, the absolute target the delta commanded:
+`[ee_pos + dpos, rot6d(R_ee R_dq), gripper]`), for `Isaac-Furniture-OneLeg-FBAbs-v0`
+(`configs/experiments/diffusion_bc_furniture_abs.yaml`). Raw material beside them:
+`observation.joint_positions`, `observation.next_state` / `observation.next_state_abs`, `reward`
+(the env's sparse assembly reward), `skill`. A dataset imported before the `*_abs` columns
+existed has different features: import into a fresh directory. `meta/episodes.jsonl` carries each demo's success and source file;
 re-running appends only new files. `--include_failures` also imports `fails/*.pkl` (success
 false). Imported demos carry no recording session (no env snapshot), so a residual run's
 `--check_in_sim` replay is Forge-only.
