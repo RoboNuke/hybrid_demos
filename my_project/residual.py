@@ -118,7 +118,8 @@ class ResidualPolicyWrapper(gym.Wrapper):
         action = action.to(self.scale.device)
         width = self.base_action.shape[-1]
         correction = self.scale * action[:, :width]
-        sent = self.base_action + correction
+        base = self.base_action  # env.step's observation hook replaces it with the next step's
+        sent = base + correction
         if self.extra_dims:
             sent = torch.cat((sent, action[:, width:]), dim=-1)
         observations, rewards, terminated, truncated, infos = self.env.step(sent)
@@ -127,7 +128,25 @@ class ResidualPolicyWrapper(gym.Wrapper):
             metrics["residual/position_mm"] = correction[:, self.layout["pos"]].norm(dim=-1) * 1000.0
             if "yaw" in self.layout:
                 metrics["residual/yaw_deg"] = correction[:, self.layout["yaw"]].abs() * (180.0 / torch.pi)
+            elif "rot6d" in self.layout:  # absolute targets: the angle between the base's and the sent rotation
+                r6 = self.layout["rot6d"]
+                metrics["residual/rot_deg"] = rot6d_angle_deg(base[:, r6], sent[:, r6])
             else:  # a quaternion delta's size: the angle of the correction's rotation part
                 q = correction[:, self.layout["quat_xyzw"]]
                 metrics["residual/rot_deg"] = 2.0 * torch.atan2(q[:, 0:3].norm(dim=-1), q[:, 3].abs()) * (180.0 / torch.pi)
         return observations, rewards, terminated, truncated, infos
+
+
+def _rot6d_to_mat(d6: torch.Tensor) -> torch.Tensor:
+    """``(N, 6)`` first two rows -> ``(N, 3, 3)`` by Gram-Schmidt (the action term's own decode)."""
+    b1 = torch.nn.functional.normalize(d6[:, 0:3], dim=-1)
+    a2 = d6[:, 3:6]
+    b2 = torch.nn.functional.normalize(a2 - (b1 * a2).sum(dim=-1, keepdim=True) * b1, dim=-1)
+    return torch.stack((b1, b2, torch.cross(b1, b2, dim=-1)), dim=-2)
+
+
+def rot6d_angle_deg(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Angle (deg) between the rotations two ``(N, 6)`` rot6d vectors decode to."""
+    R = _rot6d_to_mat(a).transpose(-1, -2) @ _rot6d_to_mat(b)
+    cos = ((R.diagonal(dim1=-2, dim2=-1).sum(-1) - 1.0) / 2.0).clamp(-1.0, 1.0)
+    return torch.rad2deg(torch.arccos(cos))

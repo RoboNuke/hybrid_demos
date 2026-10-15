@@ -263,3 +263,58 @@ def test_furniture_abs_demos_read_the_importers_absolute_columns(tmp_path):
     assert out["success"] and out["reward"].flatten().tolist() == [0.0, 0.0, 1.0]
     with pytest.raises(ValueError, match="base policy takes 61"):
         residual_demos._read_episode(tmp_path, episode, 61, torch.device("cpu"), families.FURNITURE, absolute=False)
+
+
+class FakeAbsEnv(gym.Env):
+    """A manager-based FBAbs env in miniature: obs 61, action 10; step returns what it was sent."""
+
+    def __init__(self):
+        self.single_observation_space = gym.spaces.Dict({"policy": gym.spaces.Box(-1, 1, (61,))})
+        self.single_action_space = gym.spaces.Box(-1, 1, (10,))
+        self.observation_space = self.single_observation_space
+        self.action_space = self.single_action_space
+        self.num_envs, self.device = 2, "cpu"
+        self.episode_length_buf = torch.tensor([0, 0])
+        self.observation_manager = SimpleNamespace(compute=lambda update_history=False: {"policy": torch.zeros(2, 61)})
+        self.cfg = SimpleNamespace()
+        self.sent = None
+
+    def reset(self, seed=None, options=None):
+        return self.observation_manager.compute(update_history=True), {}
+
+    def step(self, action):
+        self.sent = action
+        self.episode_length_buf = self.episode_length_buf + 1
+        obs = self.observation_manager.compute(update_history=True)
+        return obs, torch.zeros(2), torch.zeros(2, dtype=torch.bool), torch.zeros(2, dtype=torch.bool), {}
+
+
+def test_the_residual_steps_the_absolute_rot6d_action_and_logs_its_rotation(monkeypatch):
+    import dataclasses
+
+    from my_project import residual as residual_mod
+    from my_project.models.cfg import DiffusionUnetActorCfg
+    from my_project.models.diffusion_policy import DiffusionPolicy
+
+    torch.manual_seed(0)
+    actor = DiffusionUnetActorCfg(horizon=8, n_obs_steps=2, action_horizon=4, down_dims=[16, 32], diffusion_step_embed_dim=16,
+                                  n_groups=4, inference_steps=2, num_diffusion_iters=10, warm_start=False)
+    policy = DiffusionPolicy(actor, 61, 10)
+    policy.normalizer.fit("obs", torch.randn(20, 61))
+    policy.normalizer.fit("action", torch.randn(20, 10))
+    monkeypatch.setattr(residual_mod, "load_base_policy", lambda *a, **k: policy.eval())
+    cfg = SimpleNamespace(
+        task_name="Isaac-Furniture-OneLeg-FBAbs-ResiP-v0",
+        residual=SimpleNamespace(base_run="r", base_checkpoint="c", action_scale=None, action_scale_fraction=0.1),
+        hybrid=SimpleNamespace(extra_dims=0, enabled=False),
+    )
+    env = residual_mod.ResidualPolicyWrapper(FakeAbsEnv(), cfg)
+    obs, _ = env.reset()
+    assert obs["policy"].shape == (2, 61 + 10)
+    _, _, _, _, info = env.step(torch.ones(2, 10))
+    assert env.env.sent.shape == (2, 10)
+    m = info["metrics_to_log"]
+    assert m["residual/position_mm"].shape == (2,) and m["residual/rot_deg"].shape == (2,)
+    assert torch.all(m["residual/rot_deg"] >= 0) and torch.all(m["residual/rot_deg"] < 180)
+    _, _, _, _, info = env.step(torch.zeros(2, 10))
+    assert torch.allclose(info["metrics_to_log"]["residual/rot_deg"], torch.zeros(2), atol=1e-2)  # no residual, no rotation
