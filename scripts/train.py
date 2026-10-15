@@ -21,7 +21,7 @@ def setup() -> None:
 
     from robonuke_rl_core.learners.cfg import register_learner
 
-    from my_project.cfg import ActionCfg, BC_LEARNER, BCCfg, DemoCfg, EpisodeCfg, HybridCfg, RecordCfg, HistoryCfg, ForgeV1Cfg, ResidualCfg
+    from my_project.cfg import ActionCfg, BC_LEARNER, BCCfg, DemoCfg, EpisodeCfg, HybridCfg, ForceObsCfg, RecordCfg, HistoryCfg, ForgeV1Cfg, ResidualCfg
 
     register_section("demo", DemoCfg)
     register_section("bc", BCCfg)
@@ -31,6 +31,7 @@ def setup() -> None:
     register_section("history", HistoryCfg)  # my_project/wrappers.py
     register_section("episode", EpisodeCfg)  # my_project/wrappers.py
     register_section("hybrid", HybridCfg)  # my_project/wrappers.py
+    register_section("force_obs", ForceObsCfg)  # my_project/wrappers.py
     register_section("forge_v1", ForgeV1Cfg)  # scripts/import_forge_v1.py
 
     from robonuke_rl_core.envs.build import register_env_wrapper

@@ -64,6 +64,45 @@ class EpisodeCfg:
 
 
 @dataclass
+class ForceObsCfg:
+    """The measured end-effector wrench in the RL agent's observation (``my_project/wrappers.py``,
+    :class:`~my_project.wrappers.ForceObservation`): appended last, after the history, so the base
+    policy's input never changes, and to the critic state when the env has one.
+
+    The furniture family reads the env's joint-torque estimate (``env.wrench.filtered``, robot
+    base frame); Forge its smoothed wrist sensor (``force_sensor_smooth``). Raw N and N m, not
+    normalized: the learner's own normalizer sees it like any other input, and
+    ``force_selection`` (``my_project/losses.py``) reads it from the stored observation.
+    """
+
+    enabled: bool = False
+    #: "no_torque": force only, 3 dims; "with_torque": force then torque, 6 dims
+    mode: str = "no_torque"
+
+    MODES = {"no_torque": 3, "with_torque": 6}
+
+    @property
+    def width(self) -> int:
+        return self.MODES[self.mode] if self.enabled else 0
+
+    def validate(self, cfg: Any) -> None:
+        if self.mode not in self.MODES:
+            raise ValueError(f"force_obs.mode must be one of {list(self.MODES)}, got {self.mode!r}")
+        if cfg is None:
+            return
+        terms = [t for t in getattr(getattr(cfg, "losses", None), "terms", []) or [] if t.name == "force_selection"]
+        if terms and not self.enabled:
+            raise ValueError("losses term force_selection reads the force from the observation: set force_obs.enabled: true")
+        for term in terms:
+            mode = dict(term.kwargs).get("mode", "no_torque")
+            if mode != self.mode:
+                raise ValueError(
+                    f"losses term force_selection has mode {mode!r} but force_obs.mode is {self.mode!r}: "
+                    "the loss reads the force from the observation's last columns, laid out by force_obs.mode"
+                )
+
+
+@dataclass
 class HybridCfg:
     """Hybrid force/position control under the world-pose action (``my_project/wrappers.py``).
 
@@ -79,6 +118,13 @@ class HybridCfg:
     ``force_target_bounds``) per axis of ``force_axes``. Gains are constant: the pose gains are
     Forge's own, the force gains ``default_force_gains``. Applied to every env the package
     builds (train, eval, debug); never to the demo recorder, replay or BC rollouts.
+
+    **On the furniture family** the env owns the controller: the task id
+    ``Isaac-Furniture-OneLeg-FBAbs-ResiP-Hybrid-v0`` (Robonuke_Furniture_Bench ``mdp/hybrid.py``)
+    runs the same law on joint torques, with its fields under ``task.cfg.hybrid.*``. This section
+    then only says the agent's action carries the blocks, after the 10-wide abs target:
+    ``[goal_pos 3, goal_rot6d 6, gripper | selection | force target]``; its own force fields
+    stay at their defaults there (the config refuses them).
     """
 
     enabled: bool = False
@@ -90,8 +136,12 @@ class HybridCfg:
     #: K_f per axis (``controller.default_force_gains``)
     default_force_gains: List[float] = field(default_factory=lambda: [0.1, 0.1, 0.1, 0.01, 0.01, 0.01])
 
-    #: the world pose's width, the block before the selection
+    #: the world pose's width, the block before the selection (Forge)
     POSE_DIMS = 4
+    #: the furniture hybrid task's pose block: the abs target [goal_pos 3, goal_rot6d 6, gripper]
+    FURNITURE_POSE_DIMS = 10
+    #: this section's force fields: Forge only
+    FORGE_FIELDS = ("force_axes", "force_target_bounds", "default_force_gains")
 
     def controller_cfg(self):
         """The package ``ControllerCfg`` this section attaches: pose and force, constant gains,
@@ -122,7 +172,33 @@ class HybridCfg:
         """Action dims after the world pose: the selection and force blocks."""
         return 2 * self.axes if self.enabled else 0
 
+    # ---- either family: these read the env's own controller cfg on the furniture family
+    @staticmethod
+    def is_furniture(cfg: Any) -> bool:
+        from my_project.families import FURNITURE, family_of
+
+        return family_of(cfg.task_name) == FURNITURE
+
+    def axes_for(self, cfg: Any) -> int:
+        if self.is_furniture(cfg):
+            return int(sum(cfg.task_cfg.hybrid.force_axes))
+        return self.axes
+
+    def pose_dims_for(self, cfg: Any) -> int:
+        return self.FURNITURE_POSE_DIMS if self.is_furniture(cfg) else self.POSE_DIMS
+
+    def selection_dims_for(self, cfg: Any) -> List[int]:
+        start = self.pose_dims_for(cfg)
+        return list(range(start, start + self.axes_for(cfg)))
+
+    def extra_dims_for(self, cfg: Any) -> int:
+        """The env's action dims after the base's pose block (0 when off)."""
+        return 2 * self.axes_for(cfg) if self.enabled else 0
+
     def validate(self, cfg: Any) -> None:
+        if cfg is not None and self.is_furniture(cfg):
+            self._validate_furniture(cfg)
+            return
         if not self.enabled:
             return
         self.controller_cfg().validate(None)  # the package's own field checks
@@ -137,6 +213,31 @@ class HybridCfg:
             raise ValueError(
                 f"model.actor.bernoulli_action_dims must be exactly the selection block {self.selection_dims} "
                 f"(after the {self.POSE_DIMS}-wide world pose), got {declared}"
+            )
+
+    def _validate_furniture(self, cfg: Any) -> None:
+        owns = hasattr(cfg.task_cfg, "hybrid")
+        if self.enabled != owns:
+            raise ValueError(
+                f"hybrid.enabled is {self.enabled} but {cfg.task_name} "
+                + ("runs the hybrid controller (task.cfg.hybrid): set hybrid.enabled: true" if owns
+                   else "has no hybrid controller: use Isaac-Furniture-OneLeg-FBAbs-ResiP-Hybrid-v0")
+            )
+        if not self.enabled:
+            return
+        defaults = HybridCfg()
+        changed = [f for f in self.FORGE_FIELDS if list(getattr(self, f)) != list(getattr(defaults, f))]
+        if changed:
+            raise ValueError(f"hybrid.{changed} are Forge fields; on {cfg.task_name} set task.cfg.hybrid.{changed[0]} instead")
+        from my_project.families import is_abs
+
+        if not is_abs(cfg.task_name):
+            raise ValueError(f"hybrid on the furniture family needs the abs interface (FBAbs), got {cfg.task_name}")
+        declared = sorted(int(d) for d in (cfg.model.actor.bernoulli_action_dims or []))
+        if declared != self.selection_dims_for(cfg):
+            raise ValueError(
+                f"model.actor.bernoulli_action_dims must be exactly the selection block {self.selection_dims_for(cfg)} "
+                f"(after the {self.FURNITURE_POSE_DIMS}-wide abs target), got {declared}"
             )
 
 

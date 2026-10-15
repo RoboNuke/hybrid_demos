@@ -41,6 +41,7 @@ from robonuke_rl_core.envs.forge.controller import ForgeControllerWrapper
 __all__ = [
     "WorldPoseAction",
     "ResetOnSuccess",
+    "ForceObservation",
     "hybrid_demo_block",
     "HybridController",
     "ObservationHistory",
@@ -230,6 +231,38 @@ class ObservationHistory(gym.Wrapper):
         return observations
 
 
+class ForceObservation(gym.Wrapper):
+    """``force_obs``: append the measured EE wrench (force, or force then torque) to the
+    agent's observation and the critic state. Outermost of the project wrappers, so its columns
+    are the observation's last ``force_obs.width``: what ``force_selection`` reads."""
+
+    def __init__(self, env: Any, cfg: Any) -> None:
+        super().__init__(env)
+        from my_project.envhooks import hooks_for
+
+        hooks = hooks_for(env.unwrapped)
+        self.width = cfg.force_obs.width
+        unwrapped = env.unwrapped
+        if hasattr(unwrapped, "wrench"):  # the furniture env's joint-torque estimate
+            self._read = lambda: unwrapped.wrench.filtered
+        elif hasattr(unwrapped, "force_sensor_smooth"):  # Forge's wrist sensor
+            self._read = lambda: unwrapped.force_sensor_smooth
+        else:
+            raise TypeError(f"force_obs: {type(unwrapped).__name__} has neither a wrench estimate nor a force sensor")
+        hooks.add_obs_dims(self.width)
+        self.observation_space = hooks.observation_space
+        self.action_space = hooks.action_space
+        hooks.hook_observations(self._observations)
+        print(f"[force_obs] {cfg.force_obs.mode}: +{self.width} dims", flush=True)
+
+    def _observations(self, observations):
+        wrench = self._read()[:, : self.width].to(observations["policy"].dtype)
+        observations["policy"] = torch.cat((observations["policy"], wrench), dim=-1)
+        if "critic" in observations:
+            observations["critic"] = torch.cat((observations["critic"], wrench), dim=-1)
+        return observations
+
+
 class ResetOnSuccess(gym.Wrapper):
     """``episode.reset_on_success``: end an env's episode the step it first succeeds.
 
@@ -307,14 +340,16 @@ def project_env_wrappers(cfg: Any, env: Any, task_name: str) -> Any:
     """The project's wrappers for every env the package builds (``register_env_wrapper`` in
     the scripts' ``setup``): the hybrid controller when enabled (innermost), the policy
     interface, the success reset when ``episode.reset_on_success``, the residual policy when
-    enabled, then the agent's observation history when enabled (outermost, so the base never
-    sees it)."""
+    enabled, the agent's observation history when enabled (after the residual, so the base never
+    sees it), then the measured wrench when ``force_obs.enabled`` (last)."""
     hybrid = getattr(cfg, "hybrid", None)
     if hybrid is None:
         raise ValueError("the hybrid config section is not registered (scripts' setup())")
-    if hybrid.enabled:
+    # on the furniture family the hybrid task's own action term is the controller
+    forge_hybrid = hybrid.enabled and not hybrid.is_furniture(cfg)
+    if forge_hybrid:
         env = HybridController(env, hybrid.controller_cfg(), task_name)
-    env = apply_policy_wrappers(cfg, env, extra_dims=hybrid.extra_dims)
+    env = apply_policy_wrappers(cfg, env, extra_dims=hybrid.extra_dims if forge_hybrid else 0)
     episode = getattr(cfg, "episode", None)
     if episode is None:
         raise ValueError("the episode config section is not registered (scripts' setup())")
@@ -330,6 +365,11 @@ def project_env_wrappers(cfg: Any, env: Any, task_name: str) -> Any:
         raise ValueError("the history config section is not registered (scripts' setup())")
     if history.enabled:
         env = ObservationHistory(env, cfg)
+    force_obs = getattr(cfg, "force_obs", None)
+    if force_obs is None:
+        raise ValueError("the force_obs config section is not registered (scripts' setup())")
+    if force_obs.enabled:
+        env = ForceObservation(env, cfg)  # last: its columns end the observation
     from my_project.residual_demos import check_demo_transitions
 
     check_demo_transitions(cfg)  # sac.demo_transitions made for this exact setup

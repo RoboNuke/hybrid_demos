@@ -527,10 +527,59 @@ rollouts.
 
 | field | type | default | what it does |
 | --- | --- | --- | --- |
-| `hybrid.enabled` | bool | `false` | attach the controller under the world pose; needs `action.world_pose`, `controller.enabled: false`, and `model.actor.bernoulli_action_dims` exactly the selection block (`[4, 5, 6]` for 3 axes) |
-| `hybrid.force_axes` | list[int] | `[1, 1, 1, 0, 0, 0]` | `[x, y, z, Rx, Ry, Rz]` axes the force branch may take (the package's `controller.force_axes`); the selection and force blocks are as wide as its sum |
-| `hybrid.force_target_bounds` | list[float] | `[50, 50, 50, 5, 5, 5]` | the force action in [-1, 1] scales to +/- these, N and Nm |
-| `hybrid.default_force_gains` | list[float] | `[0.1, 0.1, 0.1, 0.01, 0.01, 0.01]` | K_f per axis |
+| `hybrid.enabled` | bool | `false` | Forge: attach the controller under the world pose; needs `action.world_pose`, `controller.enabled: false`, and `model.actor.bernoulli_action_dims` exactly the selection block (`[4, 5, 6]` for 3 axes). Furniture: the agent's action carries the blocks of the hybrid task id, which must be `Isaac-Furniture-OneLeg-FBAbs-ResiP-Hybrid-v0` (and that id needs it on); the selection block is `[10, 11, 12]` |
+| `hybrid.force_axes` | list[int] | `[1, 1, 1, 0, 0, 0]` | Forge only: `[x, y, z, Rx, Ry, Rz]` axes the force branch may take (the package's `controller.force_axes`); the selection and force blocks are as wide as its sum. Furniture: `task.cfg.hybrid.force_axes` |
+| `hybrid.force_target_bounds` | list[float] | `[50, 50, 50, 5, 5, 5]` | Forge only: the force action in [-1, 1] scales to +/- these, N and Nm. Furniture: `task.cfg.hybrid.*` |
+| `hybrid.default_force_gains` | list[float] | `[0.1, 0.1, 0.1, 0.01, 0.01, 0.01]` | Forge only: K_f per axis. Furniture: `task.cfg.hybrid.*` |
+
+**On the furniture family** the env owns the controller: the hybrid task id runs the same law
+on joint torques (Robonuke_Furniture_Bench `mdp/hybrid.py`, its README's "Hybrid force/position
+control on joint torques": the fields, the gains tuned to track like ResiP's IK + joint PD, and
+what the force branch does). `hybrid.enabled` then only says the agent's action is
+`[abs target 10 | selection 3 | force target 3]`; the base still gives the 10-wide abs target and
+the residual passes the blocks on as the agent gave them. The project section's force fields
+stay at their defaults there (the config refuses them and names `task.cfg.hybrid.*`).
+On the furniture family the force branch is `f_d + K_f (f_d - f)` (`task.cfg.hybrid.force_feedforward`,
+on by default), so a still EE settles at the target. **Forge's law has no such term and is weak**:
+pure P, a force axis settles at `K_f f_d / (1 + K_f)` (~9 % of the target at the default K_f 0.1),
+which holds for the Forge hybrid runs (`residual_hybrid_all`).
+
+### The measured wrench in the agent's observation
+
+`force_obs` (`my_project/wrappers.py`, `ForceObservation`) appends the end-effector wrench to
+the RL agent's observation and the critic state, **last** (after the history), so the base's
+input never changes. The furniture family reads the env's joint-torque estimate
+(`env.wrench.filtered`: the external wrench on the EE, robot base frame); Forge its smoothed
+wrist sensor (`force_sensor_smooth`). Raw N / N m: the learner's normalizer sees it like any input.
+
+| field | type | default | what it does |
+| --- | --- | --- | --- |
+| `force_obs.enabled` | bool | `false` | append the wrench; required by the `force_selection` loss |
+| `force_obs.mode` | str | `no_torque` | `no_torque`: force, 3 dims; `with_torque`: force then torque, 6 dims. The `force_selection` term's `mode` must match |
+
+### The force-selection loss
+
+`force_selection` (`my_project/losses.py`, policy target, graph-safe): per selection axis, binary
+cross entropy between the policy's probability of **force** control and
+`sigmoid(scale * (|f_i| - offset))`, `f` the force the agent observed (the stored observation's
+`force_obs` columns): the harder the arm presses on an axis, the more that axis should be
+force-controlled. Needs a hybrid action space and `force_obs.enabled`. With
+`losses.terms[i].graph_safe: true` it runs inside SAC's captured gradient step
+(`tests/residual/GPU/test_force_selection_graph.py`).
+
+| kwarg | type | default | what it does |
+| --- | --- | --- | --- |
+| `scale` | float | required | 1/N: how sharply the target turns from position to force; > 0 |
+| `offset` | float | required | N: the force at which the target is 0.5 |
+| `mode` | str | `no_torque` | `force_obs.mode`: where the force sits in the observation's last columns |
+| `axes` | list[int] | `[0, 1, 2]` | the force components (x, y, z) in selection order, one per selection dim |
+
+`configs/experiments/residual_hybrid_furniture_resip.yaml` puts it together on one_leg in
+ResiP's sim: the ResiP-recipe base (`diffusion_bc_furniture_resip`), the hybrid task id, force on
+x, y, z up to ±10 N, `force_obs` without torque, `force_selection` (weight 1, 0.5 at 3.5 N, scale
+2/N, graph-safe), the residual_sac_furniture recipe otherwise, and no demo transitions (none carry
+the force yet). Point `residual.base_run` at the BC run, then
+`python scripts/train.py --config configs/experiments/residual_hybrid_furniture_resip.yaml --headless`.
 
 `configs/experiments/residual_hybrid_all.yaml` is `residual_sac_all.yaml` (same base, demos,
 history, ensemble and demo-warmed critic) with `hybrid` on: force on x, y, z, targets up to

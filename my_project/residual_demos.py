@@ -571,7 +571,7 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
         columns["next_states"].append(torch.stack([agent_state[t + 1][e] for t in range(steps)])[keep])
         if cfg.hybrid.enabled:
             # the demos ran under position control: every axis selects position, no force target
-            residual = torch.cat((residual, hybrid_demo_block(cfg.hybrid.axes, steps, device)), dim=-1)
+            residual = torch.cat((residual, hybrid_demo_block(cfg.hybrid.axes_for(cfg), steps, device)), dim=-1)
         columns["actions"].append(residual[keep])
         columns["rewards"].append(reward["total"].reshape(-1, 1)[keep])
         columns["terminated"].append(terminated[keep])

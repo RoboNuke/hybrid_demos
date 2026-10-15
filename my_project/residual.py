@@ -84,7 +84,7 @@ class ResidualPolicyWrapper(gym.Wrapper):
         policy = load_base_policy(rc.base_run, rc.base_checkpoint, hooks.device)
         obs_width = hooks.obs_width()
         #: the env's action past the pose (``hybrid``'s selection and force blocks)
-        self.extra_dims = cfg.hybrid.extra_dims
+        self.extra_dims = cfg.hybrid.extra_dims_for(cfg) if cfg.hybrid.enabled else 0
         act_width = hooks.action_width() - self.extra_dims
         if (obs_width, act_width) != (policy.obs_dim, policy.action_dim):
             raise ValueError(

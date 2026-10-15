@@ -138,7 +138,7 @@ def test_drop_keeps_only_transitions_the_policy_could_produce(monkeypatch):
 
 def test_with_hybrid_the_demos_choose_position_and_no_force(monkeypatch):
     plain, _, _ = run(monkeypatch, history=False)
-    out, stats, _ = run(monkeypatch, history=False, hybrid=SimpleNamespace(enabled=True, axes=3))
+    out, stats, _ = run(monkeypatch, history=False, hybrid=SimpleNamespace(enabled=True, axes_for=lambda cfg: 3))
     pose = plain["actions"].shape[1]
     assert out["actions"].shape[1] == pose + 6
     assert torch.equal(out["actions"][:, :pose], plain["actions"])

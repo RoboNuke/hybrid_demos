@@ -15,6 +15,7 @@ from my_project.wrappers import hybrid_demo_block
 
 def _cfg(bernoulli=(4, 5, 6), world_pose=True, controller=False):
     return SimpleNamespace(
+        task_name="Isaac-Forge-PegInsert-Direct-v0",
         action=SimpleNamespace(world_pose=world_pose),
         controller=SimpleNamespace(enabled=controller),
         model=SimpleNamespace(actor=SimpleNamespace(bernoulli_action_dims=list(bernoulli))),
