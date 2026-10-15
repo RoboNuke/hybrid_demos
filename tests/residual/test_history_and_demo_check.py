@@ -125,3 +125,17 @@ def test_a_field_added_later_at_its_default_does_not_invalidate_a_file(tmp_path)
     residual_demos.check_demo_transitions(fake_cfg(path, **{"residual.action_scale_fraction": 0.1}))
     with pytest.raises(ValueError, match="action_scale_fraction"):
         residual_demos.check_demo_transitions(fake_cfg(path, **{"residual.action_scale_fraction": 0.3}))
+
+
+def test_physx_buffer_capacities_do_not_invalidate_a_file_even_one_that_recorded_them(tmp_path):
+    path = tmp_path / "demos.pt"
+    made = residual_demos.demo_fingerprint(fake_cfg(path))
+    # a file made before the buffers were allowed to differ holds them in its fingerprint
+    made["task_cfg"]["sim.physx.gpu_collision_stack_size"] = 2**30
+    torch.save({"transitions": {}, "meta": {"fingerprint": made}}, path)
+    cfg = fake_cfg(path)
+    cfg.root.task.cfg["sim"] = {"physx": {"gpu_collision_stack_size": 2**28, "gpu_max_rigid_contact_count": 2**20}}
+    residual_demos.check_demo_transitions(cfg)
+    cfg.root.task.cfg.sim.physx["solver_type"] = 0  # a real physics setting still counts
+    with pytest.raises(ValueError, match="solver_type"):
+        residual_demos.check_demo_transitions(cfg)

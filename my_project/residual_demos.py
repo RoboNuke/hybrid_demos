@@ -78,6 +78,9 @@ TASK_DIFF_ALLOWED = (
     "observation_space",
     "state_space",
     "action_space",
+    # PhysX GPU buffer capacities: how much memory is reserved, not how the sim behaves (an
+    # overflow is a PhysX error, never a silent change)
+    "sim.physx.gpu_",
 )
 
 #: per-episode randomization ranges a recording may hold narrower than the experiment (every
@@ -137,7 +140,7 @@ def _leaves(data: Any, prefix: str = "") -> Dict[str, Any]:
 
 
 def _allowed(path: str) -> bool:
-    return any(path == a or (a.endswith(".") and path.startswith(a)) for a in TASK_DIFF_ALLOWED)
+    return any(path == a or (a.endswith((".", "_")) and path.startswith(a)) for a in TASK_DIFF_ALLOWED)
 
 
 def demo_fingerprint(cfg: Any) -> Dict[str, Any]:
@@ -175,6 +178,8 @@ def check_demo_transitions(cfg: Any) -> None:
         diff = sorted(
             k for k in set(made_l) | set(want_l)
             if made_l.get(k, "<unset>") != want_l.get(k, "<unset>")
+            # a file made before a field was allowed to differ still holds it
+            and not (k.startswith("task_cfg.") and _allowed(k[len("task_cfg."):]))
             # a field added after the file was made, at its default: what the file was made with
             and not (k not in made_l and k in defaults and want_l.get(k) == defaults[k])
         )
