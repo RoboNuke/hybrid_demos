@@ -26,9 +26,11 @@ task:
 
 trainer:
   learner: sac
-  total_timesteps: 103040
-  write_interval: 2240
-  checkpoint_interval: 4480
+  # 12 h of robot time: 43200 s at 10 Hz, rounded up to whole 700-step episodes (618)
+  total_timesteps: 432600
+  # every 10 episodes (7000 steps), log and checkpoint together
+  write_interval: 7000
+  checkpoint_interval: 7000
   log_memory_stats: false
 
 memory:
