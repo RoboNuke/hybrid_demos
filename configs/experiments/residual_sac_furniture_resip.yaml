@@ -34,7 +34,8 @@ trainer:
   log_memory_stats: false
 
 memory:
-  memory_size: 105000
+  # the newest 100k transitions (~143 episodes); older data is dropped
+  memory_size: 100000
 
 sac:
   batch_size: 256
@@ -51,10 +52,12 @@ sac:
   gradient_steps: 10
   policy_delay: 10
   learning_starts: 0
-  policy_learning_starts: 1000
+  # 2 episodes of critic-only warm-up
+  policy_learning_starts: 1400
   demo_transitions: data/furniture_one_leg_resip/transitions/residual_sac_furniture_resip.pt
   demo_sampling_start: 0
-  demo_sampling_end: 22400
+  # demos sampled for the first 10 episodes
+  demo_sampling_end: 7000
 
 model:
   actor:
