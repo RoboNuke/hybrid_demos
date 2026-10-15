@@ -24,6 +24,12 @@ exactly one episode. Per episode, from the true (noise-free) sensor force:
 * success: the env's success check held at any step; engaged: its engage check did;
 * the mean and the maximum contact-force magnitude over the episode (N).
 
+On a FurnitureBench run (``Isaac-Furniture-*``, a manager-based env that ends an episode on
+assembly or a part out of bounds) each env's FIRST episode of the round counts: success is the
+env's ``success`` termination firing in it, plus the share that ended out of bounds and the
+mean episode length; there is no force or engagement. Use
+``--eval_config configs/eval/residual_watch_furniture.yaml`` (the run's own 70 s episodes).
+
 Logged to its own wandb run (``<run name>_eval``, the training run's project and group), at
 ``step`` = the checkpoint's step: ``eval/success_rate``, ``eval/engaged_rate``,
 ``eval/force_mean`` (mean over episodes of each episode's mean force), ``eval/force_max_mean``,
@@ -128,8 +134,12 @@ def _find_residual(env: Any):
 
 
 def evaluate(env: Any, policy: Any, seed: int) -> Dict[str, Any]:
-    """One round on every env: success, engagement, mean and max force per episode."""
+    """One round on every env: success, engagement, mean and max force per episode
+    (FurnitureBench: :func:`evaluate_furniture`)."""
     import torch
+
+    if hasattr(env.unwrapped, "termination_manager"):
+        return evaluate_furniture(env, policy, seed)
 
     from robonuke_rl_core.evaluation import env_states, force_env_reset
 
@@ -170,6 +180,58 @@ def evaluate(env: Any, policy: Any, seed: int) -> Dict[str, Any]:
         "force_means": force_mean.cpu().tolist(),
         "episodes": n,
     }
+
+
+def evaluate_furniture(env: Any, policy: Any, seed: int) -> Dict[str, Any]:
+    """One round on every env of a manager-based FurnitureBench env: each env's first episode
+    (the env resets an env on its own when it ends): success, out of bounds, length."""
+    import torch
+
+    from robonuke_rl_core.envs.build import reseed_env
+    from robonuke_rl_core.evaluation import env_states, force_env_reset
+
+    u = env.unwrapped
+    n = int(u.num_envs)
+    reseed_env(env, seed)
+    observations, states = force_env_reset(env)
+    if hasattr(policy, "reset"):
+        policy.reset()
+    manager = u.termination_manager
+    alive = torch.ones(n, dtype=torch.bool, device=u.device)
+    success = torch.zeros(n, dtype=torch.bool, device=u.device)
+    out = torch.zeros(n, dtype=torch.bool, device=u.device)
+    length = torch.zeros(n, dtype=torch.long, device=u.device)
+    for _ in range(int(u.max_episode_length)):
+        with torch.no_grad():
+            actions = policy(observations, states)
+        observations, _, terminated, truncated, _ = env.step(actions)
+        states = env_states(env)
+        length += alive.long()
+        success |= alive & manager.get_term("success").reshape(-1).bool()
+        if "part_out_of_limits" in manager.active_terms:
+            out |= alive & manager.get_term("part_out_of_limits").reshape(-1).bool()
+        alive &= ~(terminated.reshape(-1).bool() | truncated.reshape(-1).bool())
+        if not alive.any():
+            break
+    return {
+        "success_rate": float(success.float().mean()),
+        "out_of_bounds_rate": float(out.float().mean()),
+        "length_mean": float(length.float().mean()),
+        "lengths": length.cpu().tolist(),
+        "episodes": n,
+    }
+
+
+#: list-valued results logged as histograms, under these names
+HISTOGRAMS = {"force_max": "force_max_hist", "force_means": "force_mean_hist", "lengths": "length_hist"}
+
+
+def _summary(result: Dict[str, Any]) -> str:
+    if "force_mean" in result:
+        return (f"success {result['success_rate']:.3f}, engaged {result['engaged_rate']:.3f}, force mean "
+                f"{result['force_mean']:.2f} N, max mean {result['force_max_mean']:.2f} N")
+    return (f"success {result['success_rate']:.3f}, out of bounds {result['out_of_bounds_rate']:.3f}, "
+            f"length mean {result['length_mean']:.0f}")
 
 
 def _watch(args, overrides, setup) -> int:
@@ -246,26 +308,16 @@ def _watch(args, overrides, setup) -> int:
           f"{'sampled' if args.stochastic else 'deterministic (mean)'}", flush=True)
 
     def record(step: int, label: str, result: Dict[str, Any]) -> None:
+        logged = {f"eval/{k}": v for k, v in result.items() if k != "episodes" and k not in HISTOGRAMS}
+        logged.update({f"eval/{HISTOGRAMS[k]}": wandb.Histogram(v) for k, v in result.items() if k in HISTOGRAMS})
         run.log(
-            {
-                "eval/success_rate": result["success_rate"],
-                "eval/engaged_rate": result["engaged_rate"],
-                "eval/force_mean": result["force_mean"],
-                "eval/force_max_mean": result["force_max_mean"],
-                "eval/force_max_hist": wandb.Histogram(result["force_max"]),
-                "eval/force_mean_hist": wandb.Histogram(result["force_means"]),
-            },
+            logged,
             step=step,
             commit=True,  # publish now; otherwise wandb holds a step until a later one arrives
         )
         with results_path.open("a") as f:
             f.write(json.dumps({"step": step, "label": label, **result}) + "\n")
-        print(
-            f"[watch] {label} (step {step}): success {result['success_rate']:.3f}, engaged "
-            f"{result['engaged_rate']:.3f}, force mean {result['force_mean']:.2f} N, max mean "
-            f"{result['force_max_mean']:.2f} N over {result['episodes']} episodes",
-            flush=True,
-        )
+        print(f"[watch] {label} (step {step}): {_summary(result)} over {result['episodes']} episodes", flush=True)
 
     print(f"[watch] {run_dir}: {int(env.num_envs)} envs, seed {seed}, results to {results_path}", flush=True)
     try:

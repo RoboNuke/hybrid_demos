@@ -394,6 +394,11 @@ run (`<run>_eval`, same group) at the checkpoint's step, and appends each result
 python scripts/watch_residual_eval.py --run runs/hybrid_demo_pih/residual_sac/residual_sac_a0
 ```
 
+On a FurnitureBench residual run, pass `--eval_config configs/eval/residual_watch_furniture.yaml`
+(100 envs, the run's own episode length): each env's first episode counts, and it logs
+`eval/success_rate`, `eval/out_of_bounds_rate`, `eval/length_mean` and `eval/length_hist`
+(no force or engagement on that env).
+
 **Deterministic vs sampled.** The watcher evaluates the SAC policy's **mean** action by
 default. Training only ever values **sampled** actions (the entropy target keeps the policy's
 spread wide), and the mean alone can be a much worse policy: 15–40 points lower on these runs.
