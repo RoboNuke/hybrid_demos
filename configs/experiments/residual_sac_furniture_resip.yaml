@@ -2,7 +2,7 @@
 # residual_sac_furniture recipe unchanged: 10 critics (target min over a random 2, 10 critic
 # updates per env step, the actor once per env step on the ensemble mean), one env, an 8-step
 # observation history of the end-effector position and velocity, the critic warmed up on the
-# demos (symmetric sampling). The residual is bounded at 10% of the base's normalized action
+# demos (symmetric sampling). The residual is bounded at 2% of the base's normalized action
 # range, per dim, over all 10 absolute action dims (goal position 3, goal rot6d 6, gripper).
 # The env: furniture_resip.yaml (Isaac-Furniture-OneLeg-FBAbs-ResiP-v0), exact state, no
 # observation noise. The env ends an episode on assembly itself, so no reset_on_success.
@@ -43,8 +43,8 @@ sac:
   critic_lr: 3.0e-4
   entropy_lr: 3.0e-4
   initial_entropy_value: 1.0e-2
-  # 10 residual dims: -|A| / 2
-  target_entropy: -5.0
+  # well below -|A| / 2 (-5): SAC at -5 explored near the full bound
+  target_entropy: -15.0
   cuda_graph: true
   num_critics: 10
   critic_subset: 2
@@ -69,7 +69,8 @@ residual:
   base_run: runs/hybrid_demo_furniture/diffusion_bc_furniture_resip/diffusion_bc_furniture_resip_a0
   base_checkpoint: actor_chkpt_best_success_rate.pt
   action_scale: null
-  action_scale_fraction: 0.1
+  # 2% of the demos' half range: about 3.8 / 4.0 / 2.0 mm of goal position
+  action_scale_fraction: 0.02
 
 history:
   enabled: true
