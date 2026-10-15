@@ -122,7 +122,8 @@ class ManagerHooks(EnvHooks):
     def hook_observations(self, fn) -> None:
         manager = self.unwrapped.observation_manager
         original = manager.compute
-        manager.compute = lambda: fn(original())
+        # Isaac Lab calls compute(update_history=...): pass its arguments through
+        manager.compute = lambda *args, **kwargs: fn(original(*args, **kwargs))
 
 
 def hooks_for(unwrapped: Any) -> EnvHooks:

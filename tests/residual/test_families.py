@@ -127,7 +127,8 @@ class FakeManager:
         self.single_action_space = gym.spaces.Box(-1, 1, (8,))
         self.num_envs, self.device = 2, "cpu"
         self.episode_length_buf = torch.tensor([0, 3])
-        self.observation_manager = SimpleNamespace(compute=lambda: {"policy": torch.zeros(2, 49)})
+        # Isaac Lab's signature: compute(update_history=False)
+        self.observation_manager = SimpleNamespace(compute=lambda update_history=False: {"policy": torch.zeros(2, 49)})
         self.cfg = SimpleNamespace()
 
 
@@ -152,6 +153,7 @@ def test_manager_hooks_widen_the_policy_group_and_post_process_the_manager():
     assert env.observation_space["policy"].shape == (2, 57)
     hooks.hook_observations(lambda o: {"policy": torch.cat((o["policy"], torch.ones(2, 8)), dim=-1)})
     assert env.observation_manager.compute()["policy"].shape == (2, 57)
+    assert env.observation_manager.compute(update_history=True)["policy"].shape == (2, 57)  # as reset/step call it
 
 
 def test_an_unknown_env_is_refused():
