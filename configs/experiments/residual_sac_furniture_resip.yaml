@@ -1,0 +1,74 @@
+# Residual SAC on the frozen ResiP-setup U-Net (diffusion_bc_furniture_resip), the
+# residual_sac_furniture recipe unchanged: 10 critics (target min over a random 2, 10 critic
+# updates per env step, the actor once per env step on the ensemble mean), one env, an 8-step
+# observation history of the end-effector position and velocity, the critic warmed up on the
+# demos (symmetric sampling). The residual is bounded at 10% of the base's normalized action
+# range, per dim, over all 10 absolute action dims (goal position 3, goal rot6d 6, gripper).
+# The env: furniture_resip.yaml (Isaac-Furniture-OneLeg-FBAbs-ResiP-v0), exact state, no
+# observation noise. The env ends an episode on assembly itself, so no reset_on_success.
+#
+# Convert the demos into this run's transition format (offline, no sim), then train:
+#   python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_furniture_resip.yaml
+#   python scripts/train.py --config configs/experiments/residual_sac_furniture_resip.yaml --headless
+base: ../base/furniture_resip.yaml
+
+experiment:
+  num_agents: 1
+  seed: 42
+
+wandb:
+  group: residual_sac_furniture_resip
+
+task:
+  cfg:
+    scene:
+      num_envs: 1
+
+trainer:
+  learner: sac
+  total_timesteps: 103040
+  write_interval: 2240
+  checkpoint_interval: 4480
+  log_memory_stats: false
+
+memory:
+  memory_size: 105000
+
+sac:
+  batch_size: 256
+  actor_lr: 3.0e-4
+  critic_lr: 3.0e-4
+  entropy_lr: 3.0e-4
+  initial_entropy_value: 1.0e-2
+  # 10 residual dims: -|A| / 2
+  target_entropy: -5.0
+  cuda_graph: true
+  num_critics: 10
+  critic_subset: 2
+  actor_q_reduction: mean
+  gradient_steps: 10
+  policy_delay: 10
+  learning_starts: 0
+  policy_learning_starts: 1000
+  demo_transitions: data/furniture_one_leg_resip/transitions/residual_sac_furniture_resip.pt
+  demo_sampling_start: 0
+  demo_sampling_end: 22400
+
+model:
+  actor:
+    last_layer_scale: 0.1
+
+residual:
+  enabled: true
+  # the BC run directory (scripts/train_bc.py writes runs/<wandb.project>/<group>/<group>_a0)
+  base_run: runs/hybrid_demo_furniture/diffusion_bc_furniture_resip/diffusion_bc_furniture_resip_a0
+  base_checkpoint: actor_chkpt_best_success_rate.pt
+  action_scale: null
+  action_scale_fraction: 0.1
+
+history:
+  enabled: true
+  length: 8
+  terms:
+    - ee_pos
+    - ee_pos_vel

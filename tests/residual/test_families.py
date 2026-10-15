@@ -216,7 +216,7 @@ def test_furniture_demos_yield_a_transition_per_action_with_the_recorded_reward(
     monkeypatch.setattr(residual_demos, "forge_rewards", lambda *a, **k: pytest.fail("Forge's reward must not run on furniture demos"))
     cfg = SimpleNamespace(
         task_name="Isaac-Furniture-OneLeg-FB-v0",
-        task_cfg=SimpleNamespace(),
+        task_cfg=SimpleNamespace(sim=SimpleNamespace(dt=1 / 120), decimation=12),
         residual=SimpleNamespace(action_scale=[0.5] * 8, action_scale_fraction=0.1, demo_actions_beyond_scale="store"),
         history=SimpleNamespace(enabled=False),
         hybrid=SimpleNamespace(enabled=False),
@@ -226,7 +226,8 @@ def test_furniture_demos_yield_a_transition_per_action_with_the_recorded_reward(
     assert stats["transitions"] == 4 + 3 and stats["demo_steps"] == 7
     assert out["observations"][:4, 0].tolist() == [0.0, 1.0, 2.0, 3.0]
     assert out["next_observations"][:4, 0].tolist() == [1.0, 2.0, 3.0, 4.0]  # the last action's next state too
-    assert out["rewards"].flatten().tolist() == [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+    # the recorded 1 at assembly, paid as the env pays it: x step_dt (0.1 at 10 Hz)
+    assert out["rewards"].flatten().tolist() == pytest.approx([0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0])
     assert out["terminated"].flatten().tolist() == [False, False, False, True, False, False, False]
     assert torch.all(out["actions"] == 1.0)  # (0.5 - 0) / 0.5
     assert stats["success_rate"] == 0.5 and out["states"].shape == (7, 49 + 8)
@@ -236,3 +237,27 @@ def test_the_episode_limit_is_the_managers_full_length_on_furniture():
     task = SimpleNamespace(episode_length_s=30.0, sim=SimpleNamespace(dt=1 / 120), decimation=6)
     assert residual_demos._episode_limit(SimpleNamespace(task_name="Isaac-Furniture-OneLeg-FB-v0", task_cfg=task)) == 600
     assert residual_demos._episode_limit(SimpleNamespace(task_name="forge", task_cfg=task)) == 599
+
+
+def test_furniture_abs_demos_read_the_importers_absolute_columns(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    T = 3
+    table = pa.table({
+        "observation.state": pa.array([[0.0] * 49] * T, pa.list_(pa.float32(), 49)),
+        "action": pa.array([[0.0] * 8] * T, pa.list_(pa.float32(), 8)),
+        "observation.next_state": pa.array([[0.0] * 49] * T, pa.list_(pa.float32(), 49)),
+        "observation.state_abs": pa.array([[float(t)] * 61 for t in range(T)], pa.list_(pa.float32(), 61)),
+        "action.abs": pa.array([[0.5] * 10] * T, pa.list_(pa.float32(), 10)),
+        "observation.next_state_abs": pa.array([[float(t + 1)] * 61 for t in range(T)], pa.list_(pa.float32(), 61)),
+        "reward": pa.array([0.0, 0.0, 1.0], pa.float32()),
+    })
+    pq.write_table(table, tmp_path / "ep.parquet")
+    episode = {"file": "ep.parquet", "success": True}
+    out = residual_demos._read_episode(tmp_path, episode, 61, torch.device("cpu"), families.FURNITURE, absolute=True)
+    assert out["state"].shape == (T + 1, 61) and out["action"].shape == (T, 10)
+    assert out["state"][:, 0].tolist() == [0.0, 1.0, 2.0, 3.0] and out["transitions"] == T
+    assert out["success"] and out["reward"].flatten().tolist() == [0.0, 0.0, 1.0]
+    with pytest.raises(ValueError, match="base policy takes 61"):
+        residual_demos._read_episode(tmp_path, episode, 61, torch.device("cpu"), families.FURNITURE, absolute=False)

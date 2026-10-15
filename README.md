@@ -302,8 +302,18 @@ checkpoints every 100; the action-error breakdown is `pos` / `rot` / `gripper`).
 `residual_sac_furniture` is `residual_sac_nut` over the 8 FurnitureBench action dims (the
 residual's rotation part is logged as `residual/rot_deg`, the angle of the quaternion
 correction), with an 8-step history of `ee_pos` and `ee_pos_vel`; its demo transitions use
-the recorded reward (nothing is recomputed) and every action's recorded next state, with
-the last transition `terminated` when the demo succeeded.
+the recorded reward times the env's `step_dt` (Isaac Lab's reward manager scales every term by
+it, so that is what the env pays online) and every action's recorded next state, with the last
+transition `terminated` when the demo succeeded.
+`residual_sac_furniture_resip` is the same recipe on the ResiP setup (`furniture_resip.yaml`,
+no observation noise) over the 10 absolute action dims, on the `diffusion_bc_furniture_resip`
+U-Net; its demo transitions read the importer's `observation.state_abs` / `action.abs` /
+`observation.next_state_abs`:
+
+```bash
+python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_furniture_resip.yaml
+python scripts/train.py --config configs/experiments/residual_sac_furniture_resip.yaml --headless
+```
 
 ## Nut threading (fixed dynamics)
 

@@ -40,10 +40,12 @@ substep, here the next frame's. Measured on the search demos: 1.4e-5 at most per
 **FurnitureBench demos** (``Isaac-Furniture-*-FB-v0``, imported by
 ``scripts/import_furniture_demos.py``) go through the same conversion with the family's
 columns: the recorded next state is in the row (``observation.next_state``), so every one of
-the ``T`` actions makes a transition; the reward is the recorded one (the env's own sparse
-assembly reward, not recomputed); the critic state is the policy observation (the env has no
+the ``T`` actions makes a transition; the reward is the recorded one (1 at the assembly step)
+times the env's ``step_dt``, because Isaac Lab's reward manager scales every term by it (so it
+is what the env pays online, 0.1 at 10 Hz); the critic state is the policy observation (the env has no
 critic group); the last transition is ``terminated`` when the demo succeeded (the env ends an
-episode on assembly). Imported demos carry no recording session, so there is nothing to compare
+episode on assembly). On the absolute interface (``*-FBAbs-*``) the columns are the
+importer's ``observation.state_abs`` / ``action.abs`` / ``observation.next_state_abs``. Imported demos carry no recording session, so there is nothing to compare
 the experiment's task config with, and ``--check_in_sim`` is Forge-only.
 
 ``meta["fingerprint"]`` records what the transitions depend on (the residual, the history,
@@ -93,6 +95,20 @@ FURNITURE_COLUMNS = {
     "action": 8,
     "observation.next_state": None,
     "reward": 1,
+}
+#: the absolute rot6d interface (``*-FBAbs-*``): observation 61, action 10
+FURNITURE_ABS_COLUMNS = {
+    "observation.state_abs": None,
+    "action.abs": 10,
+    "observation.next_state_abs": None,
+    "reward": 1,
+}
+#: column -> the frame key the conversion uses
+FRAME_KEYS = {
+    "action": "action",
+    "observation.state_abs": "state",
+    "action.abs": "action",
+    "observation.next_state_abs": "next_state",
 }
 COLUMNS = {
     "observation.state": None,  # the policy observation; width from the base policy
@@ -334,7 +350,10 @@ def _make(args, overrides, setup) -> int:
     torch.manual_seed(int(cfg.experiment.seed))
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     policy = load_base_policy(cfg.residual.base_run, cfg.residual.base_checkpoint, device)
-    frames = [_read_episode(dataset, e, policy.obs_dim, device, family) for e in episodes]
+    from my_project.families import is_abs
+
+    absolute = is_abs(cfg.task_name)
+    frames = [_read_episode(dataset, e, policy.obs_dim, device, family, absolute) for e in episodes]
     limit = _episode_limit(cfg)
     for episode, f in zip(episodes, frames):
         if f["transitions"] > limit:
@@ -415,11 +434,13 @@ def _read_columns(dataset: Path, episode: dict, columns: Dict[str, Any], device)
         values = torch.from_numpy(values.reshape(table.num_rows, -1).copy()).to(device, torch.float32)
         if width is not None and values.shape[1] != width:
             raise ValueError(f"{episode['file']}: {name} is {values.shape[1]} wide, expected {width}")
-        out[name.split(".", 1)[-1] if name != "action" else "action"] = values
+        out[FRAME_KEYS.get(name, name.split(".", 1)[-1])] = values
     return out
 
 
-def _read_episode(dataset: Path, episode: dict, obs_dim: int, device, family: str = "forge") -> Dict[str, Any]:
+def _read_episode(
+    dataset: Path, episode: dict, obs_dim: int, device, family: str = "forge", absolute: bool = False
+) -> Dict[str, Any]:
     """One demo's frames: ``state`` (one more than the transitions), ``critic``, ``action``,
     ``transitions`` (how many ``t -> t+1`` the demo yields) and the family's reward material."""
     import torch
@@ -427,7 +448,7 @@ def _read_episode(dataset: Path, episode: dict, obs_dim: int, device, family: st
     from my_project.families import FURNITURE
 
     if family == FURNITURE:
-        out = _read_columns(dataset, episode, FURNITURE_COLUMNS, device)
+        out = _read_columns(dataset, episode, FURNITURE_ABS_COLUMNS if absolute else FURNITURE_COLUMNS, device)
         if out["state"].shape[1] != obs_dim:
             raise ValueError(f"{episode['file']}: observation.state is {out['state'].shape[1]} wide; the base policy takes {obs_dim}")
         if out["next_state"].shape[1] != obs_dim:
@@ -535,7 +556,8 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
                 force_threshold=f["force_threshold"][now],
             )
         else:  # the recorded (sparse) reward; the env ends a successful episode on assembly
-            total = f["reward"][now, 0]
+            # Isaac Lab's reward manager pays weight x step_dt: the recorded 1 is 1 x step_dt online
+            total = f["reward"][now, 0] * float(env_cfg.sim.dt * env_cfg.decimation)
             reward = {"total": total, "curr_success": total > 0}
             terminated[-1, 0] = f["success"]
         columns["observations"].append(torch.stack([agent_obs[t][e] for t in range(steps)])[keep])
