@@ -1,0 +1,15 @@
+# diffusion_bc_furniture_resip on ResiP's own 50 one_leg low teleop demos instead of our
+# scripted ones -- the only change -- to tell whether our demos or our pipeline cap BC.
+# The demos come processed (robust-rearrangement zarr); import them first:
+#   aws s3 sync --no-sign-request \
+#       s3://iai-robust-rearrangement/data/processed/diffik/sim/one_leg/teleop/low/ ~/resip_data/one_leg_teleop_low/
+#   python scripts/import_resip_zarr.py --zarr ~/resip_data/one_leg_teleop_low/<name>.zarr \
+#       --out data/furniture_one_leg_resip_teleop
+#   python scripts/train_bc.py --config configs/experiments/diffusion_bc_furniture_resip_teleop.yaml --headless
+base: diffusion_bc_furniture_resip.yaml
+
+wandb:
+  group: diffusion_bc_furniture_resip_teleop
+
+bc:
+  dataset: data/furniture_one_leg_resip_teleop

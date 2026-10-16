@@ -297,6 +297,19 @@ python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos_
 python scripts/train_bc.py --config configs/experiments/diffusion_bc_furniture_resip.yaml --headless
 ```
 
+**ResiP's own demos.** ResiP publishes its 50 one_leg low teleop demos only processed, as a
+robust-rearrangement `.zarr`; `scripts/import_resip_zarr.py` (`my_project/demos/resip_zarr.py`,
+needs `pip install zarr`) writes them in the same absolute rot6d columns (their state has our
+terms, order and rot6d convention; the parts' quaternions become rot6d; `action/pos` is our
+`action.abs`). There are no joint positions in the zarr, so they cannot be replayed from their
+start state. `diffusion_bc_furniture_resip_teleop` is `diffusion_bc_furniture_resip` on them:
+
+```bash
+aws s3 sync --no-sign-request s3://iai-robust-rearrangement/data/processed/diffik/sim/one_leg/teleop/low/ ~/resip_data/one_leg_teleop_low/
+python scripts/import_resip_zarr.py --zarr ~/resip_data/one_leg_teleop_low/<name>.zarr --out data/furniture_one_leg_resip_teleop
+python scripts/train_bc.py --config configs/experiments/diffusion_bc_furniture_resip_teleop.yaml --headless
+```
+
 `diffusion_bc_furniture` is the peg-insert recipe on `data/furniture_one_leg` (1000 epochs,
 checkpoints every 100; the action-error breakdown is `pos` / `rot` / `gripper`).
 `residual_sac_furniture` is `residual_sac_nut` over the 8 FurnitureBench action dims (the
