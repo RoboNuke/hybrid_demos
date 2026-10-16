@@ -17,7 +17,8 @@ def write_zarr(path, lengths, success):
     parts = rng.normal(size=(T, 5, 7)).astype(np.float32)
     parts[..., 3:7] = [0.0, 0.0, 0.0, 1.0]  # identity quats (xyzw)
     parts[0, 0, 3:7] = [0.0, 0.0, np.sin(np.pi / 4), np.cos(np.pi / 4)]  # 90 deg about z
-    z.create_array("parts_poses", data=parts.reshape(T, 35))
+    obstacle = np.tile(np.array([0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], np.float32), (T, 1))
+    z.create_array("parts_poses", data=np.concatenate([parts.reshape(T, 35), obstacle], axis=1))  # ResiP's 42
     z.create_group("action").create_array("pos", data=rng.normal(size=(T, 10)).astype(np.float32))
     z.create_array("episode_ends", data=np.cumsum(lengths).astype(np.int64))
     z.create_array("reward", data=np.zeros(T, np.float32))

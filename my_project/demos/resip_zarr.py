@@ -8,7 +8,8 @@ after the last action is already dropped):
 
 * ``robot_state`` (16): ``ee_pos 3, ee_rot6d 6, ee_pos_vel 3, ee_ori_vel 3, gripper_width 1``
   -- the same terms, order and rot6d convention (first two **rows** of R) as ours;
-* ``parts_poses`` (35): 5 parts x ``[pos 3, quat 4 (xyzw)]``, FurnitureBench's AprilTag frame;
+* ``parts_poses`` (35, or 42 with the front obstacle's fixed pose appended -- dropped):
+  5 parts x ``[pos 3, quat 4 (xyzw)]``, FurnitureBench's AprilTag frame;
 * ``action/pos`` (10): ``[ee_pos + dpos, rot6d(R_ee R_dq), sign(gripper)]`` -- the absolute
   target, built exactly as ``furniture_lab.demos.fb_abs_action`` builds ours (theirs clips the
   delta first: 2.5 cm, 0.35 rad);
@@ -69,6 +70,10 @@ def import_resip_zarr(
     ends = np.asarray(z["episode_ends"][:], dtype=np.int64)
     robot_state = np.asarray(z["robot_state"][:], dtype=np.float32)
     parts_poses = np.asarray(z["parts_poses"][:], dtype=np.float32)
+    # ResiP's sim appends the front obstacle's pose (a 6th, fixed body) after the 5 parts
+    if parts_poses.shape[1] not in (PARTS_DIM, PARTS_DIM + 7):
+        raise ValueError(f"{zarr_path}: parts_poses is {parts_poses.shape[1]} wide; expected 35 (5 parts) or 42 (+ obstacle)")
+    parts_poses = parts_poses[:, :PARTS_DIM]
     actions = np.asarray(z["action/pos"][:], dtype=np.float32)
     n_frames = int(ends[-1])
     for name, arr in (("robot_state", robot_state), ("parts_poses", parts_poses), ("action/pos", actions)):
