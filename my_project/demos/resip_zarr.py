@@ -13,6 +13,10 @@ after the last action is already dropped):
 * ``action/pos`` (10): ``[ee_pos + dpos, rot6d(R_ee R_dq), sign(gripper)]`` -- the absolute
   target, built exactly as ``furniture_lab.demos.fb_abs_action`` builds ours (theirs clips the
   delta first: 2.5 cm, 0.35 rad);
+* frames: ResiP's fork of FurnitureBench puts the robot base on the table surface
+  (``ROBOT_HEIGHT = 0``), 15 mm lower than this port (FurnitureBench's 0.015 clamp); the tag,
+  table and parts coincide, so only the base-frame z of the EE and of the target moves, by
+  ``furniture_lab.tasks.furniture.frames.RESIP_BASE_Z_TO_PORT`` (-0.015);
 * ``reward``, ``skill`` (per frame), ``success`` (per episode); images, ignored here.
 
 Written columns: ``observation.state_abs`` (61: ``robot_state`` + each part as
@@ -75,6 +79,12 @@ def import_resip_zarr(
         raise ValueError(f"{zarr_path}: parts_poses is {parts_poses.shape[1]} wide; expected 35 (5 parts) or 42 (+ obstacle)")
     parts_poses = parts_poses[:, :PARTS_DIM]
     actions = np.asarray(z["action/pos"][:], dtype=np.float32)
+    # ResiP's robot base sits 15 mm lower than the port's (its ROBOT_HEIGHT is 0, ours FB's
+    # 0.015; the table, tag and parts coincide): its base-frame EE z and target z, into ours
+    from furniture_lab.tasks.furniture.frames import RESIP_BASE_Z_TO_PORT
+
+    robot_state[:, 2] += RESIP_BASE_Z_TO_PORT
+    actions[:, 2] += RESIP_BASE_Z_TO_PORT
     n_frames = int(ends[-1])
     for name, arr in (("robot_state", robot_state), ("parts_poses", parts_poses), ("action/pos", actions)):
         if arr.shape[0] != n_frames:

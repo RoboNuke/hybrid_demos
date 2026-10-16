@@ -48,3 +48,16 @@ def test_import_splits_episodes_drops_failures_and_trains(tmp_path):
     assert demos.num_episodes == 2
     again = import_resip_zarr(tmp_path / "d.zarr", tmp_path / "out")
     assert again["saved"] == 0 and again["skipped"] == 2  # appending is idempotent
+
+
+def test_ee_and_target_z_move_into_the_ports_base_frame(tmp_path):
+    z = write_zarr(tmp_path / "d.zarr", [3], [1])
+    r = import_resip_zarr(tmp_path / "d.zarr", tmp_path / "out")
+    assert r["saved"] == 1
+    demos = load_lerobot(str(tmp_path / "out"), "observation.state_abs", "action.abs")
+    import pyarrow.parquet as pq, glob
+
+    t = pq.read_table(glob.glob(str(tmp_path / "out" / "data" / "*" / "*.parquet"))[0]).to_pydict()
+    np.testing.assert_allclose(np.array(t["observation.state_abs"])[:, 2], z["robot_state"][:, 2] - 0.015, atol=1e-6)
+    np.testing.assert_allclose(np.array(t["action.abs"])[:, 2], z["action"]["pos"][:, 2] - 0.015, atol=1e-6)
+    np.testing.assert_allclose(np.array(t["observation.state_abs"])[:, 0], z["robot_state"][:, 0], atol=1e-6)  # x as is
