@@ -89,3 +89,21 @@ def test_import_scales_resips_shrunk_rotation_deltas_back_up(tmp_path):
     t = pq.read_table(glob.glob(str(tmp_path / "out" / "data" / "*" / "*.parquet"))[0]).to_pydict()
     want = np.stack([mat_to_rot6d(m) for m in R @ Rotation.from_rotvec(raw).as_matrix()])
     np.testing.assert_allclose(np.array(t["action.abs"])[:, 3:9], want, atol=1e-3)
+
+
+def test_the_resip_task_keeps_the_recorded_obstacle(tmp_path):
+    """42-wide parts_poses: the ResiP task's state_abs is 70, the obstacle's recorded position
+    (here (0.5, 0, 0) in the tag frame) in the last 9; another FBAbs task gets 61."""
+    import glob, pyarrow.parquet as pq
+    from furniture_lab.tasks.furniture.frames import TAG_POS_W, TAG_ROT_W
+
+    write_zarr(tmp_path / "d.zarr", [3], [1])
+    import_resip_zarr(tmp_path / "d.zarr", tmp_path / "resip")
+    t = pq.read_table(glob.glob(str(tmp_path / "resip" / "data" / "*" / "*.parquet"))[0]).to_pydict()
+    s = np.array(t["observation.state_abs"])
+    assert s.shape[1] == 70
+    np.testing.assert_allclose(s[:, 61:64], np.tile([0.5, 0.0, 0.0], (3, 1)), atol=1e-5)
+    np.testing.assert_allclose(s[0, 64:70], np.asarray(TAG_ROT_W).T[:2].reshape(6), atol=1e-5)
+    import_resip_zarr(tmp_path / "d.zarr", tmp_path / "port", task_name="Isaac-Furniture-OneLeg-FBAbs-v0")
+    t = pq.read_table(glob.glob(str(tmp_path / "port" / "data" / "*" / "*.parquet"))[0]).to_pydict()
+    assert np.array(t["observation.state_abs"]).shape[1] == 61

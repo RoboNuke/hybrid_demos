@@ -17,7 +17,8 @@ action, is dropped, as the recorder drops it):
 * ``action`` (8): the action as recorded;
 * the absolute rot6d interface (``Isaac-Furniture-OneLeg-FBAbs-v0``, ResiP's ``control_mode:
   pos``), derived exactly from the same frames by ``furniture_lab.demos``:
-  ``observation.state_abs`` (61: every orientation as rot6d) and ``action.abs`` (10: the
+  ``observation.state_abs`` (61: every orientation as rot6d; 70 for the ResiP task, the front
+  obstacle's pose appended) and ``action.abs`` (10: the
   target pose the delta commanded, ``[ee_pos + dpos, rot6d(R_ee R_dq), gripper]``);
 * raw material, never trained on by default: ``observation.joint_positions`` (7),
   ``observation.next_state`` (49) / ``observation.next_state_abs`` (61) (the frame after --
@@ -46,6 +47,8 @@ STATE_KEYS = ("ee_pos", "ee_quat", "ee_pos_vel", "ee_ori_vel", "gripper_width", 
 STATE_DIM = 3 + 4 + 3 + 3 + 1 + 35
 ACTION_DIM = 8
 ABS_STATE_DIM, ABS_ACTION_DIM = 61, 10
+#: the front obstacle's ``[pos 3, rot6d 6]`` the ResiP task appends to ``observation.state_abs``
+OBSTACLE_DIM = 9
 CONTROL_HZ = 20.0  # FurnitureSim's env rate, the collector's too (physics 1/120 x 6)
 
 
@@ -87,7 +90,14 @@ def import_demos(
     files: Optional[Iterable[Path]] = None,
     control_hz: float = CONTROL_HZ,
 ) -> Dict[str, Any]:
-    """Convert every demo under ``src`` into the dataset at ``out`` (created or appended)."""
+    """Convert every demo under ``src`` into the dataset at ``out`` (created or appended).
+
+    For the ResiP FBAbs task (``families.observes_obstacle``) ``observation.state_abs`` also
+    carries the front obstacle's pose (70 wide; ``furniture_lab.demos.fb_abs_frames``)."""
+    from my_project.families import observes_obstacle
+
+    obstacle = observes_obstacle(task_name)
+    abs_dim = ABS_STATE_DIM + (OBSTACLE_DIM if obstacle else 0)
     files = list(files) if files is not None else find_demos(src, include_failures)
     if max_demos is not None:
         files = files[:max_demos]
@@ -104,7 +114,8 @@ def import_demos(
             "source": "Robonuke_Furniture_Bench scripts/collect_scripted.py (FurnitureBench pkl)",
             "observation.state": list(STATE_KEYS),
             "action": "[dpos 3 (m, robot frame), dquat 4 (xyzw, EE frame), gripper (<0 open)]",
-            "observation.state_abs": "[ee_pos 3, ee_rot6d 6, ee_pos_vel 3, ee_ori_vel 3, gripper_width 1, parts 5 x [pos 3, rot6d 6]]",
+            "observation.state_abs": "[ee_pos 3, ee_rot6d 6, ee_pos_vel 3, ee_ori_vel 3, gripper_width 1, parts 5 x [pos 3, rot6d 6]"
+            + (", obstacle_front [pos 3, rot6d 6]]" if obstacle else "]"),
             "action.abs": "[goal_pos 3 (m, robot frame), goal_rot6d 6, gripper (<0 open)]",
         },
     )
@@ -125,9 +136,9 @@ def import_demos(
             states = np.concatenate([states, states[-1:]])
         from furniture_lab.demos import fb_abs_frames  # the port's own conversion (NumPy, no sim)
 
-        states_abs, acts_abs = fb_abs_frames(d)
-        if states_abs.shape != (T + 1, ABS_STATE_DIM) or acts_abs.shape != (T, ABS_ACTION_DIM):
-            raise ValueError(f"{path}: abs frames {states_abs.shape} / {acts_abs.shape}, expected {(T + 1, ABS_STATE_DIM)} / {(T, ABS_ACTION_DIM)}")
+        states_abs, acts_abs = fb_abs_frames(d, obstacle=obstacle)
+        if states_abs.shape != (T + 1, abs_dim) or acts_abs.shape != (T, ABS_ACTION_DIM):
+            raise ValueError(f"{path}: abs frames {states_abs.shape} / {acts_abs.shape}, expected {(T + 1, abs_dim)} / {(T, ABS_ACTION_DIM)}")
         rewards = np.asarray([float(_np(r)[0]) for r in d.get("rewards", [0.0] * T)], dtype=np.float32)
         skills = np.asarray([float(_np(s)[0]) for s in d.get("skills", [0.0] * T)], dtype=np.float32)
         writer.start()

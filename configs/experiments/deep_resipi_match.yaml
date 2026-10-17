@@ -7,6 +7,7 @@
 #   port's original (600 N/m, 13 N, 0.2 m/s) -- both the task's own now
 #   (Robonuke_Furniture_Bench apply_resip), so new demos are needed, collected with the
 #   obstacles moving (below);
+# * the observation also holds the front obstacle's pose (70 wide; the task's own), as ResiP's;
 # * lr warmup 10k steps (was 500) and 5M gradient steps (was 400k);
 # * rollouts: warm start on, 4 DDIM steps (the paper's Table; was 16), 1000-step episodes
 #   (task episode 100 s at 10 Hz; was 70 s).

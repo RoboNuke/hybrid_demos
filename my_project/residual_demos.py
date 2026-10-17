@@ -99,7 +99,7 @@ FURNITURE_COLUMNS = {
     "observation.next_state": None,
     "reward": 1,
 }
-#: the absolute rot6d interface (``*-FBAbs-*``): observation 61, action 10
+#: the absolute rot6d interface (``*-FBAbs-*``): observation 61 (70 for the ResiP task: + the obstacle pose), action 10
 FURNITURE_ABS_COLUMNS = {
     "observation.state_abs": None,
     "action.abs": 10,

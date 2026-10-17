@@ -26,6 +26,13 @@ def furniture_layout(monkeypatch):
     cfg = ModuleType("furniture_lab.tasks.assembly.assembly_env_cfg")
     cfg.FB_OBS_LAYOUT = FB_LAYOUT
     cfg.FBABS_OBS_LAYOUT = (("ee_pos", 3), ("ee_rot6d", 6), ("ee_pos_vel", 3), ("ee_ori_vel", 3), ("gripper_width", 1), ("parts_poses", 45))
+    cfg.FBABS_RESIP_OBS_LAYOUT = cfg.FBABS_OBS_LAYOUT + (("obstacle_pose", 9),)
+
+    def fbabs_obs_layout(env_cfg):  # the real one's rule: the policy group's obstacle term
+        policy = getattr(getattr(env_cfg, "observations", None), "policy", None)
+        return cfg.FBABS_RESIP_OBS_LAYOUT if getattr(policy, "obstacle_pose", None) is not None else cfg.FBABS_OBS_LAYOUT
+
+    cfg.fbabs_obs_layout = fbabs_obs_layout
     for name, mod in (("furniture_lab", pkg), ("furniture_lab.tasks", tasks),
                       ("furniture_lab.tasks.assembly", assembly), ("furniture_lab.tasks.assembly.assembly_env_cfg", cfg)):
         monkeypatch.setitem(sys.modules, name, mod)
@@ -318,3 +325,14 @@ def test_the_residual_steps_the_absolute_rot6d_action_and_logs_its_rotation(monk
     assert torch.all(m["residual/rot_deg"] >= 0) and torch.all(m["residual/rot_deg"] < 180)
     _, _, _, _, info = env.step(torch.zeros(2, 10))
     assert torch.allclose(info["metrics_to_log"]["residual/rot_deg"], torch.zeros(2), atol=1e-2)  # no residual, no rotation
+
+
+def test_the_resip_fbabs_layout_appends_the_obstacle(furniture_layout):
+    from types import SimpleNamespace
+
+    resip = SimpleNamespace(observations=SimpleNamespace(policy=SimpleNamespace(obstacle_pose=object())))
+    layout = families.obs_layout("Isaac-Furniture-OneLeg-FBAbs-ResiP-v0", resip)
+    assert layout[-1] == ("obstacle_pose", 9) and sum(w for _, w in layout) == 70
+    assert sum(w for _, w in families.obs_layout("Isaac-Furniture-OneLeg-FBAbs-v0", SimpleNamespace())) == 61
+    assert families.observes_obstacle("Isaac-Furniture-OneLeg-FBAbs-ResiP-v0")
+    assert not families.observes_obstacle("Isaac-Furniture-OneLeg-FBAbs-v0")

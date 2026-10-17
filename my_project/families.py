@@ -35,12 +35,19 @@ def is_abs(task_name: str) -> bool:
     return family_of(task_name) == FURNITURE and "FBAbs" in str(task_name)
 
 
+def observes_obstacle(task_name: str) -> bool:
+    """The ResiP FBAbs task (``Isaac-Furniture-*-FBAbs-ResiP-*``) also observes the front
+    obstacle's pose (``FBABS_RESIP_OBS_LAYOUT``, 70): the rule the sim-free demo importers use;
+    with an env cfg in hand, ``obs_layout`` reads the cfg itself."""
+    return is_abs(task_name) and "ResiP" in str(task_name)
+
+
 def obs_layout(task_name: str, task_cfg: Any) -> List[Tuple[str, int]]:
     """``[(term, width), ...]`` of the policy observation's leading terms, in order."""
     if family_of(task_name) == FURNITURE:
-        from furniture_lab.tasks.assembly.assembly_env_cfg import FB_OBS_LAYOUT, FBABS_OBS_LAYOUT
+        from furniture_lab.tasks.assembly.assembly_env_cfg import FB_OBS_LAYOUT, fbabs_obs_layout
 
-        return list(FBABS_OBS_LAYOUT if is_abs(task_name) else FB_OBS_LAYOUT)
+        return list(fbabs_obs_layout(task_cfg) if is_abs(task_name) else FB_OBS_LAYOUT)
     from isaaclab_tasks.direct.factory.factory_env_cfg import OBS_DIM_CFG
 
     return [(name, int(OBS_DIM_CFG[name])) for name in task_cfg.obs_order]

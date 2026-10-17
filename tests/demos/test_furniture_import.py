@@ -100,3 +100,26 @@ def test_import_writes_the_dataset_and_the_loader_reads_it(tmp_path):
     s = np.stack(t["observation.state"].to_numpy())
     n = np.stack(t["observation.next_state"].to_numpy())
     assert np.allclose(n[:-1], s[1:])
+
+
+def test_the_resip_task_appends_the_obstacle_pose(tmp_path):
+    """Isaac-Furniture-*-FBAbs-ResiP: state_abs is 70, the pkl's recorded obstacle last."""
+    import json
+
+    from furniture_lab.demos import obstacle_tag_rot6d
+    from furniture_lab.tasks.furniture import frames
+
+    src, out = tmp_path / "src", tmp_path / "out"
+    demo = _demo(5, True, 0)
+    moved = np.asarray(frames.OBSTACLE_FRONT_POS) + np.array([0.01, 0.02, 0.0])
+    demo["obstacles_robot"] = {"obstacle_front": moved}
+    _write(src, "a", demo)
+    import_demos(src, out, task_name="Isaac-Furniture-OneLeg-FBAbs-ResiP-v0")
+    info = json.loads((out / "meta" / "info.json").read_text())
+    assert info["features"]["observation.state_abs"] == 70
+    import glob
+
+    import pyarrow.parquet as pq
+
+    t = pq.read_table(glob.glob(str(out / "data" / "*" / "*.parquet"))[0]).to_pydict()
+    np.testing.assert_allclose(np.array(t["observation.state_abs"])[:, 61:], np.tile(obstacle_tag_rot6d(moved), (5, 1)), atol=1e-5)

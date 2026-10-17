@@ -97,8 +97,8 @@ def analyze(args) -> Dict[str, Dict[str, float]]:
     from my_project.families import is_abs
 
     furniture_abs = is_abs(str(resolved.task.name))
-    if furniture_abs and state["obs_dim"] != 61:
-        raise ValueError(f"furniture FBAbs run with obs_dim {state['obs_dim']}, expected 61")
+    if furniture_abs and state["obs_dim"] not in (61, 70):  # 70: the ResiP task's obstacle pose appended
+        raise ValueError(f"furniture FBAbs run with obs_dim {state['obs_dim']}, expected 61 (or 70 with the obstacle)")
 
     for split, episodes in (("train", train_eps), ("test", test_eps)):
         data = WindowedSplit(demos, episodes, policy.normalizer, **window)
