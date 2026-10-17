@@ -159,3 +159,9 @@ def test_action_mse_metrics_name_every_group():
     }
     assert out["action_sample/val_action_mse_error_pos"] == 1.0
     assert out["action_sample/val_action_mse_error_success"] == 9.0
+
+
+def test_save_only_best_ckpt_needs_rollouts(tmp_path):
+    with pytest.raises(ValueError, match="save_only_best_ckpt"):
+        load(tmp_path, "bc.save_only_best_ckpt=true", "bc.rollout_every=0")
+    assert load(tmp_path, "bc.save_only_best_ckpt=true").bc.save_only_best_ckpt is True

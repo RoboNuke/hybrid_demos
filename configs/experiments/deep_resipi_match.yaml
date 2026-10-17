@@ -71,6 +71,8 @@ bc:
   warmup_steps: 10000
   rollout_every: 10
   rollout_loss_threshold: 1000.0
+  # only the best rollout's checkpoint, on disk and in wandb (~800 MB each)
+  save_only_best_ckpt: true
 
 eval:
   num_rollouts: 128

@@ -753,6 +753,7 @@ when `trainer.learner` is `diffusion_bc`.
 | `bc.rollout_every` | int | `10` | epochs between env rollouts (on eval epochs); `0`: no rollouts and no env is built |
 | `bc.rollout_loss_threshold` | float | `0.1` | rollouts run only once the test loss is below this |
 | `bc.max_hours` | float | `null` | stop after this many hours of wall-clock training (checked after each epoch, after its checkpoints); `null`: no limit |
+| `bc.save_only_best_ckpt` | bool | `false` | keep only `actor_chkpt_best_success_rate.pt`, on disk and in wandb: written at the first rollout, then overwritten only when a rollout beats the best success rate (no last, periodic or best-test-loss checkpoints); needs `bc.rollout_every` > 0 |
 | `bc.early_stop_patience` | float | `.inf` | evals without a new best EMA test loss before stopping; `.inf` never stops |
 | `bc.early_stop_smooth` | float | `0.9` | EMA factor of the early stopper's test loss |
 | `bc.show_waypoints` | bool | `false` | eval / debug: draw each env's predicted chunk as spheres in the scene (viewer and recorded videos): the waypoint executing now purple, the rest of the executed `action_horizon` green, the remaining tail red |

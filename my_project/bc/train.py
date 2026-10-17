@@ -21,10 +21,12 @@ gradient-step count, to one wandb run (``experiment.num_agents`` must be 1):
 
 Training stops early after ``bc.max_hours`` of wall-clock time, if set.
 
-Checkpoints go to ``<run dir>/checkpoints/`` and are mirrored to the run's files:
-``actor_chkpt_last.pt`` every epoch, ``actor_chkpt_best_test_loss.pt``,
-``actor_chkpt_best_success_rate.pt``, and ``actor_chkpt_<epoch>.pt`` every
-``trainer.checkpoint_interval`` gradient steps. The run summary holds the dataset sizes.
+Checkpoints go to ``<run dir>/checkpoints/`` and each one is uploaded to the run's files as
+it is written (same name, so a rewrite replaces it): ``actor_chkpt_last.pt`` every epoch,
+``actor_chkpt_best_test_loss.pt``, ``actor_chkpt_best_success_rate.pt``, and
+``actor_chkpt_<epoch>.pt`` every ``trainer.checkpoint_interval`` gradient steps. With
+``bc.save_only_best_ckpt`` only ``actor_chkpt_best_success_rate.pt`` is written and uploaded
+(at the first rollout, then on every improvement). The run summary holds the dataset sizes.
 """
 
 from __future__ import annotations
@@ -290,6 +292,7 @@ def _train(args, overrides, setup, app_launcher) -> int:
 
     stopper = EarlyStopper(bc.early_stop_patience, bc.early_stop_smooth)
     best_test_loss, best_success_rate = math.inf, 0.0
+    saved_best = False
     global_step = 0
     print(
         f"[train_bc] {num_epochs} epochs x {bc.steps_per_epoch} steps, batch {bc.batch_size}; "
@@ -352,13 +355,17 @@ def _train(args, overrides, setup, app_launcher) -> int:
                     )
                     policy.reset()
                     rate = float(epoch_log["success_rate"])
-                    if rate > best_success_rate:
-                        best_success_rate = rate
+                    # only-best keeps a checkpoint from the first rollout on, even at 0%
+                    first = bc.save_only_best_ckpt and not saved_best
+                    if rate > best_success_rate or first:
+                        best_success_rate = max(rate, best_success_rate)
                         save("actor_chkpt_best_success_rate.pt", checkpoint_state())
+                        saved_best = True
 
                 if test_loss < best_test_loss:
                     best_test_loss = test_loss
-                    save("actor_chkpt_best_test_loss.pt", checkpoint_state())
+                    if not bc.save_only_best_ckpt:
+                        save("actor_chkpt_best_test_loss.pt", checkpoint_state())
 
                 if (epoch + 1) % bc.sample_every == 0:
                     for split, data in (("train", train_data), ("val", test_data)):
@@ -374,10 +381,11 @@ def _train(args, overrides, setup, app_launcher) -> int:
                 epoch_log["early_stopper/best_loss"] = scalar(stopper.best_loss)
                 epoch_log["early_stopper/ema_loss"] = scalar(stopper.ema_loss)
 
-            interval = cfg.trainer.checkpoint_interval
-            if interval and global_step % interval == 0:
-                save(f"actor_chkpt_{epoch}.pt", checkpoint_state())
-            save("actor_chkpt_last.pt", checkpoint_state())
+            if not bc.save_only_best_ckpt:
+                interval = cfg.trainer.checkpoint_interval
+                if interval and global_step % interval == 0:
+                    save(f"actor_chkpt_{epoch}.pt", checkpoint_state())
+                save("actor_chkpt_last.pt", checkpoint_state())
 
             logger(0, epoch_log, global_step)
             logger.flush(global_step)
