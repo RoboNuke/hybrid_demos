@@ -12,7 +12,11 @@ after the last action is already dropped):
   5 parts x ``[pos 3, quat 4 (xyzw)]``, FurnitureBench's AprilTag frame;
 * ``action/pos`` (10): ``[ee_pos + dpos, rot6d(R_ee R_dq), sign(gripper)]`` -- the absolute
   target, built exactly as ``furniture_lab.demos.fb_abs_action`` builds ours (theirs clips the
-  delta first: 2.5 cm, 0.35 rad);
+  delta first: 2.5 cm, 0.35 rad). That rotation clip takes its norm over the whole episode,
+  not per step, so every rotation delta of an episode is shrunk by one factor (~12) to an
+  episode norm of 0.35 rad; ``furniture_lab.demos.resip_unscale_rotation`` scales them back
+  (exactly: the teleop's 20 deg per-step bound leaves a plateau), and the written
+  ``action.abs`` holds the targets ResiP's sim was actually sent;
 * frames: ResiP's fork of FurnitureBench puts the robot base on the table surface
   (``ROBOT_HEIGHT = 0``), 15 mm lower than this port (FurnitureBench's 0.015 clamp); the tag,
   table and parts coincide, so only the base-frame z of the EE and of the target moves, by
@@ -81,6 +85,7 @@ def import_resip_zarr(
     actions = np.asarray(z["action/pos"][:], dtype=np.float32)
     # ResiP's robot base sits 15 mm lower than the port's (its ROBOT_HEIGHT is 0, ours FB's
     # 0.015; the table, tag and parts coincide): its base-frame EE z and target z, into ours
+    from furniture_lab.demos import resip_unscale_rotation
     from furniture_lab.tasks.furniture.frames import RESIP_BASE_Z_TO_PORT
 
     robot_state[:, 2] += RESIP_BASE_Z_TO_PORT
@@ -128,13 +133,16 @@ def import_resip_zarr(
             skipped += 1
             continue
         states = zarr_states_abs(robot_state[lo:hi], parts_poses[lo:hi])
+        acts = actions[lo:hi].copy()
+        # ResiP's process_pickles shrank the episode's rotation deltas by one factor
+        acts[:, 3:9], rot_scale = resip_unscale_rotation(robot_state[lo:hi, 3:9], acts[:, 3:9])
         nxt = np.concatenate([states[1:], states[-1:]])
         writer.start()
         for t in range(hi - lo):
             writer.add(
                 {
                     "observation.state_abs": states[t],
-                    "action.abs": actions[lo + t],
+                    "action.abs": acts[t],
                     "observation.next_state_abs": nxt[t],
                     "reward": reward[lo + t],
                     "skill": skill[lo + t],
@@ -147,6 +155,7 @@ def import_resip_zarr(
             "source": source,
             "seed": None,
             "reward_sum": float(reward[lo:hi].sum()),
+            "rotation_rescale": rot_scale,
         }
         writer.save(meta, {"note": "ResiP processed zarr: no start-state snapshot or joint positions"})
         saved += 1
