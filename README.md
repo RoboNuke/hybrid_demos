@@ -297,6 +297,13 @@ python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos_
 python scripts/train_bc.py --config configs/experiments/diffusion_bc_furniture_resip.yaml --headless
 ```
 
+**`deep_resipi_match`** (`configs/experiments/deep_resipi_match.yaml`) is that recipe moved
+closer to ResiP's: the obstacles move ±2 cm per reset (the ResiP task's own now, so demos are
+re-collected with them moving), lr warmup 10k and 5M gradient steps, and rollouts with warm
+start, 4 DDIM steps and 1000-step episodes. Its wandb group, run names, run folder and dataset
+(`data/deep_resipi_match`) all carry the name; `diffusion_bc_furniture_resip.yaml` stays as
+the record of the earlier setup.
+
 **ResiP's own demos.** ResiP publishes its 50 one_leg low teleop demos only processed, as a
 robust-rearrangement `.zarr`; `scripts/import_resip_zarr.py` (`my_project/demos/resip_zarr.py`,
 needs `pip install zarr`) writes them in the same absolute rot6d columns (their state has our
