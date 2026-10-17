@@ -297,13 +297,13 @@ python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos_
 python scripts/train_bc.py --config configs/experiments/diffusion_bc_furniture_resip.yaml --headless
 ```
 
-**`deep_resipi_match`** (`configs/experiments/deep_resipi_match.yaml`) is that recipe moved
+**`deep_resipi_replica`** (`configs/experiments/deep_resipi_replica.yaml`) is that recipe moved
 closer to ResiP's: the obstacles move ±2 cm per reset (the ResiP task's own now, so demos are
 re-collected with them moving), lr warmup 10k and 5M gradient steps, and rollouts with warm
 start, 4 DDIM steps and 1000-step episodes. The ResiP FBAbs task now also observes the front
 obstacle's pose (tag-frame pos + rot6d appended after the parts: 70 wide), and both importers
 write it for that task (`families.observes_obstacle`). Its wandb group, run names, run folder and dataset
-(`data/deep_resipi_match`) all carry the name; `diffusion_bc_furniture_resip.yaml` stays as
+(`data/deep_resipi_replica`) all carry the name; `diffusion_bc_furniture_resip.yaml` stays as
 the record of the earlier setup.
 
 **ResiP's own demos.** ResiP publishes its 50 one_leg low teleop demos only processed, as a

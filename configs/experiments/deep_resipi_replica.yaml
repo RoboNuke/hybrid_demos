@@ -1,4 +1,4 @@
-# deep_resipi_match: diffusion-policy BC on one_leg matched as closely as we can to ResiP's
+# deep_resipi_replica: diffusion-policy BC on one_leg matched as closely as we can to ResiP's
 # state base policy (Ankile et al. 2024, arXiv 2407.16677: Tables III and IV;
 # robust-rearrangement's experiment/state/diff_unet.yaml). Starts from
 # diffusion_bc_furniture_resip.yaml (kept as the record of the earlier setup); the changes:
@@ -12,22 +12,22 @@
 # * rollouts: warm start on, 4 DDIM steps (the paper's Table; was 16), 1000-step episodes
 #   (task episode 100 s at 10 Hz; was 70 s).
 #
-# Everything named by this run carries "deep_resipi_match": the wandb group (run names
-# deep_resipi_match_a0, the run folder runs/<project>/deep_resipi_match/...), and the
-# dataset. On the cluster the group is {--group_prefix}_deep_resipi_match (the file stem).
+# Everything named by this run carries "deep_resipi_replica": the wandb group (run names
+# deep_resipi_replica_a0, the run folder runs/<project>/deep_resipi_replica/...), and the
+# dataset. On the cluster the group is {--group_prefix}_deep_resipi_replica (the file stem).
 #
 # Demos (furniture repo, then here):
-#   python scripts/collect_scripted.py --sim resip --out_dir ~/Robonuke_Furniture_Bench/demos_deep_resipi_match --num_demos 50
-#   python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos_deep_resipi_match \
-#       --out data/deep_resipi_match --control_hz 10 --task_name Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
-#   python scripts/train_bc.py --config configs/experiments/deep_resipi_match.yaml --headless
+#   python scripts/collect_scripted.py --sim resip --out_dir ~/Robonuke_Furniture_Bench/demos_deep_resipi_replica --num_demos 50
+#   python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos_deep_resipi_replica \
+#       --out data/deep_resipi_replica --control_hz 10 --task_name Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
+#   python scripts/train_bc.py --config configs/experiments/deep_resipi_replica.yaml --headless
 base: ../base/furniture_resip.yaml
 
 experiment:
   seed: 42
 
 wandb:
-  group: deep_resipi_match
+  group: deep_resipi_replica
 
 task:
   cfg:
@@ -64,7 +64,7 @@ hpc:
   train_script: scripts/train_bc.py
 
 bc:
-  dataset: data/deep_resipi_match
+  dataset: data/deep_resipi_replica
   obs_key: observation.state_abs
   action_key: action.abs
   num_demos: 50
