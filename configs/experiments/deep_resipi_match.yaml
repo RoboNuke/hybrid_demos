@@ -59,6 +59,10 @@ model:
     # each chunk starts from the previous chunk's unexecuted tail (robust-rearrangement)
     warm_start: true
 
+hpc:
+  # the HPC launchers run this entry script (BC has its own; the package's runs sac / ppo)
+  train_script: scripts/train_bc.py
+
 bc:
   dataset: data/deep_resipi_match
   obs_key: observation.state_abs
