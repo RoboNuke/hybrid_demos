@@ -311,6 +311,9 @@ the record of the earlier setup.
 demos collected with the screw pivot (`collect_scripted.py --screw_pivot`; `data/pivot_demos`), with rollouts
 without warm start (`model.actor.warm_start: false`, 4 DDIM steps) and 700 steps long
 (`task.cfg.episode_length_s: 70`).
+`pivot_vary` / `pivot_vary_dart` (`configs/experiments/`) are `pivot_demos` on demos collected with
+`--vary` / `--vary --dart_prob 0.05` (Robonuke_Furniture_Bench `furniture_lab/variation.py`; `data/pivot_vary`,
+`data/pivot_vary_dart`), the only change.
 
 **ResiP's own checkpoint.** `scripts/eval_resip_checkpoint.py` (`my_project/bc/resip_checkpoint.py`)
 rolls out ResiP's released one_leg BC weights (`s3://iai-robust-rearrangement/checkpoints/bc/one_leg/low/actor_chkpt.pt`)
