@@ -1,0 +1,15 @@
+# pivot_demos: deep_resipi_replica on 50 scripted demos collected with the screw pivot
+# (Robonuke_Furniture_Bench collect_scripted.py --screw_pivot, no --pivot_dz) -- the only
+# change. Those demos replay ~87% open loop (13/15 in the first check), vs ~30% for the
+# demos in data/deep_resipi_replica.
+#
+#   python scripts/import_furniture_demos.py --src /tmp/pivot/screw_pivot_base --out data/pivot_demos \
+#       --control_hz 10 --task_name Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
+#   python scripts/train_bc.py --config configs/experiments/pivot_demos.yaml --headless
+base: deep_resipi_replica.yaml
+
+wandb:
+  group: pivot_demos
+
+bc:
+  dataset: data/pivot_demos

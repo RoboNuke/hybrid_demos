@@ -307,6 +307,8 @@ write it for that task (`families.observes_obstacle`). Its wandb group, run name
 the record of the earlier setup.
 `resipi_demos` (`configs/experiments/resipi_demos.yaml`) is `deep_resipi_replica` on ResiP's own
 50 teleop demos (`data/resipi_demos`, from `scripts/import_resip_zarr.py`), the only change.
+`pivot_demos` (`configs/experiments/pivot_demos.yaml`) is `deep_resipi_replica` on 50 scripted
+demos collected with the screw pivot (`collect_scripted.py --screw_pivot`; `data/pivot_demos`), the only change.
 
 **ResiP's own demos.** ResiP publishes its 50 one_leg low teleop demos only processed, as a
 robust-rearrangement `.zarr`; `scripts/import_resip_zarr.py` (`my_project/demos/resip_zarr.py`,
