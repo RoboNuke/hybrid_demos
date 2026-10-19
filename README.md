@@ -312,6 +312,15 @@ demos collected with the screw pivot (`collect_scripted.py --screw_pivot`; `data
 without warm start (`model.actor.warm_start: false`, 4 DDIM steps) and 700 steps long
 (`task.cfg.episode_length_s: 70`).
 
+**ResiP's own checkpoint.** `scripts/eval_resip_checkpoint.py` (`my_project/bc/resip_checkpoint.py`)
+rolls out ResiP's released one_leg BC weights (`s3://iai-robust-rearrangement/checkpoints/bc/one_leg/low/actor_chkpt.pt`)
+in this port's ResiP task, acted as their `evaluate_model.py` acts it (4 DDIM steps, warm start
+from timestep 50): each step the 70-wide observation is rebuilt in their 58-wide layout (robot
+state with the EE z in their 15 mm lower base frame; 5 parts and the front obstacle as `[pos,
+quat xyzw]` in the tag frame, w >= 0 as their sim writes it), and the action's z moved back.
+Near their ~54% means the port is faithful; far below means the port caps BC. The `--config`
+gives the task, envs, episode length and `eval.num_rollouts` only.
+
 **ResiP's own demos.** ResiP publishes its 50 one_leg low teleop demos only processed, as a
 robust-rearrangement `.zarr`; `scripts/import_resip_zarr.py` (`my_project/demos/resip_zarr.py`,
 needs `pip install zarr`) writes them in the same absolute rot6d columns (their state has our
