@@ -323,7 +323,8 @@ from timestep 50): each step the 63-wide observation is rebuilt in their 58-wide
 state with the EE z in their 15 mm lower base frame; the 5 base-frame parts and the front
 obstacle -- its x, y with its fixed z and rotation -- as `[pos, quat xyzw]` in the tag frame,
 w >= 0 as their sim writes it), and the action's z moved back.
-Near their ~54% means the port is faithful; far below means the port caps BC. The `--config`
+Near their ~54% means the port is faithful; far below means the port caps BC. `scripts/check_resip_checkpoint.py` (`my_project/bc/resip_offline_check.py`, no sim) checks the
+loading itself: the checkpoint run on its own training zarr, in their layout and frames, against the recorded actions. The `--config`
 gives the task, envs, episode length and `eval.num_rollouts` only.
 
 **ResiP's own demos.** ResiP publishes its 50 one_leg low teleop demos only processed, as a

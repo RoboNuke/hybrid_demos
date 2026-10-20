@@ -129,3 +129,32 @@ def test_the_loader_refuses_an_unmapped_state_dict_entry(tmp_path):
     torch.save(ckpt, path)
     with pytest.raises(KeyError, match="encoder1.weight"):
         R.load_resip_policy(str(path), "cpu")
+
+
+def test_offline_check_windows_and_metrics(tmp_path):
+    """The zarr windows pad with the episode's last action, and the check runs end to end on
+    a synthetic checkpoint + zarr (an untrained net: only the plumbing is tested)."""
+    zarr = pytest.importorskip("zarr")
+    from my_project.bc import resip_offline_check as C
+
+    rs = np.arange(10 * 16, dtype=np.float32).reshape(10, 16)
+    parts = np.zeros((10, 42), np.float32)
+    acts = np.arange(10 * 10, dtype=np.float32).reshape(10, 10)
+    ends = np.array([4, 10])
+    obs, tgt, t = C.windows_from_zarr(rs, parts, acts, ends, 6, 50, np.random.default_rng(0))
+    for k in range(50):
+        e_end = 4 if t[k] < 4 else 10
+        want = acts[np.minimum(t[k] + np.arange(6), e_end - 1)]
+        assert np.array_equal(tgt[k], want) and np.array_equal(obs[k, :16], rs[t[k]])
+
+    path, _ = fake_checkpoint(tmp_path)
+    z = zarr.open_group(str(tmp_path / "d.zarr"), mode="w", zarr_format=2)
+    rng = np.random.default_rng(0)
+    z.create_array("robot_state", data=rng.normal(size=(40, 16)).astype(np.float32))
+    z.create_array("parts_poses", data=rng.normal(size=(40, 42)).astype(np.float32))
+    a = rng.normal(size=(40, 10)).astype(np.float32)
+    a[:, 3:9] = [1, 0, 0, 0, 1, 0]
+    z.create_group("action").create_array("pos", data=a)
+    z.create_array("episode_ends", data=np.array([20, 40], np.int64))
+    r = C.check(str(path), str(tmp_path / "d.zarr"), windows=16, samples=1)
+    assert set(r["pos_mm"]) == {"step0", "step7", "step31"} and 0.0 <= r["gripper_agreement"] <= 1.0
