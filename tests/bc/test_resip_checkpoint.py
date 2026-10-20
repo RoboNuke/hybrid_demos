@@ -40,7 +40,7 @@ def test_rot6d_to_quat_is_their_sims_quaternion():
 
 def resip_obs(rng, T):
     """ResiP-layout observations (T, 58), quaternions as their sim writes them; the 6th pose is
-    the front obstacle: slid in x, y only (fixed z, never rotated in the base frame)."""
+    the front obstacle: slid in x, y only (fixed z), rotated 90 deg about z as their sim builds it."""
     from furniture_lab.tasks.furniture.frames import OBSTACLE_FRONT_POS, TAG_POS_W, TAG_ROT_W
 
     robot = rng.normal(size=(T, 16)).astype(np.float32)
@@ -51,7 +51,8 @@ def resip_obs(rng, T):
         poses.append(np.concatenate([rng.normal(size=(T, 3)), q], axis=1))
     front_b = np.asarray(OBSTACLE_FRONT_POS) + np.concatenate([rng.uniform(-0.02, 0.02, size=(T, 2)), np.zeros((T, 1))], axis=1)
     front_t = (front_b - np.asarray(TAG_POS_W)) @ np.asarray(TAG_ROT_W)
-    q_ob = R.mat_to_quat_xyzw(torch.tensor(np.asarray(TAG_ROT_W).T, dtype=torch.float64)).numpy()
+    Rz = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])  # their obstacle: 90 deg about z
+    q_ob = R.mat_to_quat_xyzw(torch.tensor(np.asarray(TAG_ROT_W).T @ Rz, dtype=torch.float64)).numpy()
     poses.append(np.concatenate([front_t, np.tile(q_ob, (T, 1))], axis=1))
     return np.concatenate([robot] + poses, axis=1).astype(np.float32)
 
@@ -158,3 +159,24 @@ def test_offline_check_windows_and_metrics(tmp_path):
     z.create_array("episode_ends", data=np.array([20, 40], np.int64))
     r = C.check(str(path), str(tmp_path / "d.zarr"), windows=16, samples=1)
     assert set(r["pos_mm"]) == {"step0", "step7", "step31"} and 0.0 <= r["gripper_agreement"] <= 1.0
+
+
+def test_the_obstacle_quaternion_is_their_rotated_bodys_or_the_checkpoints_constant(tmp_path):
+    """Their front obstacle is Rz(90) in the base frame (ours is unrotated): in the tag frame a
+    180 deg turn, not R_tag^T; and a checkpoint that saw it constant gets exactly its value."""
+    from furniture_lab.tasks.furniture.frames import TAG_ROT_W
+
+    q = R.ResipObsAdapter(RESIP_BASE_Z_TO_PORT).obstacle_quat.numpy()
+    assert abs(abs(q[0]) - 1.0) < 1e-5 and np.abs(q[1:]).max() < 1e-5  # (+-1, 0, 0, 0)
+    wrong = R.mat_to_quat_xyzw(torch.tensor(np.asarray(TAG_ROT_W).T, dtype=torch.float32)).numpy()
+    assert np.abs(q - wrong).max() > 0.5  # the old "never rotated" value
+    path, _ = fake_checkpoint(tmp_path)
+    ckpt = torch.load(path, weights_only=False)
+    v = torch.tensor([-1.0, 1.7e-4, 0.0, 0.0])
+    ckpt["model_state_dict"]["normalizer.stats.parts_poses.min"][38:42] = v - 1
+    ckpt["model_state_dict"]["normalizer.stats.parts_poses.max"][38:42] = v + 1
+    torch.save(ckpt, path)
+    _, adapter, info = R.load_resip_policy(str(path), "cpu")
+    assert torch.allclose(adapter.obstacle_quat, v) and "constant" in info["obstacle_quat_source"]
+    out = adapter.obs(torch.zeros(3, R.PORT_OBS_DIM))
+    assert torch.allclose(out[:, 16 + 35 + 3 : 16 + 42], v.expand(3, 4))

@@ -21,8 +21,13 @@ rebuilt in ResiP's (58):
   base frame (their base is 15 mm lower: ``frames.RESIP_BASE_Z_TO_PORT``);
 * ``parts_poses`` 42 -- 5 parts then the front obstacle, each ``[pos 3, quat xyzw 4]`` in the
   AprilTag frame: our base-frame ``[pos 3, rot6d 6]`` parts moved into it, and the obstacle's
-  x, y with its fixed z and rotation; each quaternion with the sign their sim gives it
-  (:func:`mat_to_quat_xyzw`: w >= 0).
+  x, y with its fixed z; each quaternion with the sign their sim gives it
+  (:func:`mat_to_quat_xyzw`: w >= 0). The obstacle's rotation is THEIR body's: their sim
+  creates the front obstacle rotated 90 deg about z (``furniture_rl_sim_env.py``
+  ``obstacle_front_pose.r``), ours is an unrotated box of the same shape, so its observed
+  rotation is ``Rz(90)``, not ours. Its quaternion sits at w = 0, where the sign of x is
+  float noise in their sim; when the checkpoint's normalizer shows the 4 dims constant
+  (padded range 2), the adapter feeds exactly that training value.
 
 The predicted action (10: target pos, rot6d, gripper) is sent as their sim received it, its z
 moved back into the port's base frame. Their rotation targets are the episode-wide shrunk ones
@@ -87,13 +92,20 @@ class ResipObsAdapter:
     ``tag_rot`` / ``tag_pos``: the AprilTag frame in the robot-base frame (``frames.TAG_*_W``);
     ``obstacle_z``: the front obstacle's fixed base-frame z (``frames.OBSTACLE_FRONT_POS``)."""
 
-    def __init__(self, base_z_to_port: float, tag_rot=None, tag_pos=None, obstacle_z: float | None = None) -> None:
+    #: their front obstacle's rotation in the base frame: 90 deg about z (ours is unrotated)
+    OBSTACLE_R_B = ((0.0, -1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+
+    def __init__(self, base_z_to_port: float, tag_rot=None, tag_pos=None, obstacle_z: float | None = None,
+                 obstacle_quat: torch.Tensor | None = None) -> None:
         from furniture_lab.tasks.furniture import frames
 
         self.base_z_to_port = float(base_z_to_port)
         self.R_tw = torch.as_tensor(frames.TAG_ROT_W if tag_rot is None else tag_rot, dtype=torch.float32)
         self.p_tw = torch.as_tensor(frames.TAG_POS_W if tag_pos is None else tag_pos, dtype=torch.float32)
         self.obstacle_z = float(frames.OBSTACLE_FRONT_POS[2] if obstacle_z is None else obstacle_z)
+        R_ob = self.R_tw.T @ torch.tensor(self.OBSTACLE_R_B, dtype=torch.float32)
+        #: the obstacle's tag-frame quaternion (xyzw) fed to their policy: a constant
+        self.obstacle_quat = (mat_to_quat_xyzw(R_ob) if obstacle_quat is None else torch.as_tensor(obstacle_quat)).float()
 
     def _to_tag(self, pos_b: torch.Tensor, R_b: torch.Tensor):
         R, p = self.R_tw.to(pos_b.device), self.p_tw.to(pos_b.device)
@@ -107,12 +119,13 @@ class ResipObsAdapter:
         robot[..., 2] -= self.base_z_to_port  # port base frame -> ResiP's (15 mm lower base)
         poses = port[..., ROBOT : ROBOT + 9 * N_PARTS].reshape(*lead, N_PARTS, 9)
         pos_t, R_t = self._to_tag(poses[..., :3], rot6d_to_mat(poses[..., 3:9]))
-        # the front obstacle: its observed x, y, its fixed z; never rotated in the base frame
+        parts = torch.cat((pos_t, mat_to_quat_xyzw(R_t)), dim=-1)
+        # the front obstacle: its observed x, y, its fixed z; their body's fixed rotation
         xy = port[..., ROBOT + 9 * N_PARTS :]
         ob_b = torch.cat((xy, torch.full((*lead, 1), self.obstacle_z, device=port.device, dtype=port.dtype)), dim=-1)
-        ob_t, ob_R = self._to_tag(ob_b[..., None, :], torch.eye(3, device=port.device).expand(*lead, 1, 3, 3))
-        pos_t, R_t = torch.cat((pos_t, ob_t), dim=-2), torch.cat((R_t, ob_R), dim=-3)
-        parts = torch.cat((pos_t, mat_to_quat_xyzw(R_t)), dim=-1)
+        ob_t, _ = self._to_tag(ob_b[..., None, :], torch.eye(3, device=port.device).expand(*lead, 1, 3, 3))
+        ob = torch.cat((ob_t, self.obstacle_quat.to(port.device, port.dtype).expand(*lead, 1, 4)), dim=-1)
+        parts = torch.cat((parts, ob), dim=-2)
         return torch.cat((robot, parts.reshape(*lead, N_POSES * 7)), dim=-1)
 
     def action(self, resip: torch.Tensor) -> torch.Tensor:
@@ -182,7 +195,11 @@ def load_resip_policy(path: str, device: Any, inference_steps: int = 4) -> Tuple
         policy.normalizer.action_max.copy_(stats["action.max"].to(device))
     policy.eval()
 
-    adapter = ResipObsAdapter(RESIP_BASE_Z_TO_PORT)
+    # the obstacle quaternion: the training value when the checkpoint saw it constant
+    # (LinearNormalizer pads a constant column to [v - 1, v + 1]), else Rz(90) in the tag frame
+    lo_q, hi_q = stats["parts_poses.min"][38:42].float().cpu(), stats["parts_poses.max"][38:42].float().cpu()
+    constant = bool(torch.allclose(hi_q - lo_q, torch.full((4,), 2.0), atol=1e-4))
+    adapter = ResipObsAdapter(RESIP_BASE_Z_TO_PORT, obstacle_quat=(lo_q + hi_q) / 2 if constant else None)
     info = {
         "epoch": ckpt.get("epoch"),
         "best_success_rate": ckpt.get("best_success_rate"),
@@ -191,6 +208,9 @@ def load_resip_policy(path: str, device: Any, inference_steps: int = 4) -> Tuple
         "horizon": actor_cfg.horizon,
         "action_horizon": actor_cfg.action_horizon,
         "inference_steps": actor_cfg.inference_steps,
+        "obstacle_quat_stats": {"min": [round(float(v), 4) for v in lo_q], "max": [round(float(v), 4) for v in hi_q]},
+        "obstacle_quat_fed": [round(float(v), 4) for v in adapter.obstacle_quat],
+        "obstacle_quat_source": "the checkpoint's constant training value" if constant else "Rz(90) in the tag frame",
     }
     return policy, adapter, info
 

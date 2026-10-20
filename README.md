@@ -321,8 +321,10 @@ rolls out ResiP's released one_leg BC weights (`s3://iai-robust-rearrangement/ch
 in this port's ResiP task, acted as their `evaluate_model.py` acts it (4 DDIM steps, warm start
 from timestep 50): each step the 63-wide observation is rebuilt in their 58-wide layout (robot
 state with the EE z in their 15 mm lower base frame; the 5 base-frame parts and the front
-obstacle -- its x, y with its fixed z and rotation -- as `[pos, quat xyzw]` in the tag frame,
-w >= 0 as their sim writes it), and the action's z moved back.
+obstacle -- its x, y with its fixed z, and THEIR body's rotation (their sim builds it rotated 90 deg
+about z; ours is an unrotated box of the same shape; the checkpoint's own constant training value
+when its normalizer shows one) -- as `[pos, quat xyzw]` in the tag frame, w >= 0 as their sim writes
+it), and the action's z moved back.
 Near their ~54% means the port is faithful; far below means the port caps BC. `scripts/check_resip_checkpoint.py` (`my_project/bc/resip_offline_check.py`, no sim) checks the
 loading itself: the checkpoint run on its own training zarr, in their layout and frames, against the recorded actions. The `--config`
 gives the task, envs, episode length and `eval.num_rollouts` only.
