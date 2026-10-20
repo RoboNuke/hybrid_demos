@@ -404,6 +404,15 @@ class BCCfg:
     #: last / periodic / best-test-loss checkpoints. Needs rollouts (bc.rollout_every > 0)
     save_only_best_ckpt: bool = False
 
+    #: how observations and actions are scaled to [-1, 1] from the demos' min / max.
+    #: ``per_dim``: every dim its own range (robust-rearrangement's). ``per_unit``: every dim of one
+    #: physical unit shares one range, taken over the observation AND the action together --
+    #: positions (EE, parts, obstacle, the action's target), rot6d, linear velocity, angular
+    #: velocity, finger width, the gripper command (``families.obs_units`` / ``action_units``):
+    #: a near-constant dim stays near-constant, and the target and the EE scale alike. Needs a
+    #: furniture FBAbs task
+    normalization: str = "per_dim"
+
     #: early stopping on an EMA of the test loss; .inf never stops (the metrics still log)
     early_stop_patience: float = float("inf")
     early_stop_smooth: float = 0.9
@@ -446,6 +455,16 @@ class BCCfg:
                 "bc.save_only_best_ckpt keeps the best rollout's checkpoint, but bc.rollout_every is 0 "
                 "(no rollouts): nothing would ever be saved"
             )
+        if self.normalization not in ("per_dim", "per_unit"):
+            raise ValueError(f"bc.normalization must be per_dim or per_unit, got {self.normalization!r}")
+        if self.normalization == "per_unit":
+            from my_project.families import is_abs
+
+            if not is_abs(str(cfg.task_name)):
+                raise ValueError(
+                    f"bc.normalization: per_unit needs a furniture FBAbs task (its layout names every "
+                    f"dim's unit), got task {cfg.task_name!r}"
+                )
         if self.max_hours is not None and self.max_hours <= 0:
             raise ValueError(f"bc.max_hours must be > 0 or null, got {self.max_hours}")
         if self.num_demos is not None and self.num_demos < 1:

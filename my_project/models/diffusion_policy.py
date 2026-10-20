@@ -104,6 +104,27 @@ class MinMaxNormalizer(nn.Module):
         getattr(self, f"{key}_min").copy_(low)
         getattr(self, f"{key}_max").copy_(high)
 
+    @torch.no_grad()
+    def fit_units(self, obs: torch.Tensor, action: torch.Tensor, obs_units, action_units) -> None:
+        """One (min, max) per physical unit, over every dim of that unit in ``obs`` ``(N, D)``
+        and ``action`` ``(N, A)`` together, written to each of those dims (``bc.normalization:
+        per_unit``). A unit that never changes gets ``[value - 1, value + 1]``, as in :meth:`fit`."""
+        obs_units, action_units = list(obs_units), list(action_units)
+        if len(obs_units) != obs.shape[1] or len(action_units) != action.shape[1]:
+            raise ValueError(
+                f"unit maps cover {len(obs_units)} obs / {len(action_units)} action dims, the data has "
+                f"{obs.shape[1]} / {action.shape[1]}"
+            )
+        for unit in dict.fromkeys(obs_units + action_units):
+            o = [i for i, u in enumerate(obs_units) if u == unit]
+            a = [i for i, u in enumerate(action_units) if u == unit]
+            vals = torch.cat([obs[:, o].reshape(-1), action[:, a].reshape(-1)])
+            low, high = vals.min(), vals.max()
+            if high == low:
+                low, high = low - 1, high + 1
+            self.obs_min[o], self.obs_max[o] = low, high
+            self.action_min[a], self.action_max[a] = low, high
+
     def normalize(self, x: torch.Tensor, key: str) -> torch.Tensor:
         low, high = getattr(self, f"{key}_min"), getattr(self, f"{key}_max")
         return 2 * (x - low) / (high - low) - 1

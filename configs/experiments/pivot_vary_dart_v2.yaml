@@ -1,0 +1,19 @@
+# pivot_vary_dart_v2: pivot_vary_dart on demos collected after three fixes, and per-unit scaling:
+#
+# * the ResiP task's observation has every pose in the robot-base frame (parts too, not the
+#   AprilTag frame) and the front obstacle as base-frame x, y only: 63 wide;
+# * the scripted expert's free-hand states step toward upstream's targets within the per-step
+#   limits (translation and rotation), not upstream's doubled, up-to-11.5-cm, one-jump command;
+# * bc.normalization per_unit: one min/max per physical unit, over observation and action.
+#
+#   python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/datasets/pivot_vary_dart_v2 \
+#       --out data/pivot_vary_dart_v2 --control_hz 10 --task_name Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
+#   python scripts/train_bc.py --config configs/experiments/pivot_vary_dart_v2.yaml --headless trainer.total_timesteps=1000000
+base: pivot_vary_dart.yaml
+
+wandb:
+  group: pivot_vary_dart_v2
+
+bc:
+  dataset: data/pivot_vary_dart_v2
+  normalization: per_unit

@@ -13,7 +13,6 @@ from furniture_lab.demos import mat_to_rot6d, quat_to_mat, quat_xyzw_to_wxyz
 from furniture_lab.tasks.furniture.frames import RESIP_BASE_Z_TO_PORT
 
 from my_project.bc import resip_checkpoint as R
-from my_project.demos.resip_zarr import zarr_states_abs
 from my_project.models.cfg import DiffusionUnetActorCfg
 from my_project.models.diffusion_policy import DiffusionPolicy
 
@@ -40,32 +39,41 @@ def test_rot6d_to_quat_is_their_sims_quaternion():
 
 
 def resip_obs(rng, T):
-    """ResiP-layout observations (T, 58), quaternions as their sim writes them."""
+    """ResiP-layout observations (T, 58), quaternions as their sim writes them; the 6th pose is
+    the front obstacle: slid in x, y only (fixed z, never rotated in the base frame)."""
+    from furniture_lab.tasks.furniture.frames import OBSTACLE_FRONT_POS, TAG_POS_W, TAG_ROT_W
+
     robot = rng.normal(size=(T, 16)).astype(np.float32)
     robot[:, 3:9] = np.stack([rot6d_of(q) for q in random_quats(rng, T)])
     poses = []
-    for i in range(R.N_POSES):
+    for i in range(5):
         q = canonical(random_quats(rng, T))
         poses.append(np.concatenate([rng.normal(size=(T, 3)), q], axis=1))
+    front_b = np.asarray(OBSTACLE_FRONT_POS) + np.concatenate([rng.uniform(-0.02, 0.02, size=(T, 2)), np.zeros((T, 1))], axis=1)
+    front_t = (front_b - np.asarray(TAG_POS_W)) @ np.asarray(TAG_ROT_W)
+    q_ob = R.mat_to_quat_xyzw(torch.tensor(np.asarray(TAG_ROT_W).T, dtype=torch.float64)).numpy()
+    poses.append(np.concatenate([front_t, np.tile(q_ob, (T, 1))], axis=1))
     return np.concatenate([robot] + poses, axis=1).astype(np.float32)
 
 
 def port_obs(theirs):
     """What the port observes for the same state: the importer's conversion (and z shift)."""
-    T = theirs.shape[0]
+    from furniture_lab.demos import resip_abs_states
+    from furniture_lab.tasks.furniture.frames import TAG_POS_W, TAG_ROT_W
+
     robot = theirs[:, :16].copy()
     robot[:, 2] += RESIP_BASE_Z_TO_PORT
-    ours = zarr_states_abs(robot, theirs[:, 16 : 16 + 35])
-    ob = theirs[:, 16 + 35 :]
-    obstacle = np.concatenate([ob[:, :3], np.stack([rot6d_of(q) for q in ob[:, 3:7]])], axis=1)
-    return np.concatenate([ours, obstacle], axis=1).astype(np.float32)
+    front_robot = np.asarray(TAG_POS_W) + theirs[:, 16 + 35 : 16 + 38] @ np.asarray(TAG_ROT_W).T
+    return resip_abs_states(robot, theirs[:, 16 : 16 + 35], front_robot)
 
 
 def test_the_adapter_inverts_the_importer():
     rng = np.random.default_rng(1)
     theirs = resip_obs(rng, 64)
     adapter = R.ResipObsAdapter(RESIP_BASE_Z_TO_PORT)
-    back = adapter.obs(torch.tensor(port_obs(theirs))).numpy()
+    ours = port_obs(theirs)
+    assert ours.shape == (64, R.PORT_OBS_DIM)
+    back = adapter.obs(torch.tensor(ours)).numpy()
     assert back.shape == (64, R.RESIP_OBS_DIM)
     assert np.allclose(back, theirs, atol=1e-4)  # float32 states
 

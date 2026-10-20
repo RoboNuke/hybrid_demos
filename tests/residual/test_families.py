@@ -26,11 +26,11 @@ def furniture_layout(monkeypatch):
     cfg = ModuleType("furniture_lab.tasks.assembly.assembly_env_cfg")
     cfg.FB_OBS_LAYOUT = FB_LAYOUT
     cfg.FBABS_OBS_LAYOUT = (("ee_pos", 3), ("ee_rot6d", 6), ("ee_pos_vel", 3), ("ee_ori_vel", 3), ("gripper_width", 1), ("parts_poses", 45))
-    cfg.FBABS_RESIP_OBS_LAYOUT = cfg.FBABS_OBS_LAYOUT + (("obstacle_pose", 9),)
+    cfg.FBABS_RESIP_OBS_LAYOUT = cfg.FBABS_OBS_LAYOUT[:-1] + (("parts_poses_b", 45), ("obstacle_xy", 2))
 
     def fbabs_obs_layout(env_cfg):  # the real one's rule: the policy group's obstacle term
         policy = getattr(getattr(env_cfg, "observations", None), "policy", None)
-        return cfg.FBABS_RESIP_OBS_LAYOUT if getattr(policy, "obstacle_pose", None) is not None else cfg.FBABS_OBS_LAYOUT
+        return cfg.FBABS_RESIP_OBS_LAYOUT if getattr(policy, "obstacle_xy", None) is not None else cfg.FBABS_OBS_LAYOUT
 
     cfg.fbabs_obs_layout = fbabs_obs_layout
     for name, mod in (("furniture_lab", pkg), ("furniture_lab.tasks", tasks),
@@ -330,9 +330,9 @@ def test_the_residual_steps_the_absolute_rot6d_action_and_logs_its_rotation(monk
 def test_the_resip_fbabs_layout_appends_the_obstacle(furniture_layout):
     from types import SimpleNamespace
 
-    resip = SimpleNamespace(observations=SimpleNamespace(policy=SimpleNamespace(obstacle_pose=object())))
+    resip = SimpleNamespace(observations=SimpleNamespace(policy=SimpleNamespace(obstacle_xy=object())))
     layout = families.obs_layout("Isaac-Furniture-OneLeg-FBAbs-ResiP-v0", resip)
-    assert layout[-1] == ("obstacle_pose", 9) and sum(w for _, w in layout) == 70
+    assert layout[-2:] == [("parts_poses_b", 45), ("obstacle_xy", 2)] and sum(w for _, w in layout) == 63
     assert sum(w for _, w in families.obs_layout("Isaac-Furniture-OneLeg-FBAbs-v0", SimpleNamespace())) == 61
     assert families.observes_obstacle("Isaac-Furniture-OneLeg-FBAbs-ResiP-v0")
     assert not families.observes_obstacle("Isaac-Furniture-OneLeg-FBAbs-v0")

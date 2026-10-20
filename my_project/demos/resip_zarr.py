@@ -25,8 +25,9 @@ after the last action is already dropped):
 * ``reward``, ``skill`` (per frame), ``success`` (per episode); images, ignored here.
 
 Written columns: ``observation.state_abs`` (61: ``robot_state`` + each part as
-``[pos, rot6d]``; for the ResiP task -- ``families.observes_obstacle`` -- 70, the front
-obstacle's recorded position with the scene's obstacle rotation appended as ``[pos, rot6d]``), ``action.abs`` (10: ``action/pos``), ``observation.next_state_abs`` (the
+``[pos, rot6d]`` in the tag frame; for the ResiP task -- ``families.observes_obstacle`` -- 63,
+``furniture_lab.demos.resip_abs_states``: the parts in the robot-base frame, then the front
+obstacle's recorded x, y in that frame), ``action.abs`` (10: ``action/pos``), ``observation.next_state_abs`` (the
 next frame's; the last frame repeats itself, since the zarr holds no observation after the
 last action), ``reward``, ``skill``. No ``observation.state`` / ``action`` (the 8-d delta
 interface) and no joint positions: the zarr has neither, so these demos cannot be replayed
@@ -42,7 +43,7 @@ import numpy as np
 
 from .writer import DemoWriter
 
-__all__ = ["zarr_states_abs", "import_resip_zarr"]
+__all__ = ["zarr_states_abs", "front_robot", "import_resip_zarr"]
 
 ROBOT_STATE_DIM, PARTS_DIM, ABS_STATE_DIM, ABS_ACTION_DIM = 16, 35, 61, 10
 
@@ -62,17 +63,14 @@ def zarr_states_abs(robot_state: np.ndarray, parts_poses: np.ndarray) -> np.ndar
     return np.concatenate([robot_state, parts_abs], axis=-1).astype(np.float32)
 
 
-def obstacle_states(front_tag: Optional[np.ndarray], T: int) -> np.ndarray:
-    """``(T, 9)`` ``obstacle_pose`` rows (the ResiP task's observation after the parts): the
-    recorded tag-frame front-obstacle positions -- or the scene's fixed one for ``None`` -- with
-    the scene's own (constant) obstacle rotation, as ``furniture_lab.demos.obstacle_tag_rot6d``."""
-    from furniture_lab.demos import obstacle_tag_rot6d
+def front_robot(front_tag: Optional[np.ndarray], T: int) -> np.ndarray:
+    """``(T, 3)`` base-frame front-obstacle positions: the recorded tag-frame ones (the tag,
+    table and parts coincide between the sims), or the scene's fixed one for ``None``."""
     from furniture_lab.tasks.furniture.frames import OBSTACLE_FRONT_POS, TAG_POS_W, TAG_ROT_W
 
     if front_tag is None:
-        return np.tile(obstacle_tag_rot6d(OBSTACLE_FRONT_POS), (T, 1)).astype(np.float32)
-    robot = np.asarray(TAG_POS_W) + np.asarray(front_tag, dtype=np.float64) @ np.asarray(TAG_ROT_W).T
-    return np.stack([obstacle_tag_rot6d(p) for p in robot]).astype(np.float32)
+        return np.tile(np.asarray(OBSTACLE_FRONT_POS, dtype=np.float64), (T, 1))
+    return np.asarray(TAG_POS_W) + np.asarray(front_tag, dtype=np.float64) @ np.asarray(TAG_ROT_W).T
 
 
 def import_resip_zarr(
@@ -154,9 +152,12 @@ def import_resip_zarr(
         if source in already:
             skipped += 1
             continue
-        states = zarr_states_abs(robot_state[lo:hi], parts_poses[lo:hi])
-        if obstacle:
-            states = np.concatenate([states, obstacle_states(None if front_tag is None else front_tag[lo:hi], hi - lo)], axis=1)
+        if obstacle:  # the ResiP task: base-frame parts and the recorded obstacle's x, y (63)
+            from furniture_lab.demos import resip_abs_states
+
+            states = resip_abs_states(robot_state[lo:hi], parts_poses[lo:hi], front_robot(None if front_tag is None else front_tag[lo:hi], hi - lo))
+        else:
+            states = zarr_states_abs(robot_state[lo:hi], parts_poses[lo:hi])
         acts = actions[lo:hi].copy()
         # ResiP's process_pickles shrank the episode's rotation deltas by one factor
         acts[:, 3:9], rot_scale = resip_unscale_rotation(robot_state[lo:hi, 3:9], acts[:, 3:9])

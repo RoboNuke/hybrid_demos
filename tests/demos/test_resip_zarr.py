@@ -92,8 +92,9 @@ def test_import_scales_resips_shrunk_rotation_deltas_back_up(tmp_path):
 
 
 def test_the_resip_task_keeps_the_recorded_obstacle(tmp_path):
-    """42-wide parts_poses: the ResiP task's state_abs is 70, the obstacle's recorded position
-    (here (0.5, 0, 0) in the tag frame) in the last 9; another FBAbs task gets 61."""
+    """42-wide parts_poses: the ResiP task's state_abs is 63 -- the parts in the robot-base
+    frame, then the obstacle's recorded position (here (0.5, 0, 0) in the tag frame) as base-frame
+    x, y; another FBAbs task gets 61 (tag frame)."""
     import glob, pyarrow.parquet as pq
     from furniture_lab.tasks.furniture.frames import TAG_POS_W, TAG_ROT_W
 
@@ -101,9 +102,13 @@ def test_the_resip_task_keeps_the_recorded_obstacle(tmp_path):
     import_resip_zarr(tmp_path / "d.zarr", tmp_path / "resip")
     t = pq.read_table(glob.glob(str(tmp_path / "resip" / "data" / "*" / "*.parquet"))[0]).to_pydict()
     s = np.array(t["observation.state_abs"])
-    assert s.shape[1] == 70
-    np.testing.assert_allclose(s[:, 61:64], np.tile([0.5, 0.0, 0.0], (3, 1)), atol=1e-5)
-    np.testing.assert_allclose(s[0, 64:70], np.asarray(TAG_ROT_W).T[:2].reshape(6), atol=1e-5)
+    assert s.shape[1] == 63
+    front = np.asarray(TAG_POS_W) + np.asarray(TAG_ROT_W) @ np.array([0.5, 0.0, 0.0])
+    np.testing.assert_allclose(s[:, 61:63], np.tile(front[:2], (3, 1)), atol=1e-5)
+    from my_project.demos.resip_zarr import zarr_states_abs  # the same parts, tag frame
+    z = zarr.open_group(str(tmp_path / "d.zarr"), mode="r")
+    tag = zarr_states_abs(np.asarray(z["robot_state"][:3]), np.asarray(z["parts_poses"][:3, :35]))
+    np.testing.assert_allclose(s[:, 16:19], np.asarray(TAG_POS_W) + tag[:, 16:19] @ np.asarray(TAG_ROT_W).T, atol=1e-5)
     import_resip_zarr(tmp_path / "d.zarr", tmp_path / "port", task_name="Isaac-Furniture-OneLeg-FBAbs-v0")
     t = pq.read_table(glob.glob(str(tmp_path / "port" / "data" / "*" / "*.parquet"))[0]).to_pydict()
     assert np.array(t["observation.state_abs"]).shape[1] == 61

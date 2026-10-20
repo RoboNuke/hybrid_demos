@@ -18,7 +18,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
-__all__ = ["FORGE", "FURNITURE", "family_of", "is_abs", "obs_layout", "obs_term_slices_of", "action_layout", "action_metric_groups"]
+__all__ = [
+    "FORGE", "FURNITURE", "family_of", "is_abs", "obs_layout", "obs_term_slices_of", "action_layout",
+    "action_metric_groups", "obs_units", "action_units",
+]
 
 FORGE = "forge"
 FURNITURE = "furniture"
@@ -37,7 +40,7 @@ def is_abs(task_name: str) -> bool:
 
 def observes_obstacle(task_name: str) -> bool:
     """The ResiP FBAbs task (``Isaac-Furniture-*-FBAbs-ResiP-*``) also observes the front
-    obstacle's pose (``FBABS_RESIP_OBS_LAYOUT``, 70): the rule the sim-free demo importers use;
+    obstacle's x, y, every pose in the robot-base frame (``FBABS_RESIP_OBS_LAYOUT``, 63): the rule the sim-free demo importers use;
     with an env cfg in hand, ``obs_layout`` reads the cfg itself."""
     return is_abs(task_name) and "ResiP" in str(task_name)
 
@@ -51,6 +54,40 @@ def obs_layout(task_name: str, task_cfg: Any) -> List[Tuple[str, int]]:
     from isaaclab_tasks.direct.factory.factory_env_cfg import OBS_DIM_CFG
 
     return [(name, int(OBS_DIM_CFG[name])) for name in task_cfg.obs_order]
+
+
+#: the physical unit of every dim of an FBAbs observation term (``bc.normalization: per_unit``)
+_POSE9 = ["pos"] * 3 + ["rot6d"] * 6
+TERM_UNITS: Dict[str, List[str]] = {
+    "ee_pos": ["pos"] * 3,
+    "ee_rot6d": ["rot6d"] * 6,
+    "ee_pos_vel": ["lin_vel"] * 3,
+    "ee_ori_vel": ["ang_vel"] * 3,
+    "gripper_width": ["finger_width"],
+    "parts_poses": _POSE9 * 5,
+    "parts_poses_b": _POSE9 * 5,
+    "obstacle_xy": ["pos"] * 2,
+}
+
+
+def obs_units(task_name: str, task_cfg: Any) -> List[str]:
+    """Every observation dim's physical unit, in order, from the task's layout (FBAbs only)."""
+    if not is_abs(task_name):
+        raise ValueError(f"per-unit scaling knows the furniture FBAbs layouts only, got task {task_name!r}")
+    units: List[str] = []
+    for name, width in obs_layout(task_name, task_cfg):
+        if name not in TERM_UNITS or len(TERM_UNITS[name]) != width:
+            raise KeyError(f"observation term {name!r} ({width} wide) has no unit map in families.TERM_UNITS")
+        units += TERM_UNITS[name]
+    return units
+
+
+def action_units(task_name: str) -> List[str]:
+    """Every action dim's unit: the FBAbs target ``[pos 3, rot6d 6, gripper]``; its position and
+    rot6d share the observation's ranges."""
+    if not is_abs(task_name):
+        raise ValueError(f"per-unit scaling knows the furniture FBAbs action only, got task {task_name!r}")
+    return ["pos"] * 3 + ["rot6d"] * 6 + ["gripper_cmd"]
 
 
 def obs_term_slices_of(task_name: str, task_cfg: Any) -> Dict[str, slice]:

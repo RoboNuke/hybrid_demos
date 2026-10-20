@@ -176,6 +176,13 @@ def _train(args, overrides, setup, app_launcher) -> int:
     policy = DiffusionPolicy(actor_cfg, demos.obs_dim, demos.action_dim).to(device)
     policy.normalizer.fit("obs", demos.obs[used].to(device))
     policy.normalizer.fit("action", demos.action[used].to(device))
+    if bc.normalization == "per_unit":  # one range per physical unit, obs and action together
+        from my_project.families import action_units, obs_units
+
+        policy.normalizer.fit_units(
+            demos.obs[used].to(device), demos.action[used].to(device),
+            obs_units(cfg.task_name, cfg.task_cfg), action_units(cfg.task_name),
+        )
     window = dict(
         n_obs_steps=actor_cfg.n_obs_steps,
         horizon=actor_cfg.horizon,

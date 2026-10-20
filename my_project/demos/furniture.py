@@ -17,8 +17,8 @@ action, is dropped, as the recorder drops it):
 * ``action`` (8): the action as recorded;
 * the absolute rot6d interface (``Isaac-Furniture-OneLeg-FBAbs-v0``, ResiP's ``control_mode:
   pos``), derived exactly from the same frames by ``furniture_lab.demos``:
-  ``observation.state_abs`` (61: every orientation as rot6d; 70 for the ResiP task, the front
-  obstacle's pose appended) and ``action.abs`` (10: the
+  ``observation.state_abs`` (61: every orientation as rot6d, parts in the tag frame; 63 for
+  the ResiP task: every pose in the robot-base frame, the front obstacle's x, y appended) and ``action.abs`` (10: the
   target pose the delta commanded, ``[ee_pos + dpos, rot6d(R_ee R_dq), gripper]``);
 * raw material, never trained on by default: ``observation.joint_positions`` (7),
   ``observation.next_state`` (49) / ``observation.next_state_abs`` (61) (the frame after --
@@ -47,8 +47,8 @@ STATE_KEYS = ("ee_pos", "ee_quat", "ee_pos_vel", "ee_ori_vel", "gripper_width", 
 STATE_DIM = 3 + 4 + 3 + 3 + 1 + 35
 ACTION_DIM = 8
 ABS_STATE_DIM, ABS_ACTION_DIM = 61, 10
-#: the front obstacle's ``[pos 3, rot6d 6]`` the ResiP task appends to ``observation.state_abs``
-OBSTACLE_DIM = 9
+#: the front obstacle's base-frame ``[x, y]`` the ResiP task appends to ``observation.state_abs``
+OBSTACLE_DIM = 2
 CONTROL_HZ = 20.0  # FurnitureSim's env rate, the collector's too (physics 1/120 x 6)
 
 
@@ -93,7 +93,8 @@ def import_demos(
     """Convert every demo under ``src`` into the dataset at ``out`` (created or appended).
 
     For the ResiP FBAbs task (``families.observes_obstacle``) ``observation.state_abs`` also
-    carries the front obstacle's pose (70 wide; ``furniture_lab.demos.fb_abs_frames``)."""
+    is the ResiP layout instead (63: the parts in the robot-base frame, then the front obstacle's
+    x, y; ``furniture_lab.demos.fb_abs_frames``)."""
     from my_project.families import observes_obstacle
 
     obstacle = observes_obstacle(task_name)
@@ -115,7 +116,7 @@ def import_demos(
             "observation.state": list(STATE_KEYS),
             "action": "[dpos 3 (m, robot frame), dquat 4 (xyzw, EE frame), gripper (<0 open)]",
             "observation.state_abs": "[ee_pos 3, ee_rot6d 6, ee_pos_vel 3, ee_ori_vel 3, gripper_width 1, parts 5 x [pos 3, rot6d 6]"
-            + (", obstacle_front [pos 3, rot6d 6]]" if obstacle else "]"),
+            + (" (robot-base frame), obstacle_front [x, y] (robot-base frame)]" if obstacle else " (AprilTag frame)]"),
             "action.abs": "[goal_pos 3 (m, robot frame), goal_rot6d 6, gripper (<0 open)]",
         },
     )

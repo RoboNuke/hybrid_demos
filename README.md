@@ -301,7 +301,7 @@ python scripts/train_bc.py --config configs/experiments/diffusion_bc_furniture_r
 closer to ResiP's: the obstacles move ±2 cm per reset (the ResiP task's own now, so demos are
 re-collected with them moving), lr warmup 10k and 5M gradient steps, and rollouts with warm
 start, 4 DDIM steps and 1000-step episodes. The ResiP FBAbs task now also observes the front
-obstacle's pose (tag-frame pos + rot6d appended after the parts: 70 wide), and both importers
+obstacle's pose (tag-frame pos + rot6d appended after the parts: 70 wide; since replaced by every pose in the robot-base frame and the obstacle's x, y only: 63), and both importers
 write it for that task (`families.observes_obstacle`). Its wandb group, run names, run folder and dataset
 (`data/deep_resipi_replica`) all carry the name; `diffusion_bc_furniture_resip.yaml` stays as
 the record of the earlier setup.
@@ -313,13 +313,16 @@ without warm start (`model.actor.warm_start: false`, 4 DDIM steps) and 700 steps
 (`task.cfg.episode_length_s: 70`).
 `pivot_vary_dart` (`configs/experiments/pivot_vary_dart.yaml`) is `pivot_demos` on demos collected with
 `--vary --dart_prob 0.05` (Robonuke_Furniture_Bench `furniture_lab/variation.py`; `data/pivot_vary_dart`), the only change.
+`pivot_vary_dart_v2` is `pivot_vary_dart` on demos collected after the base-frame ResiP observation (63) and the
+free-hand per-step limits, with `bc.normalization: per_unit` (`data/pivot_vary_dart_v2`).
 
 **ResiP's own checkpoint.** `scripts/eval_resip_checkpoint.py` (`my_project/bc/resip_checkpoint.py`)
 rolls out ResiP's released one_leg BC weights (`s3://iai-robust-rearrangement/checkpoints/bc/one_leg/low/actor_chkpt.pt`)
 in this port's ResiP task, acted as their `evaluate_model.py` acts it (4 DDIM steps, warm start
-from timestep 50): each step the 70-wide observation is rebuilt in their 58-wide layout (robot
-state with the EE z in their 15 mm lower base frame; 5 parts and the front obstacle as `[pos,
-quat xyzw]` in the tag frame, w >= 0 as their sim writes it), and the action's z moved back.
+from timestep 50): each step the 63-wide observation is rebuilt in their 58-wide layout (robot
+state with the EE z in their 15 mm lower base frame; the 5 base-frame parts and the front
+obstacle -- its x, y with its fixed z and rotation -- as `[pos, quat xyzw]` in the tag frame,
+w >= 0 as their sim writes it), and the action's z moved back.
 Near their ~54% means the port is faithful; far below means the port caps BC. The `--config`
 gives the task, envs, episode length and `eval.num_rollouts` only.
 
@@ -773,6 +776,7 @@ when `trainer.learner` is `diffusion_bc`.
 | `bc.rollout_loss_threshold` | float | `0.1` | rollouts run only once the test loss is below this |
 | `bc.max_hours` | float | `null` | stop after this many hours of wall-clock training (checked after each epoch, after its checkpoints); `null`: no limit |
 | `bc.save_only_best_ckpt` | bool | `false` | keep only `actor_chkpt_best_success_rate.pt`, on disk and in wandb: written at the first rollout, then overwritten only when a rollout beats the best success rate (no last, periodic or best-test-loss checkpoints); needs `bc.rollout_every` > 0 |
+| `bc.normalization` | str | `per_dim` | how obs and actions are scaled to [-1, 1] from the demos' min / max: `per_dim` gives every dim its own range (robust-rearrangement's); `per_unit` gives every dim of one physical unit one shared range, taken over the observation and the action together -- positions (EE, parts, obstacle, the action's target), rot6d, linear velocity, angular velocity, finger width, gripper command (`families.obs_units` / `action_units`) -- so near-constant dims stay near-constant; furniture FBAbs tasks only |
 | `bc.early_stop_patience` | float | `.inf` | evals without a new best EMA test loss before stopping; `.inf` never stops |
 | `bc.early_stop_smooth` | float | `0.9` | EMA factor of the early stopper's test loss |
 | `bc.show_waypoints` | bool | `false` | eval / debug: draw each env's predicted chunk as spheres in the scene (viewer and recorded videos): the waypoint executing now purple, the rest of the executed `action_horizon` green, the remaining tail red |

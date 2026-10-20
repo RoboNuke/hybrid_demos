@@ -103,10 +103,10 @@ def test_import_writes_the_dataset_and_the_loader_reads_it(tmp_path):
 
 
 def test_the_resip_task_appends_the_obstacle_pose(tmp_path):
-    """Isaac-Furniture-*-FBAbs-ResiP: state_abs is 70, the pkl's recorded obstacle last."""
+    """Isaac-Furniture-*-FBAbs-ResiP: state_abs is 63 (base-frame parts), the pkl's recorded
+    obstacle x, y last."""
     import json
 
-    from furniture_lab.demos import obstacle_tag_rot6d
     from furniture_lab.tasks.furniture import frames
 
     src, out = tmp_path / "src", tmp_path / "out"
@@ -116,10 +116,10 @@ def test_the_resip_task_appends_the_obstacle_pose(tmp_path):
     _write(src, "a", demo)
     import_demos(src, out, task_name="Isaac-Furniture-OneLeg-FBAbs-ResiP-v0")
     info = json.loads((out / "meta" / "info.json").read_text())
-    assert info["features"]["observation.state_abs"] == 70
+    assert info["features"]["observation.state_abs"] == 63
     import glob
 
     import pyarrow.parquet as pq
 
     t = pq.read_table(glob.glob(str(out / "data" / "*" / "*.parquet"))[0]).to_pydict()
-    np.testing.assert_allclose(np.array(t["observation.state_abs"])[:, 61:], np.tile(obstacle_tag_rot6d(moved), (5, 1)), atol=1e-5)
+    np.testing.assert_allclose(np.array(t["observation.state_abs"])[:, 61:], np.tile(moved[:2], (5, 1)), atol=1e-5)

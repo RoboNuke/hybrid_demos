@@ -14,13 +14,15 @@ same class -- and acted through :class:`ChunkedBase` as ResiP's ``evaluate_model
 4 DDIM steps, warm start from timestep 50 (their actor always warm-starts), observations
 clamped to [-3, 3] after normalizing.
 
-Per step, the port's observation (70: ResiP task layout) is rebuilt in ResiP's (58):
+Per step, the port's observation (63: the ResiP task, every pose in the robot-base frame) is
+rebuilt in ResiP's (58):
 
 * ``robot_state`` 16 -- same terms, order and rot6d convention; the EE z moves into ResiP's
   base frame (their base is 15 mm lower: ``frames.RESIP_BASE_Z_TO_PORT``);
 * ``parts_poses`` 42 -- 5 parts then the front obstacle, each ``[pos 3, quat xyzw 4]`` in the
-  AprilTag frame (ours hold ``[pos 3, rot6d 6]`` in the same frame), each quaternion with the
-  sign their sim gives it (:func:`rot6d_to_quat_xyzw`: w >= 0).
+  AprilTag frame: our base-frame ``[pos 3, rot6d 6]`` parts moved into it, and the obstacle's
+  x, y with its fixed z and rotation; each quaternion with the sign their sim gives it
+  (:func:`mat_to_quat_xyzw`: w >= 0).
 
 The predicted action (10: target pos, rot6d, gripper) is sent as their sim received it, its z
 moved back into the port's base frame. Their rotation targets are the episode-wide shrunk ones
@@ -38,23 +40,32 @@ from typing import Any, Dict, Tuple
 
 import torch
 
-__all__ = ["RESIP_OBS_DIM", "PORT_OBS_DIM", "rot6d_to_quat_xyzw", "ResipObsAdapter", "load_resip_policy", "main"]
+__all__ = ["RESIP_OBS_DIM", "PORT_OBS_DIM", "rot6d_to_mat", "rot6d_to_quat_xyzw", "mat_to_quat_xyzw", "ResipObsAdapter", "load_resip_policy", "main"]
 
-ROBOT, N_POSES = 16, 6  # robot_state; 5 parts + the front obstacle
-PORT_OBS_DIM = ROBOT + N_POSES * 9  # 70
+ROBOT, N_PARTS, N_POSES = 16, 5, 6  # robot_state; 5 parts (+ the front obstacle in theirs)
+PORT_OBS_DIM = ROBOT + N_PARTS * 9 + 2  # 63
 RESIP_OBS_DIM = ROBOT + N_POSES * 7  # 58
 ACTION_DIM = 10
 
 
-def rot6d_to_quat_xyzw(d6: torch.Tensor) -> torch.Tensor:
-    """``(..., 6)`` rot6d (the matrix's first two rows) -> ``(..., 4)`` quaternion xyzw, exactly
-    as ResiP's sim writes ``parts_poses``: its fork of FurnitureBench converts every pose matrix
-    with ``control_utils.matrix_to_quaternion_xyzw`` (w = sqrt(1 + trace) / 2 >= 0; x, y, z take
-    their magnitude from the diagonal and their sign from the off-diagonal differences)."""
+def rot6d_to_mat(d6: torch.Tensor) -> torch.Tensor:
+    """``(..., 6)`` rot6d (the matrix's first two rows) -> ``(..., 3, 3)`` (Gram-Schmidt)."""
     b1 = torch.nn.functional.normalize(d6[..., 0:3], dim=-1)
     a2 = d6[..., 3:6]
     b2 = torch.nn.functional.normalize(a2 - (b1 * a2).sum(-1, keepdim=True) * b1, dim=-1)
-    m = torch.stack((b1, b2, torch.cross(b1, b2, dim=-1)), dim=-2)  # rows
+    return torch.stack((b1, b2, torch.cross(b1, b2, dim=-1)), dim=-2)  # rows
+
+
+def rot6d_to_quat_xyzw(d6: torch.Tensor) -> torch.Tensor:
+    """``(..., 6)`` rot6d -> ``(..., 4)`` quaternion xyzw in their sim's convention."""
+    return mat_to_quat_xyzw(rot6d_to_mat(d6))
+
+
+def mat_to_quat_xyzw(m: torch.Tensor) -> torch.Tensor:
+    """``(..., 3, 3)`` -> ``(..., 4)`` quaternion xyzw, exactly as ResiP's sim writes
+    ``parts_poses``: its fork of FurnitureBench converts every pose matrix with
+    ``control_utils.matrix_to_quaternion_xyzw`` (w = sqrt(1 + trace) / 2 >= 0; x, y, z take their
+    magnitude from the diagonal and their sign from the off-diagonal differences)."""
 
     def sqrt_pos(x: torch.Tensor) -> torch.Tensor:
         return torch.sqrt(x.clamp(min=0.0))
@@ -71,19 +82,38 @@ def rot6d_to_quat_xyzw(d6: torch.Tensor) -> torch.Tensor:
 
 
 class ResipObsAdapter:
-    """The port's 70-wide observation -> ResiP's 58-wide one; their action -> the port's."""
+    """The port's 63-wide observation -> ResiP's 58-wide one; their action -> the port's.
 
-    def __init__(self, base_z_to_port: float) -> None:
+    ``tag_rot`` / ``tag_pos``: the AprilTag frame in the robot-base frame (``frames.TAG_*_W``);
+    ``obstacle_z``: the front obstacle's fixed base-frame z (``frames.OBSTACLE_FRONT_POS``)."""
+
+    def __init__(self, base_z_to_port: float, tag_rot=None, tag_pos=None, obstacle_z: float | None = None) -> None:
+        from furniture_lab.tasks.furniture import frames
+
         self.base_z_to_port = float(base_z_to_port)
+        self.R_tw = torch.as_tensor(frames.TAG_ROT_W if tag_rot is None else tag_rot, dtype=torch.float32)
+        self.p_tw = torch.as_tensor(frames.TAG_POS_W if tag_pos is None else tag_pos, dtype=torch.float32)
+        self.obstacle_z = float(frames.OBSTACLE_FRONT_POS[2] if obstacle_z is None else obstacle_z)
+
+    def _to_tag(self, pos_b: torch.Tensor, R_b: torch.Tensor):
+        R, p = self.R_tw.to(pos_b.device), self.p_tw.to(pos_b.device)
+        return (pos_b - p) @ R, R.T @ R_b  # R^T (p_b - p_tw), R^T R_b
 
     def obs(self, port: torch.Tensor) -> torch.Tensor:
         if port.shape[-1] != PORT_OBS_DIM:
             raise ValueError(f"expected the ResiP task's {PORT_OBS_DIM}-wide observation, got {port.shape[-1]}")
+        lead = port.shape[:-1]
         robot = port[..., :ROBOT].clone()
         robot[..., 2] -= self.base_z_to_port  # port base frame -> ResiP's (15 mm lower base)
-        poses = port[..., ROBOT:].reshape(*port.shape[:-1], N_POSES, 9)
-        parts = torch.cat((poses[..., :3], rot6d_to_quat_xyzw(poses[..., 3:9])), dim=-1)
-        return torch.cat((robot, parts.reshape(*port.shape[:-1], N_POSES * 7)), dim=-1)
+        poses = port[..., ROBOT : ROBOT + 9 * N_PARTS].reshape(*lead, N_PARTS, 9)
+        pos_t, R_t = self._to_tag(poses[..., :3], rot6d_to_mat(poses[..., 3:9]))
+        # the front obstacle: its observed x, y, its fixed z; never rotated in the base frame
+        xy = port[..., ROBOT + 9 * N_PARTS :]
+        ob_b = torch.cat((xy, torch.full((*lead, 1), self.obstacle_z, device=port.device, dtype=port.dtype)), dim=-1)
+        ob_t, ob_R = self._to_tag(ob_b[..., None, :], torch.eye(3, device=port.device).expand(*lead, 1, 3, 3))
+        pos_t, R_t = torch.cat((pos_t, ob_t), dim=-2), torch.cat((R_t, ob_R), dim=-3)
+        parts = torch.cat((pos_t, mat_to_quat_xyzw(R_t)), dim=-1)
+        return torch.cat((robot, parts.reshape(*lead, N_POSES * 7)), dim=-1)
 
     def action(self, resip: torch.Tensor) -> torch.Tensor:
         out = resip.clone()
@@ -201,7 +231,7 @@ def _run(args, overrides, setup, app_launcher) -> int:
 
     cfg = load_from_args(args, overrides)
     if not observes_obstacle(cfg.task_name):
-        raise ValueError(f"{cfg.task_name} does not observe the front obstacle; use a ResiP task config (70-wide obs)")
+        raise ValueError(f"{cfg.task_name} does not observe the front obstacle; use a ResiP task config (63-wide obs)")
     prepare_task(cfg, cfg.task_name, cfg.task_cfg)
     raw = gym.make(cfg.task_name, cfg=cfg.task_cfg)
     env = wrap_for_skrl(build_env(cfg, raw, cfg.task_name), cfg.experiment.seed)
