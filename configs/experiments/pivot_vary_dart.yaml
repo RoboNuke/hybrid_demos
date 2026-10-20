@@ -1,7 +1,7 @@
 # pivot_vary_dart: pivot_demos on 50 scripted screw-pivot demos collected with --vary --dart_prob 0.05
 # (Robonuke_Furniture_Bench collect_scripted.py; furniture_lab/variation.py) -- the only change.
 #
-#   python scripts/import_furniture_demos.py --src /tmp/pivot/vary_dart --out data/pivot_vary_dart \
+#   python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/datasets/pivot_vary_dart --out data/pivot_vary_dart \
 #       --control_hz 10 --task_name Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
 #   python scripts/train_bc.py --config configs/experiments/pivot_vary_dart.yaml --headless
 base: pivot_demos.yaml
