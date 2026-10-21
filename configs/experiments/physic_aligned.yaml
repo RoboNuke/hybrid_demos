@@ -8,9 +8,10 @@
 # +-15 deg in the tag frame, collision-free, inside the position limits; the arm and obstacles fixed).
 #
 # The recipe (robust-rearrangement's checkpoint config): batch 1024, lr 1e-4, weight decay 1e-6, cosine
-# schedule with 2000 warmup steps, per-dim min-max scaling, rollouts once the test loss is under 0.1,
-# 512 of them per evaluation, warm start, 16 DDIM steps. Rollout episodes 1000 steps (our scripted demos
-# run 650 steps median, 900 at p90; ResiP's 700-step cap is 1.5x their 460).
+# schedule with 2000 warmup steps, per-dim min-max scaling, 512 rollouts per evaluation, warm start,
+# 16 DDIM steps. Unlike ResiP (rollouts only once the test loss is under 0.1), the rollouts run every
+# 10 epochs from the start (the base's rollout_loss_threshold 1000). Rollout episodes 1000 steps (our
+# scripted demos run 650 steps median, 900 at p90; ResiP's 700-step cap is 1.5x their 460).
 #
 # Everything named by this run carries "physic_aligned": the demo folder, the dataset, the wandb group
 # (runs physic_aligned_a0, ...).
@@ -27,7 +28,7 @@
 base: deep_resipi_replica.yaml
 
 wandb:
-  group: physic_aligned
+  group: physic_aligned_evalHappy
 
 task:
   cfg:
@@ -56,9 +57,8 @@ bc:
   weight_decay: 1.0e-6
   lr_schedule: cosine
   warmup_steps: 2000
-  # rollouts every 10 epochs (10k gradient steps), once the test loss is under ResiP's 0.1
+  # rollouts every 10 epochs (10k gradient steps), whatever the test loss (the base's threshold 1000)
   rollout_every: 10
-  rollout_loss_threshold: 0.1
 
 eval:
   num_rollouts: 512
