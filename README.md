@@ -330,6 +330,11 @@ loading itself: the checkpoint run on its own training zarr, in their layout and
 gives the task, envs, episode length and `eval.num_rollouts` only. `--save_rollouts <file.parquet>`
 writes every rollout step (the port observation, the action sent, rewards, metrics; `run_eval`'s state
 table) for offline analysis, e.g. the failure-stage sort.
+`scripts/eval_resip_from_demos.py` (`my_project/bc/resip_demo_starts.py`) rolls the same checkpoint out from
+the initial states of ResiP's own 50 demos (`--zarr`, `--trials` rollouts each: the arm IK-driven to
+the demo's first EE pose, fingers, obstacles and parts written as recorded), so the starts are
+exactly the policy's training ones; success is the soft assembled latch, a part leaving the limits a
+failure; `--save_rollouts` writes the same state table.
 
 **ResiP's own demos.** ResiP publishes its 50 one_leg low teleop demos only processed, as a
 robust-rearrangement `.zarr`; `scripts/import_resip_zarr.py` (`my_project/demos/resip_zarr.py`,
