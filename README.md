@@ -327,7 +327,9 @@ when its normalizer shows one) -- as `[pos, quat xyzw]` in the tag frame, w >= 0
 it), and the action's z moved back.
 Near their ~54% means the port is faithful; far below means the port caps BC. `scripts/check_resip_checkpoint.py` (`my_project/bc/resip_offline_check.py`, no sim) checks the
 loading itself: the checkpoint run on its own training zarr, in their layout and frames, against the recorded actions. The `--config`
-gives the task, envs, episode length and `eval.num_rollouts` only.
+gives the task, envs, episode length and `eval.num_rollouts` only. `--save_rollouts <file.parquet>`
+writes every rollout step (the port observation, the action sent, rewards, metrics; `run_eval`'s state
+table) for offline analysis, e.g. the failure-stage sort.
 
 **ResiP's own demos.** ResiP publishes its 50 one_leg low teleop demos only processed, as a
 robust-rearrangement `.zarr`; `scripts/import_resip_zarr.py` (`my_project/demos/resip_zarr.py`,

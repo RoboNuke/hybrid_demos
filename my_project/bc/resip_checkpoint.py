@@ -224,6 +224,10 @@ def main(argv=None, setup=None) -> int:
     add_config_args(parser)
     parser.add_argument("--checkpoint", required=True, help="ResiP's actor_chkpt.pt (robust-rearrangement bc.py)")
     parser.add_argument("--inference_steps", type=int, default=4, help="DDIM steps (their evaluate_model.py: 4)")
+    parser.add_argument(
+        "--save_rollouts", default=None,
+        help="write every rollout step (observations, actions, rewards, metrics) to this parquet file",
+    )
     AppLauncher.add_app_launcher_args(parser)
     args, overrides = parser.parse_known_args(argv)
     app_launcher = AppLauncher(args)
@@ -272,8 +276,11 @@ def _run(args, overrides, setup, app_launcher) -> int:
     steps = int(unwrapped.max_episode_length)
     result = run_eval(
         env=env, policy=Policy(), num_rollouts=cfg.eval.num_rollouts, max_episode_length=steps,
-        seed=cfg.experiment.seed, save_state=False, device=env.device,
+        seed=cfg.experiment.seed, save_state=args.save_rollouts is not None, device=env.device,
+        progress=True,  # steps out of num_rollouts x episode length; early ends add their rest
     )
+    if args.save_rollouts is not None:
+        print(f"[resip_ckpt] rollouts: {result.state.write_parquet(os.path.expanduser(args.save_rollouts))}", flush=True)
     s = result.summary
     if "episode/success/mean" not in s:
         raise KeyError(f"rollouts produced no 'episode/success' metric; summary keys: {sorted(s)}")
