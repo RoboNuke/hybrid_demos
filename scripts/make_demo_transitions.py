@@ -24,7 +24,7 @@ def setup() -> None:
 
     from robonuke_rl_core.learners.cfg import register_learner
 
-    from my_project.cfg import ActionCfg, BC_LEARNER, BCCfg, DemoCfg, EpisodeCfg, HybridCfg, ForceObsCfg, RecordCfg, HistoryCfg, ForgeV1Cfg, ResidualCfg
+    from my_project.cfg import ActionCfg, BC_BEST_CHECKPOINT, BC_LEARNER, BCCfg, DemoCfg, EpisodeCfg, HybridCfg, ForceObsCfg, RecordCfg, HistoryCfg, ForgeV1Cfg, ResidualCfg
 
     register_section("demo", DemoCfg)
     register_section("bc", BCCfg)
@@ -47,7 +47,8 @@ def setup() -> None:
 
     from my_project.bc.eval_policy import build_bc_eval_policy
 
-    register_eval_policy(BC_LEARNER, build_bc_eval_policy)  # eval / debug of BC runs
+    register_eval_policy(BC_LEARNER, build_bc_eval_policy, best_checkpoint=BC_BEST_CHECKPOINT)  # eval / debug of BC runs; --checkpoint best
+    import my_project.overlays  # noqa: F401  the one_leg video overlay (@register_overlay)
     register_learner(BC_LEARNER)  # scripts/train_bc.py
 
     from my_project.models.cfg import register_all

@@ -285,7 +285,14 @@ python scripts/train.py --config configs/experiments/residual_sac_furniture.yaml
 
 To watch or record a checkpoint: `scripts/debug.py --local <run dir> --checkpoint actor_chkpt_last.pt`
 (live viewer), or `scripts/eval.py --local <run dir> --eval_config configs/eval/furniture_record.yaml
---checkpoint actor_chkpt_last.pt --headless` (mp4s under the run's `eval/`).
+--checkpoint actor_chkpt_last.pt --headless` (the mp4s, summary and trace under the run's
+`videos/furniture_record_<timestamp>/`, beside its `checkpoints/`).
+`configs/eval/one_leg_phases.yaml` records the same with one_leg's task phases tracked
+(Robonuke_Furniture_Bench `furniture.track_phases`) and drawn by the `one_leg` overlay
+(`my_project/overlays.py`: a box per phase reached with its tests as measurement/goal, frozen
+once passed, the tracking error, a force bar, and the phase timeline with every phase's start
+marked from the first frame), the wrench estimate in the per-step parquet and the policy's chunk
+as spheres.
 
 **ResiP's setup** (`configs/base/furniture_resip.yaml`, `Isaac-Furniture-OneLeg-FBAbs-ResiP-v0`:
 10 Hz, differential IK into joint PD, FurnitureSim friction, 13 N gripper, 70 s) with the U-Net
@@ -796,7 +803,8 @@ when `trainer.learner` is `diffusion_bc`.
 | `bc.normalization` | str | `per_dim` | how obs and actions are scaled to [-1, 1] from the demos' min / max: `per_dim` gives every dim its own range (robust-rearrangement's); `per_unit` gives every dim of one physical unit one shared range, taken over the observation and the action together -- positions (EE, parts, obstacle, the action's target), rot6d, linear velocity, angular velocity, finger width, gripper command (`families.obs_units` / `action_units`) -- so near-constant dims stay near-constant; furniture FBAbs tasks only |
 | `bc.early_stop_patience` | float | `.inf` | evals without a new best EMA test loss before stopping; `.inf` never stops |
 | `bc.early_stop_smooth` | float | `0.9` | EMA factor of the early stopper's test loss |
-| `bc.show_waypoints` | bool | `false` | eval / debug: draw each env's predicted chunk as spheres in the scene (viewer and recorded videos): the waypoint executing now purple, the rest of the executed `action_horizon` green, the remaining tail red |
+| `bc.show_waypoints` | bool | `false` | eval / debug: draw each env's predicted chunk as spheres in the scene (viewer and recorded videos): the waypoint executing now yellow, the rest of the executed `action_horizon` green while still to come and grey once done, the remaining tail (never executed) red |
+| `bc.waypoint_radius` | float | `0.0015` | m: those spheres' radius; at the recorder's 240 px width one pixel is ~3.6 mm at 1 m, so recordings want ~0.005 (`configs/eval/one_leg_phases.yaml`) |
 | `bc.action_metric_groups` | dict[str, list[int]] | `{pos: [0, 1, 2], rot: [3, 4, 5]}` | named action dims for `action_sample/*_action_mse_error_<name>` |
 
 Changed from the reference on purpose: the train / test split is by episode (the reference

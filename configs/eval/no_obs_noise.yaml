@@ -22,6 +22,6 @@ task:
       lookat: [0.6, 0.0, 0.08]
 
 bc:
-  # draw the policy's 32-waypoint chunk: executing now purple, the rest of the 8 executed green,
-  # the 24-step tail red
+  # draw the policy's 32-waypoint chunk: executing now yellow, the rest of the 8 executed green
+  # (grey once done), the 24-step tail red
   show_waypoints: true

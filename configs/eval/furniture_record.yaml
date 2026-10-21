@@ -1,5 +1,5 @@
 # Record a BC policy's one_leg rollouts: 8 episodes on 4 envs, one mp4 per (round, env)
-# under the run's eval/ directory. The recorder camera needs real per-env prims
+# under the run's videos/furniture_record_<timestamp>/ directory. The recorder camera needs real per-env prims
 # (clone_in_fabric: false).
 #   python scripts/eval.py --local runs/hybrid_demo_furniture/diffusion_bc_furniture/diffusion_bc_furniture_a0 \
 #       --eval_config configs/eval/furniture_record.yaml --checkpoint actor_chkpt_last.pt --headless

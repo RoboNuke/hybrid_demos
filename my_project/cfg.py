@@ -343,6 +343,10 @@ class HistoryCfg:
 
 #: the ``trainer.learner`` value of the diffusion-policy behaviour cloning loop
 BC_LEARNER = "diffusion_bc"
+#: the file the BC loop keeps its best rollout success rate in (``my_project/bc/train.py``):
+#: what eval / debug's ``--checkpoint best`` means for a BC run (the scripts register it with
+#: ``register_eval_policy(..., best_checkpoint=...)``)
+BC_BEST_CHECKPOINT = "actor_chkpt_best_success_rate.pt"
 
 
 @dataclass
@@ -422,8 +426,11 @@ class BCCfg:
     early_stop_smooth: float = 0.9
 
     #: eval / debug: draw each env's predicted chunk as spheres in the scene (viewer and
-    #: recorded videos): executing now purple, the rest of the executed part green, the tail red
+    #: recorded videos): executing now yellow, the executed part's waypoints still to come green
+    #: and those already done grey, the tail never executed red
     show_waypoints: bool = False
+    #: m: those spheres' radius (at the recorder's 240 px width one pixel is ~3.6 mm at 1 m)
+    waypoint_radius: float = 0.0015
 
     #: named action-dim groups for the sampled-action MSE breakdown
     #: (``action_sample/<split>_action_mse_error_<name>``); null: the task family's own
@@ -432,6 +439,8 @@ class BCCfg:
     action_metric_groups: Optional[Dict[str, List[int]]] = None
 
     def validate(self, cfg: Any) -> None:
+        if not self.waypoint_radius > 0:
+            raise ValueError(f"bc.waypoint_radius must be > 0, got {self.waypoint_radius}")
         if cfg is None or cfg.trainer.learner != BC_LEARNER:
             return  # the section is registered everywhere but only rules a BC run
         if not self.dataset:

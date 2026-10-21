@@ -149,6 +149,7 @@ def _train(args, overrides, setup, app_launcher) -> int:
     from robonuke_rl_core.logging import WandbLogger
 
     from my_project.bc.dataset import WindowedSplit, load_lerobot, split_episodes
+    from my_project.cfg import BC_BEST_CHECKPOINT
     from my_project.cfg import BC_LEARNER
     from my_project.models.diffusion_policy import DiffusionPolicy
 
@@ -367,7 +368,7 @@ def _train(args, overrides, setup, app_launcher) -> int:
                     first = bc.save_only_best_ckpt and not saved_best
                     if rate > best_success_rate or first:
                         best_success_rate = max(rate, best_success_rate)
-                        save("actor_chkpt_best_success_rate.pt", checkpoint_state())
+                        save(BC_BEST_CHECKPOINT, checkpoint_state())
                         saved_best = True
                     if bc.rollout_progress:
                         print(
