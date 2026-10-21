@@ -315,6 +315,12 @@ without warm start (`model.actor.warm_start: false`, 4 DDIM steps) and 700 steps
 `--vary --dart_prob 0.05` (Robonuke_Furniture_Bench `furniture_lab/variation.py`; `data/pivot_vary_dart`), the only change.
 `pivot_vary_dart_v2` is `pivot_vary_dart` on demos collected after the base-frame ResiP observation (63) and the
 free-hand per-step limits, with `bc.normalization: per_unit` (`data/pivot_vary_dart_v2`).
+`physic_aligned` (`configs/experiments/physic_aligned.yaml`) is `deep_resipi_replica` on 50 scripted demos
+(`--screw_pivot --vary --dart_prob 0.05`, `data/physic_aligned`) collected in the physics aligned with FurnitureSim /
+ResiP's sim (Robonuke_Furniture_Bench's defaults since 2026-10-20 plus `furniture.part_assets: furniturebench_top1024`:
+FurnitureBench's meshes, the simulated masses, the effort gripper, friction 1.0 on the obstacles and the robot, the EE-point
+velocity, FurnitureBench's `low` reset), trained with ResiP's released recipe: batch 1024, warmup 2000, per-dim scaling,
+rollouts from test loss 0.1, 512 per evaluation, warm start, 16 DDIM steps, 1000-step episodes.
 
 **ResiP's own checkpoint.** `scripts/eval_resip_checkpoint.py` (`my_project/bc/resip_checkpoint.py`)
 rolls out ResiP's released one_leg BC weights (`s3://iai-robust-rearrangement/checkpoints/bc/one_leg/low/actor_chkpt.pt`)
