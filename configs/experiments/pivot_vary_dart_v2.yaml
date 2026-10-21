@@ -12,7 +12,7 @@
 base: pivot_vary_dart.yaml
 
 wandb:
-  group: pivot_vary_dart_v2
+  group: pivot_vary_dart_v2_full_lr
 
 bc:
   dataset: data/pivot_vary_dart_v2

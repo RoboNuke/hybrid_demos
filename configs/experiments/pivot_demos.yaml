@@ -21,7 +21,7 @@ model:
     # rollouts: each chunk starts from fresh noise (deep_resipi_replica warm starts)
     warm_start: false
     # DDIM steps at inference (as deep_resipi_replica)
-    inference_steps: 4
+    #inference_steps: 4
 
 bc:
   dataset: data/pivot_demos
