@@ -253,10 +253,18 @@ class ResidualCfg:
     """
 
     enabled: bool = False
-    #: the BC run directory of the base policy (holds ``checkpoints/``; its resolved config,
-    #: there or one level up, gives the architecture)
+    #: the base policy's BC run as a local run directory (holds ``checkpoints/``; its resolved
+    #: config, there or one level up, gives the architecture). Null: the wandb run
+    #: ``base_project`` / ``base_run_name`` instead (one of the two, not both)
     base_run: Optional[str] = None
-    #: the checkpoint file in ``<base_run>/checkpoints/``
+    #: the base policy's BC run on wandb: its project and run name (or run id), under
+    #: ``base_entity`` (null: this run's ``wandb.entity``). Its ``resolved_config.yaml`` and
+    #: ``base_checkpoint`` are downloaded fresh whenever an env is built. The project must not
+    #: be this run's ``wandb.project``: residual runs and their bases live in separate projects
+    base_project: Optional[str] = None
+    base_run_name: Optional[str] = None
+    base_entity: Optional[str] = None
+    #: the base's checkpoint file (in ``<base_run>/checkpoints/``, or the wandb run's files)
     base_checkpoint: str = "actor_chkpt_best_success_rate.pt"
     #: largest correction per step, one value per action dim (Forge: [x, y, z, yaw] in m and
     #: rad; FurnitureBench: [dpos 3, dquat 4, gripper]); null: action_scale_fraction
@@ -284,8 +292,23 @@ class ResidualCfg:
             )
         if not self.enabled or cfg is None:
             return
-        if not self.base_run:
-            raise ValueError("residual.base_run is required: the BC run directory of the base policy")
+        remote = self.base_project is not None or self.base_run_name is not None
+        if bool(self.base_run) == remote:
+            raise ValueError(
+                "residual needs the base policy's BC run, one way: residual.base_run (a local run directory) "
+                "or residual.base_project and residual.base_run_name (a wandb run); "
+                f"got base_run={self.base_run!r}, base_project={self.base_project!r}, base_run_name={self.base_run_name!r}"
+            )
+        if remote and not (self.base_project and self.base_run_name):
+            raise ValueError(
+                f"residual.base_project and residual.base_run_name name the base's wandb run together; got "
+                f"base_project={self.base_project!r}, base_run_name={self.base_run_name!r}"
+            )
+        if remote and self.base_project == cfg.wandb.project:
+            raise ValueError(
+                f"residual.base_project is this run's own wandb.project ({cfg.wandb.project!r}): a residual run "
+                "logs to another project than its base BC run"
+            )
         if cfg.trainer.learner == BC_LEARNER:
             raise ValueError(f"residual.enabled trains a residual with sac / ppo, not {BC_LEARNER}")
         from my_project.families import FORGE, action_layout, family_of

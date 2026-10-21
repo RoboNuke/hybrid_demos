@@ -319,7 +319,7 @@ def _make(args, overrides, setup) -> int:
     from robonuke_rl_core.config import load_config
     from robonuke_rl_core.evaluation import resolved_config_path
 
-    from my_project.residual import load_base_policy
+    from my_project.residual import base_run_dir, base_source, load_base_policy
 
     cfg = load_config(args.config, list(overrides) + ["task.cfg.scene.num_envs=1"])
     if not cfg.residual.enabled or cfg.trainer.learner != "sac":
@@ -327,10 +327,11 @@ def _make(args, overrides, setup) -> int:
     out = Path(args.out) if args.out else (Path(cfg.sac.demo_transitions) if cfg.sac.demo_transitions else None)
     if out is None:
         raise ValueError(f"{args.config} sets no sac.demo_transitions; pass --out")
+    base_dir = base_run_dir(cfg)  # the local run, or the wandb run downloaded once
     if args.dataset:
         dataset = Path(args.dataset).expanduser()
     else:
-        base_cfg = OmegaConf.load(resolved_config_path(Path(cfg.residual.base_run).expanduser()))
+        base_cfg = OmegaConf.load(resolved_config_path(base_dir))
         dataset = Path(base_cfg.bc.dataset).expanduser()
     lines = (dataset / "meta" / "episodes.jsonl").read_text().splitlines()
     episodes = [json.loads(line) for line in lines if line]
@@ -354,7 +355,7 @@ def _make(args, overrides, setup) -> int:
 
     torch.manual_seed(int(cfg.experiment.seed))
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    policy = load_base_policy(cfg.residual.base_run, cfg.residual.base_checkpoint, device)
+    policy = load_base_policy(base_dir, cfg.residual.base_checkpoint, device)
     from my_project.families import is_abs
 
     absolute = is_abs(cfg.task_name)
@@ -371,7 +372,8 @@ def _make(args, overrides, setup) -> int:
     meta = {
         "fingerprint": demo_fingerprint(cfg),
         "dataset": str(dataset),
-        "base": f"{cfg.residual.base_run}/{cfg.residual.base_checkpoint}",
+        "base": f"{base_source(cfg)}/{cfg.residual.base_checkpoint}",
+        "base_step": int(getattr(policy, "checkpoint_step", -1)),
         **{k: v for k, v in stats.items() if k not in ("rewards_by_episode", "terms_by_episode")},
     }
     out.parent.mkdir(parents=True, exist_ok=True)

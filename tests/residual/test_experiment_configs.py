@@ -114,3 +114,31 @@ def test_the_hybrid_experiment_differs_from_residual_sac_all_by_the_hybrid_actio
     }
     assert exp["sac.target_entropy"] == -5.0
     assert exp["model.actor.bernoulli_action_dims"] == [4, 5, 6]
+
+
+# ------------------------------------------------------------------ the physic_aligned residual
+#: what physic_aligned_evalHappy_a0 was launched with on the command line, over physic_aligned.yaml
+EVAL_HAPPY_LAUNCH = {
+    "task.cfg.furniture.gripper_mode": "position",
+    "task.cfg.furniture.robot_self_collisions": True,
+    "task.cfg.furniture.gripper_velocity_limit": 0.2,
+    "task.cfg.furniture.ik_jacobian": "isaaclab",
+}
+#: sections besides the task that shape the env the policy acts in
+ENV_SECTIONS = ("wrappers", "action", "hybrid", "episode", "force_obs", "demo")
+
+
+def test_the_physic_aligned_residual_runs_in_its_bases_env():
+    base, residual = leaves(merged("physic_aligned")), leaves(merged("residual_sac_physic_aligned"))
+    base.update(EVAL_HAPPY_LAUNCH)
+    env = lambda d: {k: v for k, v in d.items() if k.startswith(("task.",) + tuple(s + "." for s in ENV_SECTIONS))}  # noqa: E731
+    diff = {k for k in set(env(base)) | set(env(residual)) if env(base).get(k, "<unset>") != env(residual).get(k, "<unset>")}
+    assert diff == {"task.cfg.scene.num_envs"}  # one env for SAC, the base's rollouts ran 512
+
+
+def test_the_physic_aligned_residual_logs_to_another_project_than_its_base():
+    base, residual = merged("physic_aligned"), merged("residual_sac_physic_aligned")
+    assert residual["residual"]["base_project"] == base["wandb"]["project"] == "hybrid_demo_furniture"
+    assert residual["residual"]["base_run_name"] == base["wandb"]["group"] + "_a0" == "physic_aligned_evalHappy_a0"
+    assert residual["wandb"]["project"] != base["wandb"]["project"]
+    assert residual["residual"].get("base_run") is None  # the wandb run, not a local folder

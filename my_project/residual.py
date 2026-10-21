@@ -26,12 +26,35 @@ from typing import Any
 import gymnasium as gym
 import torch
 
-__all__ = ["load_base_policy", "ResidualPolicyWrapper", "residual_scale", "residual_observation"]
+__all__ = ["load_base_policy", "base_run_dir", "base_source", "ResidualPolicyWrapper", "residual_scale", "residual_observation"]
+
+
+def base_source(cfg: Any) -> str:
+    """Where the base BC run comes from, as the logs show it: ``entity/project/run`` on wandb
+    (``residual.base_project`` / ``base_run_name``) or the local ``residual.base_run``."""
+    rc = cfg.residual
+    if rc.base_run:
+        return str(rc.base_run)
+    return f"{rc.base_entity or cfg.wandb.entity}/{rc.base_project}/{rc.base_run_name}"
+
+
+def base_run_dir(cfg: Any) -> Path:
+    """The base BC run as a local run directory: ``residual.base_run``, or the wandb run
+    downloaded (its ``resolved_config.yaml`` and ``residual.base_checkpoint``, fresh, into the
+    package's run cache)."""
+    rc = cfg.residual
+    if rc.base_run:
+        return Path(rc.base_run).expanduser()
+    from robonuke_rl_core.evaluation import fetch_wandb_run
+
+    return fetch_wandb_run(base_source(cfg), rc.base_checkpoint)
 
 
 def load_base_policy(run_dir: str | Path, checkpoint: str, device: Any):
     """The frozen diffusion policy of a BC run: architecture from the run's resolved config,
-    weights and normalizer stats from ``<run_dir>/checkpoints/<checkpoint>``."""
+    weights and normalizer stats from ``<run_dir>/checkpoints/<checkpoint>``. The checkpoint's
+    training step and best success rate ride along as ``policy.checkpoint_step`` /
+    ``policy.checkpoint_success_rate`` (-1 / nan when it has none)."""
     from omegaconf import OmegaConf
 
     from robonuke_rl_core.evaluation import resolved_config_path
@@ -51,6 +74,8 @@ def load_base_policy(run_dir: str | Path, checkpoint: str, device: Any):
     state = torch.load(path, map_location=device, weights_only=False)
     policy = DiffusionPolicy(actor_cfg, state["obs_dim"], state["action_dim"]).to(device)
     policy.load_state_dict(state["model_state_dict"])
+    policy.checkpoint_step = int(state.get("global_step", -1))
+    policy.checkpoint_success_rate = float(state.get("best_success_rate", float("nan")))
     return policy.eval()
 
 
@@ -81,14 +106,15 @@ class ResidualPolicyWrapper(gym.Wrapper):
 
         hooks = hooks_for(env.unwrapped)
         rc = cfg.residual
-        policy = load_base_policy(rc.base_run, rc.base_checkpoint, hooks.device)
+        source = base_source(cfg)
+        policy = load_base_policy(base_run_dir(cfg), rc.base_checkpoint, hooks.device)
         obs_width = hooks.obs_width()
         #: the env's action past the pose (``hybrid``'s selection and force blocks)
         self.extra_dims = cfg.hybrid.extra_dims_for(cfg) if cfg.hybrid.enabled else 0
         act_width = hooks.action_width() - self.extra_dims
         if (obs_width, act_width) != (policy.obs_dim, policy.action_dim):
             raise ValueError(
-                f"the base policy ({rc.base_run}) was trained on obs {policy.obs_dim} / action "
+                f"the base policy ({source}) was trained on obs {policy.obs_dim} / action "
                 f"{policy.action_dim}; this env has obs {obs_width} / action {act_width} "
                 f"(+{self.extra_dims} hybrid dims)"
             )
@@ -104,7 +130,12 @@ class ResidualPolicyWrapper(gym.Wrapper):
         self.action_space = hooks.action_space
         self._hooks = hooks
         hooks.hook_observations(self._observations)
-        print(f"[residual] base {rc.base_run}/{rc.base_checkpoint}; scale {self.scale.tolist()}", flush=True)
+        print(
+            f"[residual] base {source}/{rc.base_checkpoint} (step {getattr(policy, 'checkpoint_step', -1)}, "
+            f"best success rate {getattr(policy, 'checkpoint_success_rate', float('nan')):.3f}); "
+            f"scale {self.scale.tolist()}",
+            flush=True,
+        )
 
     def _observations(self, observations):
         obs = observations["policy"]

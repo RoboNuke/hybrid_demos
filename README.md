@@ -327,7 +327,8 @@ free-hand per-step limits, with `bc.normalization: per_unit` (`data/pivot_vary_d
 ResiP's sim (Robonuke_Furniture_Bench's defaults since 2026-10-20 plus `furniture.part_assets: furniturebench_top1024`:
 FurnitureBench's meshes, the simulated masses, the effort gripper, friction 1.0 on the obstacles and the robot, the EE-point
 velocity, FurnitureBench's `low` reset), trained with ResiP's released recipe: batch 1024, warmup 2000, per-dim scaling,
-rollouts from test loss 0.1, 512 per evaluation, warm start, 16 DDIM steps, 1000-step episodes.
+512 rollouts every 10 epochs whatever the test loss (ResiP waits for 0.1), warm start, 16 DDIM steps, 1000-step
+episodes.
 
 **ResiP's own checkpoint.** `scripts/eval_resip_checkpoint.py` (`my_project/bc/resip_checkpoint.py`)
 rolls out ResiP's released one_leg BC weights (`s3://iai-robust-rearrangement/checkpoints/bc/one_leg/low/actor_chkpt.pt`)
@@ -378,6 +379,18 @@ U-Net; its demo transitions read the importer's `observation.state_abs` / `actio
 ```bash
 python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_furniture_resip.yaml
 python scripts/train.py --config configs/experiments/residual_sac_furniture_resip.yaml --headless
+```
+
+`residual_sac_physic_aligned` is that recipe on `physic_aligned_evalHappy_a0`, its base named by
+`residual.base_project` / `base_run_name` and downloaded from wandb (`hur/hybrid_demo_furniture`), in that run's
+env: `physic_aligned.yaml`'s task plus the four settings the run was launched with
+(`furniture.gripper_mode: position`, `robot_self_collisions: true`, `gripper_velocity_limit: 0.2`,
+`ik_jacobian: isaaclab`), one env and 1000-step episodes (the recipe's step counts scaled to them). It logs to its
+own project, `hybrid_demo_furniture_residual`; its demo transitions come from the base's `data/physic_aligned`:
+
+```bash
+python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_physic_aligned.yaml
+python scripts/train.py --config configs/experiments/residual_sac_physic_aligned.yaml --headless
 ```
 
 ## Nut threading (fixed dynamics)
@@ -481,8 +494,11 @@ python scripts/publish_stochastic_eval.py runs/hybrid_demo_pih/residual_sac_all/
 | field | type | default | what it does |
 | --- | --- | --- | --- |
 | `residual.enabled` | bool | `false` | train a residual on a frozen diffusion policy (needs `action.world_pose`; sac or ppo) |
-| `residual.base_run` | str \| null | `null` | the base policy's BC run directory (`checkpoints/` inside, resolved config there or one level up); required when enabled |
-| `residual.base_checkpoint` | str | `actor_chkpt_best_success_rate.pt` | the checkpoint file in `<base_run>/checkpoints/` |
+| `residual.base_run` | str \| null | `null` | the base policy's BC run as a local directory (`checkpoints/` inside, resolved config there or one level up). When enabled, set this or `base_project` + `base_run_name`, not both |
+| `residual.base_project` | str \| null | `null` | the base policy's BC run on wandb: its project. Must differ from this run's `wandb.project` (residual runs log to their own project) |
+| `residual.base_run_name` | str \| null | `null` | ... and its run name (or run id). The run's `resolved_config.yaml` and `base_checkpoint` are downloaded fresh whenever an env is built; the `[residual] base ...` log line names the checkpoint's step |
+| `residual.base_entity` | str \| null | `null` | ... under this wandb entity; null: this run's `wandb.entity` |
+| `residual.base_checkpoint` | str | `actor_chkpt_best_success_rate.pt` | the base's checkpoint file (in `<base_run>/checkpoints/`, or among the wandb run's files) |
 | `residual.action_scale` | list[float] \| null | `null` | largest correction per step, `[x, y, z, yaw]` in m and rad; `null`: `residual.action_scale_fraction` of the base's normalized action range per dim |
 | `residual.action_scale_fraction` | float | `0.1` | with `action_scale: null`, the correction bound as a fraction of the base's normalized action range: `fraction * (max - min) / 2` of its training actions per dim (robust-rearrangement's `action_scale: 0.1`; Policy Decorator's alpha, 0.1–0.3 typical) |
 | `residual.demo_actions_beyond_scale` | str | `store` | demo transitions (`scripts/make_demo_transitions.py`) whose residual action `(a_demo - a_base) / scale` is beyond the policy's [-1, 1] in any dim: `store` them exactly (the critic takes the action as an input) or `drop` them. Never clipped. Part of the demo file's fingerprint |
