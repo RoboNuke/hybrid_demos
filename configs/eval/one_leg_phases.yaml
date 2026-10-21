@@ -1,24 +1,37 @@
-# Record a BC policy's one_leg rollouts for playback (furniture_record.yaml's 8 episodes on 4 envs,
-# 480x360) with the task phases tracked and drawn: Robonuke_Furniture_Bench's
-# furniture.track_phases (Corner -> Grasp -> Insert -> Screw, then success / failure / timeout)
-# and the one_leg overlay (my_project/overlays.py: a box per phase reached with its tests as
-# measurement/goal, frozen once passed; the tracking error; the force bar; the phase timeline).
-# The wrench estimate goes into the per-step parquet
-# (furniture.log_wrench: eval_state/ee_wrench_0..5), and the policy's chunk is drawn as spheres
-# (bc.show_waypoints, 5 mm so they show at this resolution).
+# Record a one_leg policy's rollouts for playback: 8 episodes on 4 envs at 480x360, one mp4 per (round,
+# env), everything in the run's videos/one_leg_phases_<timestamp>/ beside its checkpoints/. The task phases
+# are tracked and drawn: Robonuke_Furniture_Bench's furniture.track_phases (Corner -> Grasp -> Insert ->
+# Screw, then success / failure / timeout) and the one_leg overlay (my_project/overlays.py: a box per phase
+# reached with its tests as measurement/goal, frozen once passed; the tracking error; the force bar; the
+# phase timeline). The wrench estimate goes into the per-step parquet (furniture.log_wrench:
+# eval_state/ee_wrench_0..5), and the policy's chunk is drawn as spheres (bc.show_waypoints, 5 mm so they
+# show at this resolution). The recorder camera needs real per-env prims (clone_in_fabric: false).
 #   python scripts/eval.py --run <entity>/<project>/<run> --eval_config configs/eval/one_leg_phases.yaml --headless
-# (everything lands in the run's local videos/one_leg_phases_<timestamp>/, beside its checkpoints/)
 # The phase thresholds are furniture.phase_*; tune one on the command line, e.g.
 #   task.cfg.furniture.phase_lift=0.02
-base: furniture_record.yaml
+# hpc.yaml: the cluster's resources for launchers/launch_eval.py, which reads them from this chain.
+base: ../base/hpc.yaml
 
 eval:
+  num_rollouts: 8
+  record: true
+  # twice the package's 240x180
+  video_width: 480
+  video_height: 360
   overlays:
     - hud
     - one_leg
 
 task:
   cfg:
+    scene:
+      num_envs: 4
+      clone_in_fabric: false
+      # the dark grey work table
+      table:
+        spawn:
+          visual_material:
+            diffuse_color: [0.08, 0.08, 0.08]
     furniture:
       track_phases: true
       log_wrench: true

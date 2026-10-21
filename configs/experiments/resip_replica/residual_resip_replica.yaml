@@ -1,0 +1,37 @@
+# Residual SAC on the frozen BC policy physic_aligned_evalHappy_a0 (_foundation.yaml's residual section,
+# downloaded from wandb), one env, 432 1000-step episodes (12 h of robot time); logs to its own wandb
+# project. Convert the base's demos into this run's transitions (offline), then train:
+#   python scripts/make_demo_transitions.py --config configs/experiments/resip_replica/residual_resip_replica.yaml
+#   python scripts/train.py --config configs/experiments/resip_replica/residual_resip_replica.yaml --headless
+base: _foundation.yaml
+
+experiment:
+  num_agents: 1
+
+wandb:
+  project: hybrid_demo_furniture_residual
+  group: residual_resip_replica
+
+task:
+  cfg:
+    scene:
+      num_envs: 1
+
+trainer:
+  learner: sac
+  # 432000 env steps: 432 episodes
+  total_timesteps: 432000
+  # every 10 episodes, log and checkpoint together
+  write_interval: 10000
+  checkpoint_interval: 10000
+  log_memory_stats: false
+
+model:
+  actor:
+    last_layer_scale: 0.1
+
+residual:
+  enabled: true
+
+history:
+  enabled: true

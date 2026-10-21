@@ -53,9 +53,22 @@ Never create a new conda env; never vendor a copy of the package into this repo.
   `gamepad.py`, `writer.py` (LeRobot-style dataset), `state.py` (episode start snapshot /
   restore), `record.py` and `replay.py` (run by `scripts/record_demos.py` /
   `scripts/replay_demos.py`). The env is bare `gym.make`: no package wrappers. Fixed
-  dynamics are config only (`configs/base/forge_fixed_dyn.yaml`), never task code.
-* `configs/base/` — what every experiment shares; `configs/experiments/` — one file per
-  experiment, `base:` chained, only non-defaults set; `configs/eval/` — eval conditions.
+  dynamics are config only, never task code.
+* `configs/` — `base:` chained, only non-defaults set:
+  * `base/<task>.yaml` (`fb_one_leg.yaml`) — the env only: the task id and its physics, everything
+    independent of the training method, so whatever bases on it gets a known task with known
+    physics; chained onto `base/hpc.yaml`.
+  * `eval/` — only what one test changes on top of the trained run's config (more friction, a
+    recording); chained onto `base/hpc.yaml` for the eval launcher's resources.
+  * `experiments/<group>/` — `_foundation.yaml` (based on a `base/` task) holds what all of the
+    group's trainings share: seed, wandb entity, every learning parameter (`bc.*`, `sac.*`,
+    `residual.*`, `history.*`, ...); one launch config per training, named type first
+    (`bc_<group>.yaml`, `residual_<group>.yaml`), sets its learner (`trainer`), its `model`, its
+    wandb project and group, its env count — and switches on the wrappers only it uses
+    (`residual.enabled`, `history.enabled`: in the foundation they would wrap the BC rollouts too).
+    The leading `_` keeps `launch_train.py <folder>` from submitting the foundation.
+  * Demos are collected outside this repo (Robonuke_Furniture_Bench's `collect_scripted.py`); there
+    is no demos folder.
 * `scripts/` — thin callers of `robonuke_rl_core.{train,eval,debug}.main(setup=setup)`.
   Do not add logic here; flow fixes belong in the package.
 * `launchers/` — thin callers of `robonuke_rl_core.hpc.launch_{train,sweep,eval}.main()`,
@@ -71,7 +84,8 @@ Never create a new conda env; never vendor a copy of the package into this repo.
 Follow the package CLAUDE.md recipe for the component, then:
 
 * a **task**: cfg + env subclass in `my_project/tasks/<name>.py`, `gym.register` in
-  `tasks/__init__.py`, a base config under `configs/base/`. Tests that need the sim follow
+  `tasks/__init__.py`, a base config `configs/base/<task>.yaml` (the task and its physics only).
+  Tests that need the sim follow
   the package's `tests/<module>/GPU/` pattern.
 * a **config section**: dataclass in `cfg.py`, `register_section` in all three scripts'
   `setup()`, README row.

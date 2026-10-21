@@ -1,8 +1,11 @@
-"""The residual ablation configs: each differs from ``residual_sac.yaml`` by its own change only.
+"""The config tree's rules, at the file level (the package's ``base``-chain reader, no Isaac Lab).
 
-Read at the file level (the package's ``base``-chain reader, no Isaac Lab): every layer of an
-experiment's chain merged in order. The task cfg is not validated here (that needs the sim);
-the sections these experiments change are, through their dataclasses.
+``configs/base/fb_one_leg.yaml`` is the env: the task and what physic_aligned_evalHappy_a0 changed from
+its defaults. ``configs/experiments/resip_replica/`` holds the group's foundation (everything both
+trainings share) and one launch config per training; each launch inherits the base's env unchanged but
+for its env count. Only the residual launch switches the residual and the history on, and it logs to
+another wandb project than its base BC run. The task cfg is not validated here (that needs the sim);
+the sections are, through their dataclasses.
 """
 
 from __future__ import annotations
@@ -15,37 +18,28 @@ from omegaconf import OmegaConf
 from robonuke_rl_core.configfile import load_file_chain
 from robonuke_rl_core.learners.cfg import SACCfg
 
-from my_project.cfg import HistoryCfg
+from my_project.cfg import BCCfg, HistoryCfg, ResidualCfg
 
-EXPERIMENTS = Path(__file__).resolve().parents[2] / "configs" / "experiments"
+CONFIGS = Path(__file__).resolve().parents[2] / "configs"
+GROUP = CONFIGS / "experiments" / "resip_replica"
+LAUNCHES = ("bc_resip_replica", "residual_resip_replica")
 
-HISTORY = {"history.enabled"}
-ENSEMBLE = {
-    "sac.num_critics",
-    "sac.critic_subset",
-    "sac.actor_q_reduction",
-    "sac.gradient_steps",
-    "sac.policy_delay",
+#: what physic_aligned_evalHappy_a0 trained with on top of the ResiP task's defaults
+EVAL_HAPPY_ENV = {
+    "task.name": "Isaac-Furniture-OneLeg-FBAbs-ResiP-v0",
+    "task.cfg.episode_length_s": 100.0,
+    "task.cfg.furniture.part_assets": "furniturebench_top1024",
+    "task.cfg.furniture.gripper_mode": "position",
+    "task.cfg.furniture.robot_self_collisions": True,
+    "task.cfg.furniture.gripper_velocity_limit": 0.2,
+    "task.cfg.furniture.ik_jacobian": "isaaclab",
 }
-DEMO = {
-    "sac.learning_starts",
-    "sac.policy_learning_starts",
-    "sac.demo_transitions",
-    "sac.demo_sampling_start",
-    "sac.demo_sampling_end",
-}
-CASES = {
-    "residual_sac_history": HISTORY,
-    "residual_sac_ensemble": ENSEMBLE,
-    "residual_sac_demo_critic": DEMO,
-    "residual_sac_history_ensemble": HISTORY | ENSEMBLE,
-    "residual_sac_all": HISTORY | ENSEMBLE | DEMO,
-}
+#: sections besides the task that shape the env the policy acts in
+ENV_SECTIONS = ("task", "wrappers", "action", "hybrid", "episode", "force_obs", "demo")
 
 
-def merged(stem: str) -> dict:
-    layers = [layer for _, layer in load_file_chain(EXPERIMENTS / f"{stem}.yaml")]
-    return OmegaConf.to_container(OmegaConf.merge(*layers), resolve=True)
+def merged(path: Path) -> dict:
+    return OmegaConf.to_container(OmegaConf.merge(*[layer for _, layer in load_file_chain(path)]), resolve=True)
 
 
 def leaves(data, prefix=""):
@@ -57,88 +51,42 @@ def leaves(data, prefix=""):
     return {prefix: data}
 
 
-@pytest.mark.parametrize("stem, changed", sorted(CASES.items()))
-def test_only_the_named_change_differs_from_the_baseline(stem, changed):
-    base, exp = leaves(merged("residual_sac")), leaves(merged(stem))
+def env_of(data: dict) -> dict:
+    return {k: v for k, v in leaves(data).items() if k.split(".")[0] in ENV_SECTIONS}
+
+
+def test_the_base_is_the_task_with_eval_happys_physics():
+    base = leaves(merged(CONFIGS / "base" / "fb_one_leg.yaml"))
+    assert {k: base[k] for k in EVAL_HAPPY_ENV} == EVAL_HAPPY_ENV
+
+
+@pytest.mark.parametrize("launch", LAUNCHES)
+def test_each_launch_runs_in_the_bases_env_but_for_its_env_count(launch):
+    base = env_of(merged(CONFIGS / "base" / "fb_one_leg.yaml"))
+    exp = env_of(merged(GROUP / f"{launch}.yaml"))
     diff = {k for k in set(base) | set(exp) if base.get(k, "<unset>") != exp.get(k, "<unset>")}
-    assert diff == changed | {"wandb.group"}
-    assert exp["wandb.group"] == stem
+    assert diff == {"task.cfg.scene.num_envs"}
 
 
-@pytest.mark.parametrize("stem", sorted(CASES))
-def test_the_changed_sections_validate(stem):
-    data = merged(stem)
-    sac = OmegaConf.to_object(OmegaConf.merge(OmegaConf.structured(SACCfg), data["sac"]))
-    sac.validate(None)
-    history = OmegaConf.to_object(OmegaConf.merge(OmegaConf.structured(HistoryCfg), data.get("history", {})))
-    history.validate(None)
+def test_only_the_residual_launch_switches_the_residual_and_the_history_on():
+    foundation, bc, residual = (merged(GROUP / f"{stem}.yaml") for stem in ("_foundation", *LAUNCHES))
+    for cfg in (foundation, bc):
+        assert not cfg["residual"].get("enabled", False) and not cfg["history"].get("enabled", False)
+    assert residual["residual"]["enabled"] and residual["history"]["enabled"]
+    assert bc["trainer"]["learner"] == "diffusion_bc" and residual["trainer"]["learner"] == "sac"
 
 
-def test_each_demo_experiment_has_its_own_transition_file():
-    """The transitions carry the agent's observation, so a history run cannot share a file
-    with a run without one."""
-    files = {stem: merged(stem)["sac"].get("demo_transitions") for stem in CASES}
-    with_demos = {stem: path for stem, path in files.items() if path}
-    assert set(with_demos) == {"residual_sac_demo_critic", "residual_sac_all"}
-    assert len(set(with_demos.values())) == 2
-
-
-def test_the_scale_ablation_differs_from_residual_sac_all_by_the_bound_only():
-    base, exp = leaves(merged("residual_sac_all")), leaves(merged("residual_sac_all_scale03"))
-    diff = {k for k in set(base) | set(exp) if base.get(k, "<unset>") != exp.get(k, "<unset>")}
-    # the demo file differs because its actions are divided by the scale
-    assert diff == {"wandb.group", "residual.action_scale_fraction", "sac.demo_transitions"}
-    assert exp["residual.action_scale_fraction"] == 0.3
-
-
-def test_the_0p2_scale_ablation_differs_from_residual_sac_all_by_the_bound_only():
-    base, exp = leaves(merged("residual_sac_all")), leaves(merged("residual_sac_all_scale02"))
-    diff = {k for k in set(base) | set(exp) if base.get(k, "<unset>") != exp.get(k, "<unset>")}
-    assert diff == {"wandb.group", "residual.action_scale_fraction", "sac.demo_transitions"}
-    assert exp["residual.action_scale_fraction"] == 0.2
-
-
-def test_the_hybrid_experiment_differs_from_residual_sac_all_by_the_hybrid_action_only():
-    base, exp = leaves(merged("residual_sac_all")), leaves(merged("residual_hybrid_all"))
-    diff = {k for k in set(base) | set(exp) if base.get(k, "<unset>") != exp.get(k, "<unset>")}
-    # the demo file differs because its actions carry the selection and force blocks; the
-    # entropy target follows the action width (-|A| / 2)
-    assert diff == {
-        "wandb.group",
-        "sac.demo_transitions",
-        "sac.target_entropy",
-        "hybrid.enabled",
-        "hybrid.force_axes",
-        "hybrid.force_target_bounds",
-        "model.actor.bernoulli_action_dims",
-    }
-    assert exp["sac.target_entropy"] == -5.0
-    assert exp["model.actor.bernoulli_action_dims"] == [4, 5, 6]
-
-
-# ------------------------------------------------------------------ the physic_aligned residual
-#: what physic_aligned_evalHappy_a0 was launched with on the command line, over physic_aligned.yaml
-EVAL_HAPPY_LAUNCH = {
-    "task.cfg.furniture.gripper_mode": "position",
-    "task.cfg.furniture.robot_self_collisions": True,
-    "task.cfg.furniture.gripper_velocity_limit": 0.2,
-    "task.cfg.furniture.ik_jacobian": "isaaclab",
-}
-#: sections besides the task that shape the env the policy acts in
-ENV_SECTIONS = ("wrappers", "action", "hybrid", "episode", "force_obs", "demo")
-
-
-def test_the_physic_aligned_residual_runs_in_its_bases_env():
-    base, residual = leaves(merged("physic_aligned")), leaves(merged("residual_sac_physic_aligned"))
-    base.update(EVAL_HAPPY_LAUNCH)
-    env = lambda d: {k: v for k, v in d.items() if k.startswith(("task.",) + tuple(s + "." for s in ENV_SECTIONS))}  # noqa: E731
-    diff = {k for k in set(env(base)) | set(env(residual)) if env(base).get(k, "<unset>") != env(residual).get(k, "<unset>")}
-    assert diff == {"task.cfg.scene.num_envs"}  # one env for SAC, the base's rollouts ran 512
-
-
-def test_the_physic_aligned_residual_logs_to_another_project_than_its_base():
-    base, residual = merged("physic_aligned"), merged("residual_sac_physic_aligned")
-    assert residual["residual"]["base_project"] == base["wandb"]["project"] == "hybrid_demo_furniture"
-    assert residual["residual"]["base_run_name"] == base["wandb"]["group"] + "_a0" == "physic_aligned_evalHappy_a0"
-    assert residual["wandb"]["project"] != base["wandb"]["project"]
+def test_the_residual_logs_to_another_project_than_its_base_bc_run():
+    bc, residual = (merged(GROUP / f"{stem}.yaml") for stem in LAUNCHES)
+    assert residual["residual"]["base_project"] == bc["wandb"]["project"] == "hybrid_demo_furniture"
+    assert residual["residual"]["base_run_name"] == "physic_aligned_evalHappy_a0"
+    assert residual["wandb"]["project"] != bc["wandb"]["project"]
     assert residual["residual"].get("base_run") is None  # the wandb run, not a local folder
+
+
+@pytest.mark.parametrize("launch", LAUNCHES)
+def test_the_sections_validate(launch):
+    data = merged(GROUP / f"{launch}.yaml")
+    for cls, name in ((SACCfg, "sac"), (HistoryCfg, "history"), (BCCfg, "bc"), (ResidualCfg, "residual")):
+        section = OmegaConf.to_object(OmegaConf.merge(OmegaConf.structured(cls), data.get(name, {})))
+        section.validate(None)

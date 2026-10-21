@@ -1,6 +1,6 @@
 """Behaviour-clone the diffusion policy from demonstrations.
 
-    python scripts/train_bc.py --config configs/experiments/diffusion_bc.yaml --headless
+    python scripts/train_bc.py --config configs/experiments/resip_replica/bc_resip_replica.yaml --headless
 
 A port of robust-rearrangement's ``src/train/bc.py`` (state observations, one GPU) onto this
 project's config and logging. One epoch = ``bc.steps_per_epoch`` gradient steps; the run is

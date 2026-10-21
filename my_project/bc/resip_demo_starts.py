@@ -1,6 +1,6 @@
 """Roll out ResiP's released BC checkpoint from the initial states of ResiP's own demos.
 
-    python scripts/eval_resip_from_demos.py --config configs/experiments/pivot_demos.yaml \\
+    python scripts/eval_resip_from_demos.py --config configs/experiments/resip_replica/bc_resip_replica.yaml \\
         --checkpoint ~/resip_ckpt/bc_one_leg_low.pt --zarr ~/resip_data/one_leg_teleop_low/success.zarr \\
         --trials 2 --headless [task.cfg.furniture.<field>=... overrides]
 

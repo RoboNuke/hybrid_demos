@@ -1,6 +1,6 @@
 """Convert recorded demos into SAC demo transitions in a residual agent's own format, offline.
 
-    python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_demo_critic.yaml
+    python scripts/make_demo_transitions.py --config configs/experiments/resip_replica/residual_resip_replica.yaml
 
 No env is built and nothing is simulated: every quantity comes from the recorded frames
 (``my_project/demos/record.py``), so the observations are exactly the ones the base policy was

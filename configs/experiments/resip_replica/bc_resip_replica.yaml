@@ -1,0 +1,49 @@
+# BC: ResiP's U-Net on the 50 scripted demos in data/physic_aligned (_foundation.yaml's bc section), its
+# rollouts warm-started with 16 DDIM steps. physic_aligned_evalHappy_a0 (wandb hur/hybrid_demo_furniture)
+# was trained with this setup.
+#
+# The demos, collected in Robonuke_Furniture_Bench and imported here:
+#   python scripts/collect_scripted.py --sim resip --screw_pivot --vary --dart_prob 0.05 \
+#       --part_assets furniturebench_top1024 --num_envs 64 --num_demos 50 --timeout 1000 --seed 1020 \
+#       --out_dir datasets/physic_aligned --save_failure --headless      (in Robonuke_Furniture_Bench)
+#   python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/datasets/physic_aligned \
+#       --out data/physic_aligned --control_hz 10 --task_name Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
+# Train:
+#   python scripts/train_bc.py --config configs/experiments/resip_replica/bc_resip_replica.yaml --headless
+base: _foundation.yaml
+
+wandb:
+  project: hybrid_demo_furniture
+  group: bc_resip_replica
+
+task:
+  cfg:
+    scene:
+      # one round of eval.num_rollouts rollouts
+      num_envs: 512
+
+trainer:
+  learner: diffusion_bc
+  # gradient steps
+  total_timesteps: 5000000
+  checkpoint_interval: 50000
+
+hpc:
+  # the HPC launchers run this entry script (BC has its own; the package's runs sac / ppo)
+  train_script: scripts/train_bc.py
+
+model:
+  architecture: diffusion_unet
+  actor:
+    horizon: 32
+    n_obs_steps: 1
+    action_horizon: 8
+    down_dims: [256, 512, 1024]
+    diffusion_step_embed_dim: 256
+    kernel_size: 5
+    n_groups: 8
+    num_diffusion_iters: 100
+    # DDIM steps in the rollouts (their checkpoint's actor)
+    inference_steps: 16
+    # each chunk starts from the previous chunk's unexecuted tail (robust-rearrangement)
+    warm_start: true

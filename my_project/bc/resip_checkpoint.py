@@ -1,6 +1,6 @@
 """Roll out ResiP's own released BC checkpoint in this port's ResiP task.
 
-    python scripts/eval_resip_checkpoint.py --config configs/experiments/pivot_demos.yaml \\
+    python scripts/eval_resip_checkpoint.py --config configs/experiments/resip_replica/bc_resip_replica.yaml \\
         --checkpoint ~/resip_ckpt/bc/one_leg/low/actor_chkpt.pt
 
 The question it answers: does the policy that scores ~54% in ResiP's sim (Ankile et al., the

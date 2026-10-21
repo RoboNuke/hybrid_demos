@@ -2,7 +2,7 @@
 
     aws s3 cp --no-sign-request \\
         s3://iai-robust-rearrangement/checkpoints/bc/one_leg/low/actor_chkpt.pt ~/resip_ckpt/bc_one_leg_low.pt
-    python scripts/eval_resip_checkpoint.py --config configs/experiments/pivot_demos.yaml \\
+    python scripts/eval_resip_checkpoint.py --config configs/experiments/resip_replica/bc_resip_replica.yaml \\
         --checkpoint ~/resip_ckpt/bc_one_leg_low.pt --headless
 
 Thin caller; the loader, the observation adapter and the rollout are in

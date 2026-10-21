@@ -1,0 +1,80 @@
+# resip_replica (the leading _ keeps launch_train from submitting this file on its own): diffusion-policy BC on one_leg after ResiP (Ankile et al. 2024), then residual SAC on the
+# frozen BC policy. What both share: the env (base/fb_one_leg.yaml), the seed, the wandb entity, and the
+# training parameters of both. bc_resip_replica.yaml and residual_resip_replica.yaml launch them: each sets
+# its learner (trainer), its model, its wandb project and group and its env count; the residual one also
+# switches the residual and the history on (here they would wrap the BC rollouts' env too).
+base: ../../base/fb_one_leg.yaml
+
+experiment:
+  seed: 42
+
+wandb:
+  entity: hur
+
+# -- BC (scripts/train_bc.py): ResiP's released one_leg recipe (robust-rearrangement's checkpoint config)
+bc:
+  dataset: data/physic_aligned
+  obs_key: observation.state_abs
+  action_key: action.abs
+  num_demos: 50
+  normalization: per_dim
+  batch_size: 1024
+  steps_per_epoch: 1000
+  lr: 1.0e-4
+  weight_decay: 1.0e-6
+  lr_schedule: cosine
+  warmup_steps: 2000
+  # rollouts every 10 epochs (10k gradient steps), whatever the test loss (ResiP waits for 0.1)
+  rollout_every: 10
+  rollout_loss_threshold: 1000.0
+  # only the best rollout's checkpoint, on disk and in wandb (~800 MB each)
+  save_only_best_ckpt: true
+
+eval:
+  # BC rollouts per evaluation
+  num_rollouts: 512
+
+# -- residual SAC (scripts/train.py): 10 critics (target min over a random 2, 10 critic updates per env
+# step, the actor once per env step on the ensemble mean), an 8-step history of the EE position and
+# velocity, the critic warmed up on the demos; the residual bounded at 2% of the base's normalized action
+# range per dim, over all 10 absolute action dims
+memory:
+  # the newest 100k transitions (100 episodes); older data is dropped
+  memory_size: 100000
+
+sac:
+  batch_size: 256
+  actor_lr: 3.0e-4
+  critic_lr: 3.0e-4
+  entropy_lr: 3.0e-4
+  initial_entropy_value: 1.0e-2
+  # well below -|A| / 2 (-5): SAC at -5 explored near the full bound
+  target_entropy: -15.0
+  cuda_graph: true
+  num_critics: 10
+  critic_subset: 2
+  actor_q_reduction: mean
+  gradient_steps: 10
+  policy_delay: 10
+  learning_starts: 0
+  # 2 episodes of critic-only warm-up
+  policy_learning_starts: 2000
+  # scripts/make_demo_transitions.py writes it from the base's bc.dataset
+  demo_transitions: data/physic_aligned/transitions/residual_resip_replica.pt
+  demo_sampling_start: 0
+  # demos sampled for the first 10 episodes
+  demo_sampling_end: 10000
+
+residual:
+  # the frozen base: the BC run on wandb (under wandb.entity), in another project than the residual's
+  base_project: hybrid_demo_furniture
+  base_run_name: physic_aligned_evalHappy_a0
+  base_checkpoint: actor_chkpt_best_success_rate.pt
+  action_scale: null
+  action_scale_fraction: 0.02
+
+history:
+  length: 8
+  terms:
+    - ee_pos
+    - ee_pos_vel

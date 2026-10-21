@@ -1,7 +1,7 @@
 """Convert recorded demos into a residual experiment's SAC demo transitions, offline:
 delegates to :func:`my_project.residual_demos.main`.
 
-    python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_demo_critic.yaml
+    python scripts/make_demo_transitions.py --config configs/experiments/resip_replica/residual_resip_replica.yaml
 
 The ``setup`` hook runs after AppLauncher (so Isaac imports work) and before the config
 loads -- every project registration goes in there, never at module top."""

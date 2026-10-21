@@ -1,8 +1,8 @@
 """Submit one SLURM eval job per (training run x eval config). Thin caller; the logic
 lives in the package.
 
-    python launchers/launch_eval.py --eval_config configs/eval/quick.yaml \\
-        --project template_demo --group <group> ...
+    python launchers/launch_eval.py --eval_config configs/eval/one_leg_phases.yaml \\
+        --project hybrid_demo_furniture --group <group> ...
 
 Runs are selected by explicit --run paths or a wandb query (--project with --group /
 --wandb_tag), so this one needs wandb importable on the login node.

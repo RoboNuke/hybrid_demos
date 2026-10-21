@@ -1,10 +1,9 @@
 """Evaluate a residual run's checkpoints as they appear, against its base policy alone.
 
-    python scripts/watch_residual_eval.py --run runs/hybrid_demo_pih/residual_sac/residual_sac_a0
+    python scripts/watch_residual_eval.py --run <residual run dir> --eval_config <eval config>
 
 Runs beside training, in its own Isaac process. The env is the run's own (its resolved config)
-with ``--eval_config`` on top (default ``configs/eval/residual_watch.yaml``: 100 envs, the run's
-15 s episodes), built through the same project wrappers training uses. Then:
+with ``--eval_config`` on top (required: the eval conditions, e.g. the env count), built through the same project wrappers training uses. Then:
 
 1. **Step 0, the base alone**, right at startup: a residual of exactly zero, so the frozen
    diffusion policy acts by itself (no checkpoint needed).
@@ -27,8 +26,7 @@ exactly one episode. Per episode, from the true (noise-free) sensor force:
 On a FurnitureBench run (``Isaac-Furniture-*``, a manager-based env that ends an episode on
 assembly or a part out of bounds) each env's FIRST episode of the round counts: success is the
 env's ``success`` termination firing in it, plus the share that ended out of bounds and the
-mean episode length; there is no force or engagement. Use
-``--eval_config configs/eval/residual_watch_furniture.yaml`` (the run's own 70 s episodes).
+mean episode length; there is no force or engagement.
 
 Logged to its own wandb run (``<run name>_eval``, the training run's project and group), at
 ``step`` = the checkpoint's step: ``eval/success_rate``, ``eval/engaged_rate``,
@@ -49,12 +47,11 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, List
 
-DEFAULT_EVAL_CONFIG = "configs/eval/residual_watch.yaml"
 
 
 def add_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--run", required=True, help="the residual run's agent directory (holds checkpoints/)")
-    parser.add_argument("--eval_config", default=DEFAULT_EVAL_CONFIG, help="eval conditions layered on the run's config")
+    parser.add_argument("--eval_config", required=True, help="eval conditions layered on the run's config")
     parser.add_argument("--poll_seconds", type=float, default=30.0, help="how often to look for new checkpoints")
     parser.add_argument(
         "--stochastic",
@@ -453,7 +450,7 @@ def probe_main(argv=None, setup=None) -> int:
     ``<run>/eval_probe/results.jsonl``."""
     parser = argparse.ArgumentParser(description=probe_main.__doc__)
     parser.add_argument("--run", required=True, help="a residual run's agent directory")
-    parser.add_argument("--eval_config", default=DEFAULT_EVAL_CONFIG)
+    parser.add_argument("--eval_config", required=True)
     parser.add_argument("--probes", default=",".join(PROBES), help=f"comma list of {list(PROBES)}")
 
     from isaaclab.app import AppLauncher

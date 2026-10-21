@@ -1,7 +1,7 @@
 """Submit one SLURM job per (config x swept value). Thin caller; the logic lives in the
 package.
 
-    python launchers/launch_sweep.py configs/experiments/hybrid_fragile.yaml \\
+    python launchers/launch_sweep.py configs/experiments/resip_replica/residual_resip_replica.yaml \\
         --project P --group_prefix G \\
         --sweep_param sac.actor_lr --label lr --value 1.0e-4 --value 3.0e-4
 """

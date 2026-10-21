@@ -1,0 +1,22 @@
+# FurnitureBench one_leg: Robonuke_Furniture_Bench's Isaac-Furniture-OneLeg-FBAbs-ResiP-v0 (ResiP's sim:
+# 10 Hz, differential IK into joint PD, absolute EE targets with rot6d, the 63-wide observation in the
+# robot-base frame) with the task's own defaults, except what physic_aligned_evalHappy_a0 trained with:
+# 1000-step episodes, FurnitureBench's meshes with the top's SDF at 1024, the position gripper (600 N/m
+# capped at 13 N, 0.2 m/s) with the robot's self-collisions on, and Isaac Lab's own IK Jacobian.
+base: hpc.yaml
+
+task:
+  name: Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
+  cfg:
+    # 1000 control steps per episode at 10 Hz
+    episode_length_s: 100.0
+    furniture:
+      part_assets: furniturebench_top1024
+      gripper_mode: position
+      robot_self_collisions: true
+      gripper_velocity_limit: 0.2
+      ik_jacobian: isaaclab
+
+wrappers:
+  task_metrics:
+    enabled: false

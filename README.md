@@ -26,7 +26,7 @@ The starting point for a research project built on
 | environments (env + task cfg + `gym.register`) | `my_project/tasks/` | importing the module in `setup()` |
 | config sections (`@dataclass` + `validate`) | `my_project/cfg.py` | `register_section` in `setup()` |
 | auxiliary losses (`AuxLoss` subclasses) | `my_project/losses.py` | `@register_loss`, imported in `setup()` |
-| experiment YAMLs (`base:` chains, override only what differs) | `configs/` | `--config` / `--eval_config` |
+| configs (`base:` chains, override only what differs; layout below) | `configs/` | `--config` / `--eval_config` |
 | cluster resources (the `hpc` section: account, partitions, walltime, image) | `configs/base/hpc.yaml` | chained under every experiment |
 | SLURM submitters (thin callers of `robonuke_rl_core.hpc`) | `launchers/` | — |
 | model architectures (`nn.Module` + `<Arch>ModelCfg`) | `my_project/models/` | `register_architecture` in `setup()` |
@@ -37,23 +37,35 @@ insert unchanged — "forge" in the task name is what lets the package's Forge w
 (controller, fragile peg, efficient reset, contact sensing) apply. Replace its `pass`
 bodies with your observations, rewards and resets.
 
+## Configs
+
+* `configs/base/` -- the env: one file per task (`fb_one_leg.yaml`: the task id and its physics, everything
+  independent of the training method), chained onto `hpc.yaml` (the cluster's resources). Base one on it
+  and you get a known task with known physics.
+* `configs/eval/` -- only what one test changes on top of the trained run's own config (more friction, a
+  recording: `one_leg_phases.yaml`), chained onto `hpc.yaml` for the cluster launcher's resources.
+* `configs/experiments/<group>/` -- one folder per experiment group: `_foundation.yaml` (based on a
+  `base/` task) holds what every training of the group shares -- the seed, the wandb entity, every
+  learning parameter -- and one launch config per training (`bc_<group>.yaml`, `residual_<group>.yaml`)
+  sets its learner, model, wandb project and group, and env count. The leading `_` keeps
+  `launch_train.py <folder>` from submitting the foundation.
+
 ## Run
 
 ```bash
-# train (3 agents, hybrid force/position control, fragile peg)
-python scripts/train.py --config configs/experiments/hybrid_fragile.yaml --headless
+# train the BC policy, then a residual on it (configs/experiments/resip_replica/)
+python scripts/train_bc.py --config configs/experiments/resip_replica/bc_resip_replica.yaml --headless
+python scripts/make_demo_transitions.py --config configs/experiments/resip_replica/residual_resip_replica.yaml
+python scripts/train.py --config configs/experiments/resip_replica/residual_resip_replica.yaml --headless
 
 # evaluate / record a trained run (downloads policy + config from the wandb run's files)
-python scripts/eval.py --run hur/template_demo/<run_name> \
-    --eval_config configs/eval/quick.yaml --headless [--record]
+python scripts/eval.py --run hur/hybrid_demo_furniture/<run_name> \
+    --eval_config configs/eval/one_leg_phases.yaml --headless
 
 # watch it live (j pause / k reset / l quit), or inspect the reset distribution
-python scripts/debug.py --run hur/template_demo/<run_name>
-python scripts/debug.py --run hur/template_demo/<run_name> --resets --hold_seconds 2
+python scripts/debug.py --run hur/hybrid_demo_furniture/<run_name>
+python scripts/debug.py --run hur/hybrid_demo_furniture/<run_name> --resets --hold_seconds 2
 ```
-
-`configs/experiments/match_fragile.yaml` is the MATCH variant: the selection-conditioned
-distribution plus the supervised selection loss.
 
 ## Run on the cluster
 
@@ -65,18 +77,18 @@ the field reference is the package README. Names derive from wandb: `--project` 
 `_{label}-{value}`), the SLURM job name is the group, runs are `{group}_a{i}`.
 
 ```bash
-# one job per experiment yaml in the folder
-python launchers/launch_train.py configs/experiments --project template_demo \
-    --group_prefix oct06 --tag demo
+# one job per launch config in the group's folder (the _foundation.yaml is skipped)
+python launchers/launch_train.py configs/experiments/resip_replica --project hybrid_demo_furniture \
+    --group_prefix oct21
 
-# one job per swept value (group oct06_hybrid_fragile_lr-1.0e-4, ...)
-python launchers/launch_sweep.py configs/experiments/hybrid_fragile.yaml \
-    --project template_demo --group_prefix oct06 \
+# one job per swept value (group oct21_residual_resip_replica_lr-1.0e-4, ...)
+python launchers/launch_sweep.py configs/experiments/resip_replica/residual_resip_replica.yaml \
+    --project hybrid_demo_furniture_residual --group_prefix oct21 \
     --sweep_param sac.actor_lr --label lr --value 1.0e-4 --value 3.0e-4
 
 # one eval job per (trained run x eval config), selected by group
-python launchers/launch_eval.py --eval_config configs/eval/quick.yaml \
-    --project template_demo --group oct06_hybrid_fragile
+python launchers/launch_eval.py --eval_config configs/eval/one_leg_phases.yaml \
+    --project hybrid_demo_furniture --group oct21_bc_resip_replica
 ```
 
 `--dry_run` on any of them prints the exact `sbatch` commands and submits nothing.
@@ -89,60 +101,12 @@ logs offline instead of crashing.
 | --- | --- | --- | --- |
 | `demo.reward_scale` | float | `1.0` | example field of the example section — replace with your project's |
 
-## Recording demos by hand
+## The Forge demo recorder's fields
 
-`scripts/record_demos.py` drives one env from an Xbox-style controller and writes a
-LeRobot-style dataset the BC trainer reads directly; `scripts/replay_demos.py` puts the env
-back exactly as each episode began and re-sends its actions, live or headless to mp4.
-
-```bash
-# record (GUI; every session draws a random experiment.seed)
-python scripts/record_demos.py --config configs/demos/forge_demo_collection.yaml \
-    record.dataset_dir=~/demos/peg_insert
-
-# watch episodes again, or render them to <dataset>/videos/episode_XXXXXX.mp4
-python scripts/replay_demos.py --dataset ~/demos/peg_insert --episodes 0,3
-python scripts/replay_demos.py --dataset ~/demos/peg_insert --video --headless
-```
-
-Controller: left stick moves in the horizontal plane (up = away from you), right stick
-up/down raises/lowers and left/right yaws, **RB** (hold) is fine mode, **A** saves, **B**
-discards and resets, **START** quits. An episode also saves itself once the env's success
-check has held for `record.success_hold_steps` steps, and is dropped at the time limit.
-
-**The env** is stock `Isaac-Forge-PegInsert-Direct-v0`, made with `gym.make` plus only the project's
-observation additions (`observation.*`; no package wrappers or controller), with fixed **dynamics** set purely in
-`configs/base/forge_fixed_dyn.yaml`: one action smoothing factor, and no gain / step-limit /
-dead-zone / peg-mass / hole-friction draws. Normal world uncertainty stays stock: the hole pose,
-the hand's start pose, the peg's offset in the gripper, observation noise and the force
-threshold still vary. The controller dead zone is held constant by setting it to 0 (Forge draws
-it as `rand * ctrl.default_dead_zone`). The BC experiment rolls out on the same base.
-
-**The operator commands velocity**; `my_project/demos/teleop.py` integrates it into a pose
-setpoint and converts that into Forge's action, which is an absolute target relative to the
-hole (position within ±`ctrl.pos_action_bounds`, yaw in [-180°, 90°]), not a velocity. The
-setpoint is leashed to the fingertip so a blocked push cannot wind up, and clamped to what
-Forge can express.
-
-**Each step records**, before the step: `observation.state`, the env's (noisy) policy
-observation, which is what training uses by default; Forge's noisy inputs to it
-(`observation.noisy_fingertip_pos`, `..._quat`, `..._force`, `..._hole_pos`); the env's
-noise-free state vector (`observation.critic`); and the true values: fingertip pose and
-velocities, its yaw relative to the hole, the wrench, the arm joints, the hole and peg poses,
-the force threshold and the success flag. Then the `action` sent, the smoothed
-`action.applied`, and the teleop command, scale and setpoint. `meta/episodes.jsonl` holds each
-episode's start conditions and outcome, `states/` each episode's full starting state (what
-replay restores), and `meta/sessions/` each session's resolved config.
-
-Every episode starts through the same reset-then-restore path replay uses, so a replay
-reproduces the recording's physics: replay compares the **true** fingertip and peg positions
-(the noise is redrawn, the physics must not differ) and reports the error after the restore,
-the largest difference over the episode, and whether the success check agrees.
+`scripts/record_demos.py` (an Xbox-style controller, `my_project/demos/`) and `scripts/replay_demos.py`
+record and replay Forge peg-insert demos into a LeRobot-style dataset.
 
 ### The policy interface (observation and action)
-
-Set in `configs/base/forge_fixed_dyn.yaml`, used identically by the recorder, replay and the BC
-rollouts.
 
 **Observation** (24 dims) = `task.cfg.obs_order`, then the previous action: `fingertip_pos` (Forge's noisy
 fingertip estimate, 3), `fingertip_quat` (noisy, 4), `hole_estimate` (the noisy hole estimate,
@@ -181,22 +145,7 @@ Read only by the recorder (`my_project/cfg.py:RecordCfg`).
 | `record.realtime` | bool | `true` | pace the loop to the control rate in wall-clock time |
 | `record.num_episodes` | int | `0` | stop after this many saved episodes; `0`: until START |
 
-### Generating demos with the scripted expert
-
-`record.input: expert` (`configs/demos/forge_demo_generation.yaml`: headless, not paced, stock
-10 s episodes) replaces the operator with `my_project/demos/expert.py`. It steers with ground
-truth and lines up the **peg** itself, so the peg's offset in the gripper and the hole-estimate
-noise do not matter, while the recording is the same as a hand demo (noisy policy observation,
-true values, actions through the same teleop conversion). Each episode: fly the peg over a
-random point on the block's top surface 10-14 mm from the hole axis, lower it until contact,
-slide it onto the axis while pushing down gently so it drops in, then keep pushing until the
-env's success check (peg seated) saves the episode. `meta/episodes.jsonl` records the chosen
-point, the contact height and the steps spent in each phase.
-
-```bash
-python scripts/record_demos.py --config configs/demos/forge_demo_generation.yaml --headless \
-    record.dataset_dir=~/demos/peg_insert_expert record.num_episodes=50
-```
+### Fields of the scripted expert (`record.input: expert`, `my_project/demos/expert.py`)
 
 | field | type | default | what it does |
 | --- | --- | --- | --- |
@@ -210,20 +159,7 @@ python scripts/record_demos.py --config configs/demos/forge_demo_generation.yaml
 | `record.expert.insert_push_depth` | float \| null | `null` | the same lead once the peg is in the hole (`null`: `push_depth`); sets the insertion speed and may exceed the sliding push, which must stay gentle or friction stops the slide short of the hole, m |
 | `record.expert.drop_depth` | float | `0.002` | inserting once the peg's bottom is this far below the hole top, m |
 
-### Generating demos with the searching expert
-
-`record.input: search_expert` (`configs/demos/forge_demo_generation_search.yaml`, 30 s episodes)
-uses `my_project/demos/search_expert.py`, which sees **only what the policy sees**: the noisy
-fingertip estimate, the noisy hole estimate and the noisy force. It flies the fingertip over
-the believed hole, lowers until the averaged force shows contact, then spirals around the
-believed centre while pushing down gently until the peg drops, and keeps pushing until the env's
-success check saves the episode. Its demos therefore contain the search the policy needs for
-the hidden errors (the peg's offset in the gripper, the hole estimate's per-episode offset).
-
-```bash
-python scripts/record_demos.py --config configs/demos/forge_demo_generation_search.yaml --headless \
-    record.dataset_dir=data/expert_demos_forge_pih_search record.num_episodes=50
-```
+### Fields of the searching expert (`record.input: search_expert`, `my_project/demos/search_expert.py`)
 
 | field | type | default | what it does |
 | --- | --- | --- | --- |
@@ -237,98 +173,57 @@ python scripts/record_demos.py --config configs/demos/forge_demo_generation_sear
 | `record.search_expert.drop_depth` | float | `0.002` | inserting once the fingertip is this far below the contact height, m |
 | `record.search_expert.insert_push_depth` | float | `0.003` | the same lead while inserting, m |
 
-## FurnitureBench one_leg (fixed dynamics)
+## FurnitureBench one_leg (resip_replica)
 
-`configs/base/furniture_fixed_dyn.yaml`: `Isaac-Furniture-OneLeg-FB-v0` from
+`configs/base/fb_one_leg.yaml`: `Isaac-Furniture-OneLeg-FBAbs-ResiP-v0` from
 [Robonuke_Furniture_Bench](https://github.com/RoboNuke/Robonuke_Furniture_Bench) (`pip install -e`
 that checkout, plus `pip install "pyarrow<21"` in the Isaac Sim env, whose NumPy is 1.x; the
-scripts' `setup()` imports `furniture_lab.tasks`), at the settings the
-scripted-servo demos were collected with (parts friction 0.5, table 0.4, the env's finger
-drive). The `-FB-v0` task speaks FurnitureBench's own interface, the one the demos hold:
-observation 49 (`ee_pos, ee_quat (xyzw), ee_pos_vel, ee_ori_vel, gripper_width, parts_poses`
-in the AprilTag frame) and action 8 (`[dpos 3, dquat 4 (xyzw, EE frame), gripper]`, the env
-maps it onto its `pose_rel` OSC and binary gripper). The env is manager-based, so the two env
-families differ underneath: `my_project/families.py` (which family a task name is, its
-observation layout, its action layout) and `my_project/envhooks.py` (how a wrapper reaches a
-Direct env vs. a manager-based one) hold the differences, and the residual, the history and
-the demo conversion run on both. The Forge-only pieces stay Forge-only: the package's
-controller / fragile / contact / task_metrics wrappers, `action.world_pose`, `hybrid`,
-`episode.reset_on_success` (the furniture env ends an episode on assembly itself).
+scripts' `setup()` imports `furniture_lab.tasks`): ResiP's sim (10 Hz, differential IK into joint PD,
+absolute EE targets with rot6d, action 10, the 63-wide observation in the robot-base frame) with the
+task's own defaults, except what `physic_aligned_evalHappy_a0` trained with (1000-step episodes, the top's
+SDF at 1024, the position gripper with self-collisions, Isaac Lab's IK Jacobian). The env is
+manager-based, so the two env families differ underneath: `my_project/families.py` (which family a task
+name is, its observation layout, its action layout) and `my_project/envhooks.py` (how a wrapper reaches a
+Direct env vs. a manager-based one) hold the differences, and the residual, the history and the demo
+conversion run on both. The Forge-only pieces stay Forge-only: the package's controller / fragile /
+contact / task_metrics wrappers, `action.world_pose`, `hybrid`, `episode.reset_on_success` (the furniture
+env ends an episode on assembly itself).
 
-**Demos** come from that repo's collector (`scripts/collect_scripted.py`, FurnitureBench's pkl
-format) and are converted, with no Isaac Sim, into the recorder's dataset layout:
+**Demos** come from that repo's collector (`scripts/collect_scripted.py`, FurnitureBench's pkl format;
+the command for `data/physic_aligned` is in `bc_resip_replica.yaml`) and are converted, with no Isaac
+Sim, into the recorder's dataset layout (`scripts/import_furniture_demos.py`). Per frame:
+`observation.state` (49) and `action` (8) in FurnitureBench's interface, plus ResiP's derived exactly
+from the same frames (`furniture_lab.demos.fb_abs_frames`): `observation.state_abs` and `action.abs`
+(10, the absolute target the delta commanded: `[ee_pos + dpos, rot6d(R_ee R_dq), gripper]`). Raw
+material beside them: `observation.joint_positions`, `observation.next_state` /
+`observation.next_state_abs`, `reward` (the env's sparse assembly reward), `skill`.
+`meta/episodes.jsonl` carries each demo's success and source file; re-running appends only new
+files. `--include_failures` also imports `fails/*.pkl` (success false). Imported demos carry no
+recording session (no env snapshot), so a residual run's `--check_in_sim` replay is Forge-only.
 
-```bash
-python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos --out data/furniture_one_leg
-```
-
-Per frame: `observation.state` (49) and `action` (8) as above, plus ResiP's interface derived
-exactly from the same frames (`furniture_lab.demos.fb_abs_frames`): `observation.state_abs` (61,
-every orientation as rot6d) and `action.abs` (10, the absolute target the delta commanded:
-`[ee_pos + dpos, rot6d(R_ee R_dq), gripper]`), for `Isaac-Furniture-OneLeg-FBAbs-v0`
-(`configs/experiments/diffusion_bc_furniture_abs.yaml`). Raw material beside them:
-`observation.joint_positions`, `observation.next_state` / `observation.next_state_abs`, `reward`
-(the env's sparse assembly reward), `skill`. A dataset imported before the `*_abs` columns
-existed has different features: import into a fresh directory. `meta/episodes.jsonl` carries each demo's success and source file;
-re-running appends only new files. `--include_failures` also imports `fails/*.pkl` (success
-false). Imported demos carry no recording session (no env snapshot), so a residual run's
-`--check_in_sim` replay is Forge-only.
-
-**Training** is the Forge pipeline with the furniture configs:
+**Training** (`configs/experiments/resip_replica/`): `bc_resip_replica.yaml` is ResiP's released
+one_leg recipe (batch 1024, warmup 2000, per-dim scaling, 512 rollouts every 10 epochs whatever the
+test loss, warm start, 16 DDIM steps) on `data/physic_aligned`; `residual_resip_replica.yaml` is
+residual SAC on the frozen `physic_aligned_evalHappy_a0`, named by `residual.base_project` /
+`base_run_name` and downloaded from wandb, logging to its own project
+(`hybrid_demo_furniture_residual`). Its demo transitions read the importer's
+`observation.state_abs` / `action.abs` / `observation.next_state_abs`, with the recorded reward
+times the env's `step_dt` (Isaac Lab's reward manager scales every term by it):
 
 ```bash
-python scripts/train_bc.py --config configs/experiments/diffusion_bc_furniture.yaml --headless
-# then, with residual.base_run pointing at that run:
-python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_furniture.yaml
-python scripts/train.py --config configs/experiments/residual_sac_furniture.yaml --headless
+python scripts/train_bc.py --config configs/experiments/resip_replica/bc_resip_replica.yaml --headless
+python scripts/make_demo_transitions.py --config configs/experiments/resip_replica/residual_resip_replica.yaml
+python scripts/train.py --config configs/experiments/resip_replica/residual_resip_replica.yaml --headless
 ```
 
-To watch or record a checkpoint: `scripts/debug.py --local <run dir> --checkpoint actor_chkpt_last.pt`
-(live viewer), or `scripts/eval.py --local <run dir> --eval_config configs/eval/furniture_record.yaml
---checkpoint actor_chkpt_last.pt --headless` (the mp4s, summary and trace under the run's
-`videos/furniture_record_<timestamp>/`, beside its `checkpoints/`).
-`configs/eval/one_leg_phases.yaml` records the same with one_leg's task phases tracked
-(Robonuke_Furniture_Bench `furniture.track_phases`) and drawn by the `one_leg` overlay
-(`my_project/overlays.py`: a box per phase reached with its tests as measurement/goal, frozen
-once passed, the tracking error, a force bar, and the phase timeline with every phase's start
-marked from the first frame), the wrench estimate in the per-step parquet and the policy's chunk
-as spheres.
-
-**ResiP's setup** (`configs/base/furniture_resip.yaml`, `Isaac-Furniture-OneLeg-FBAbs-ResiP-v0`:
-10 Hz, differential IK into joint PD, FurnitureSim friction, 13 N gripper, 70 s) with the U-Net
-and ResiP's training recipe (`configs/experiments/diffusion_bc_furniture_resip.yaml`):
-
-```bash
-python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/demos_resip --out data/furniture_one_leg_resip \
-    --control_hz 10 --task_name Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
-python scripts/train_bc.py --config configs/experiments/diffusion_bc_furniture_resip.yaml --headless
-```
-
-**`deep_resipi_replica`** (`configs/experiments/deep_resipi_replica.yaml`) is that recipe moved
-closer to ResiP's: the obstacles move ±2 cm per reset (the ResiP task's own now, so demos are
-re-collected with them moving), lr warmup 10k and 5M gradient steps, and rollouts with warm
-start, 4 DDIM steps and 1000-step episodes. The ResiP FBAbs task now also observes the front
-obstacle's pose (tag-frame pos + rot6d appended after the parts: 70 wide; since replaced by every pose in the robot-base frame and the obstacle's x, y only: 63), and both importers
-write it for that task (`families.observes_obstacle`). Its wandb group, run names, run folder and dataset
-(`data/deep_resipi_replica`) all carry the name; `diffusion_bc_furniture_resip.yaml` stays as
-the record of the earlier setup.
-`resipi_demos` (`configs/experiments/resipi_demos.yaml`) is `deep_resipi_replica` on ResiP's own
-50 teleop demos (`data/resipi_demos`, from `scripts/import_resip_zarr.py`), the only change.
-`pivot_demos` (`configs/experiments/pivot_demos.yaml`) is `deep_resipi_replica` on 50 scripted
-demos collected with the screw pivot (`collect_scripted.py --screw_pivot`; `data/pivot_demos`), with rollouts
-without warm start (`model.actor.warm_start: false`, 4 DDIM steps) and 700 steps long
-(`task.cfg.episode_length_s: 70`).
-`pivot_vary_dart` (`configs/experiments/pivot_vary_dart.yaml`) is `pivot_demos` on demos collected with
-`--vary --dart_prob 0.05` (Robonuke_Furniture_Bench `furniture_lab/variation.py`; `data/pivot_vary_dart`), the only change.
-`pivot_vary_dart_v2` is `pivot_vary_dart` on demos collected after the base-frame ResiP observation (63) and the
-free-hand per-step limits, with `bc.normalization: per_unit` (`data/pivot_vary_dart_v2`).
-`physic_aligned` (`configs/experiments/physic_aligned.yaml`) is `deep_resipi_replica` on 50 scripted demos
-(`--screw_pivot --vary --dart_prob 0.05`, `data/physic_aligned`) collected in the physics aligned with FurnitureSim /
-ResiP's sim (Robonuke_Furniture_Bench's defaults since 2026-10-20 plus `furniture.part_assets: furniturebench_top1024`:
-FurnitureBench's meshes, the simulated masses, the effort gripper, friction 1.0 on the obstacles and the robot, the EE-point
-velocity, FurnitureBench's `low` reset), trained with ResiP's released recipe: batch 1024, warmup 2000, per-dim scaling,
-512 rollouts every 10 epochs whatever the test loss (ResiP waits for 0.1), warm start, 16 DDIM steps, 1000-step
-episodes.
+To watch or record a checkpoint: `scripts/debug.py --run <entity>/<project>/<run>` (live viewer), or
+`scripts/eval.py --run <entity>/<project>/<run> --eval_config configs/eval/one_leg_phases.yaml --headless`
+(the mp4s, summary and trace under the run's `videos/one_leg_phases_<timestamp>/`, beside its
+`checkpoints/`), with one_leg's task phases tracked (Robonuke_Furniture_Bench `furniture.track_phases`)
+and drawn by the `one_leg` overlay (`my_project/overlays.py`: a box per phase reached with its tests as
+measurement/goal, frozen once passed, the tracking error, a force bar, and the phase timeline with every
+phase's start marked from the first frame), the wrench estimate in the per-step parquet and the policy's
+chunk as spheres.
 
 **ResiP's own checkpoint.** `scripts/eval_resip_checkpoint.py` (`my_project/bc/resip_checkpoint.py`)
 rolls out ResiP's released one_leg BC weights (`s3://iai-robust-rearrangement/checkpoints/bc/one_leg/low/actor_chkpt.pt`)
@@ -355,80 +250,18 @@ robust-rearrangement `.zarr`; `scripts/import_resip_zarr.py` (`my_project/demos/
 needs `pip install zarr`) writes them in the same absolute rot6d columns (their state has our
 terms, order and rot6d convention; the parts' quaternions become rot6d; `action/pos` is our
 `action.abs`). There are no joint positions in the zarr, so they cannot be replayed from their
-start state. `diffusion_bc_furniture_resip_teleop` is `diffusion_bc_furniture_resip` on them:
+start state:
 
 ```bash
 aws s3 sync --no-sign-request s3://iai-robust-rearrangement/data/processed/diffik/sim/one_leg/teleop/low/ ~/resip_data/one_leg_teleop_low/
 python scripts/import_resip_zarr.py --zarr ~/resip_data/one_leg_teleop_low/<name>.zarr --out data/furniture_one_leg_resip_teleop
-python scripts/train_bc.py --config configs/experiments/diffusion_bc_furniture_resip_teleop.yaml --headless
 ```
 
-`diffusion_bc_furniture` is the peg-insert recipe on `data/furniture_one_leg` (1000 epochs,
-checkpoints every 100; the action-error breakdown is `pos` / `rot` / `gripper`).
-`residual_sac_furniture` is `residual_sac_nut` over the 8 FurnitureBench action dims (the
-residual's rotation part is logged as `residual/rot_deg`, the angle of the quaternion
-correction), with an 8-step history of `ee_pos` and `ee_pos_vel`; its demo transitions use
-the recorded reward times the env's `step_dt` (Isaac Lab's reward manager scales every term by
-it, so that is what the env pays online) and every action's recorded next state, with the last
-transition `terminated` when the demo succeeded.
-`residual_sac_furniture_resip` is the same recipe on the ResiP setup (`furniture_resip.yaml`,
-no observation noise) over the 10 absolute action dims, on the `diffusion_bc_furniture_resip`
-U-Net; its demo transitions read the importer's `observation.state_abs` / `action.abs` /
-`observation.next_state_abs`:
+## The forge-v1 nut-demo importer's fields
 
-```bash
-python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_furniture_resip.yaml
-python scripts/train.py --config configs/experiments/residual_sac_furniture_resip.yaml --headless
-```
-
-`residual_sac_physic_aligned` is that recipe on `physic_aligned_evalHappy_a0`, its base named by
-`residual.base_project` / `base_run_name` and downloaded from wandb (`hur/hybrid_demo_furniture`), in that run's
-env: `physic_aligned.yaml`'s task plus the four settings the run was launched with
-(`furniture.gripper_mode: position`, `robot_self_collisions: true`, `gripper_velocity_limit: 0.2`,
-`ik_jacobian: isaaclab`), one env and 1000-step episodes (the recipe's step counts scaled to them). It logs to its
-own project, `hybrid_demo_furniture_residual`; its demo transitions come from the base's `data/physic_aligned`:
-
-```bash
-python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_physic_aligned.yaml
-python scripts/train.py --config configs/experiments/residual_sac_physic_aligned.yaml --headless
-```
-
-## Nut threading (fixed dynamics)
-
-`configs/base/forge_nut_fixed_dyn.yaml` is the base for all nut-threading work: stock
-`Isaac-Forge-NutThread-Direct-v0` (30 s episodes, 15 Hz control) with a **bolt-relative**
-17-d observation (`fingertip_pos_rel_fixed` first; no bolt position in it) and `[x, y, z, yaw]`
-action whose position is relative to the bolt estimate (`action.bolt_relative`), and:
-
-* **fixed dynamics**: no action smoothing (`ema_factor_range: [1, 1]`), no force dead zone,
-  gains (565 / 28) and per-step limits (0.02 m, 0.097 rad) at the stock defaults, the nut's
-  mass 0.03 kg, the bolt's static friction 0.75;
-* **a clamped bolt**, as on the real robot: always at (0.6, 0, 0.05) m, yaw 135 deg;
-* **per-episode randomization from the hand and the nut**: the hand's start pose relative to the
-  bolt tip and the nut's offset in the gripper stay stock, as do the other observation noise and
-  the force threshold; the bolt estimate's error is 2 mm per axis per episode (`obs_rand.fixed_asset_pos`,
-  stock 1 mm), how well the clamped bolt is known on the real robot. The demos
-  (`configs/demos/forge_v1_nut_replay.yaml`) set it to 0 and centre the nut in the gripper.
-
-**Success includes the wrist's rotation**: Factory and Forge call `_get_curr_successes(..., check_rot=(name == "nut_thread"))`
-(nut within 2.5 mm in xy and 0.75 mm in height of its target AND the fingertip yaw past
-`ee_success_yaw`), and the recorder, replay, eval watcher and the demo-transition reward use the
-same rule.
-
-### Nut-threading demos from forge-v1
-
-```bash
-python scripts/import_forge_v1.py --config configs/demos/forge_v1_nut_replay.yaml --headless
-```
-
-replays the [forge-v1](https://huggingface.co/datasets/angledusgar/forge-v1) NutThread demos
-(episodes 1980–2967, 877 unique; downloaded to `data/forge_v1`) in this env and keeps the ones
-our success check accepts, in the recorder's format (`data/forge_v1_nut_bolt_relative`). Per episode
-(`my_project/demos/forge_v1.py`), a circle fit while the hand turns recovers the bolt axis and the nut's
-offset in the gripper; the reset starts the fingertip at the episode's start relative to the bolt
-tip (nut centred in the gripper, so the path is the nut-centred one); each step sends the
-recorded next pose, except that from the recorded contact on z pushes down with the recorded
-force (`force_z / kp_z` below the current height). The observations are our env's own.
+`scripts/import_forge_v1.py` (`my_project/demos/forge_v1.py`) replays the
+[forge-v1](https://huggingface.co/datasets/angledusgar/forge-v1) NutThread demos in Forge's nut-thread env
+and keeps the ones our success check accepts, in the recorder's format.
 
 | field | type | default | meaning |
 |---|---|---|---|
@@ -440,13 +273,11 @@ force (`force_z / kp_z` below the current height). The observations are our env'
 
 ## Residual RL on the diffusion policy
 
-`configs/experiments/residual_sac.yaml` trains a SAC residual on top of a frozen BC policy, with
-the package's own SAC loop (train, eval and debug all build the same env):
+A SAC residual trains on top of a frozen BC policy with the package's own SAC loop (train, eval and
+debug all build the same env; `configs/experiments/resip_replica/residual_resip_replica.yaml`):
 
 ```bash
-python scripts/train.py --config configs/experiments/residual_sac.yaml --headless
-python scripts/eval.py --local runs/hybrid_demo_pih/residual_sac/residual_sac_a0 \
-    --eval_config configs/eval/quick.yaml --headless
+python scripts/train.py --config configs/experiments/resip_replica/residual_resip_replica.yaml --headless
 ```
 
 Every step the env (`my_project/residual.py`, applied through the package's
@@ -460,7 +291,7 @@ correction's size per agent. The base's architecture comes from its BC run's res
 its weights and normalizer from the checkpoint, and the env's widths are checked against it.
 
 **Watching a residual run learn.** `scripts/watch_residual_eval.py` runs beside training in
-its own Isaac process (`configs/eval/residual_watch.yaml`: 100 envs, 15 s). It evaluates the
+its own Isaac process, with the eval conditions it is given (`--eval_config`, required). It evaluates the
 **base alone** first, at startup (step 0: a zero residual), then every new numbered checkpoint
 as training writes it, each with the same seed (the same 100 starting conditions), the SAC policy
 deterministic. It logs `eval/success_rate`, `eval/engaged_rate`, `eval/force_mean`,
@@ -469,11 +300,10 @@ run (`<run>_eval`, same group) at the checkpoint's step, and appends each result
 `<run dir>/eval_watch/results.jsonl`.
 
 ```bash
-python scripts/watch_residual_eval.py --run runs/hybrid_demo_pih/residual_sac/residual_sac_a0
+python scripts/watch_residual_eval.py --run <residual run dir> --eval_config <eval config>
 ```
 
-On a FurnitureBench residual run, pass `--eval_config configs/eval/residual_watch_furniture.yaml`
-(100 envs, the run's own episode length): each env's first episode counts, and it logs
+On a FurnitureBench residual run each env's first episode counts, and it logs
 `eval/success_rate`, `eval/out_of_bounds_rate`, `eval/length_mean` and `eval/length_hist`
 (no force or engagement on that env).
 
@@ -487,8 +317,8 @@ to the run's deterministic eval wandb run as `eval_stochastic/*`, on its own x-a
 `eval_stochastic/step` (the checkpoint step), so both curves sit in one run; re-runnable.
 
 ```bash
-python scripts/watch_residual_eval.py --run runs/hybrid_demo_pih/residual_sac_all/residual_sac_all_a0 --stochastic --once
-python scripts/publish_stochastic_eval.py runs/hybrid_demo_pih/residual_sac_all/residual_sac_all_a0
+python scripts/watch_residual_eval.py --run <residual run dir> --eval_config <eval config> --stochastic --once
+python scripts/publish_stochastic_eval.py <residual run dir>
 ```
 
 | field | type | default | what it does |
@@ -508,21 +338,7 @@ peg and hole poses, joint positions, gains, ...), so SAC's critics train on that
 while the actor sees the 24-d observation. That is privileged sim information; a real-robot run
 needs a critic built from what the robot can measure.
 
-### Ablations
-
-Each differs from `residual_sac.yaml` by its own change only (pinned by
-`tests/residual/test_experiment_configs.py`), with the same budget and seed:
-
-| config | change |
-| --- | --- |
-| `residual_sac_history.yaml` | the agent observes the previous 8 steps of the noisy fingertip estimate and the noisy force (`history.*`) |
-| `residual_sac_ensemble.yaml` | 10 critics, target min over a random 2, 10 critic updates per env step, the actor still 1 per env step on the ensemble mean (the package's `sac.num_critics`, `critic_subset`, `actor_q_reduction`, `gradient_steps`, `policy_delay`) |
-| `residual_sac_demo_critic.yaml` | the critic trains from step 0, on batches half demo transitions until step 22400 (`sac.demo_transitions`, `demo_sampling_*`); the actor starts at 1000 like the baseline, online data only |
-| `residual_sac_history_ensemble.yaml` | history + ensemble |
-| `residual_sac_all.yaml` | history + ensemble + demo critic |
-
-SimBa critics already carry LayerNorm in every block (RLPD's critic normalization), so the
-baseline has it too and no config mentions it.
+### Demo transitions
 
 **Demo transitions** (`my_project/residual_demos.py`) are built **offline from the recorded
 frames**: no env, no replay, so the observations are exactly the ones the base was trained on.
@@ -558,9 +374,7 @@ whose fingerprint differs raises, naming the differences. A new observation layo
 a re-conversion, not new demos:
 
 ```bash
-python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_demo_critic.yaml
-python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_all.yaml
-python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_all.yaml --check_in_sim 3
+python scripts/make_demo_transitions.py --config configs/experiments/resip_replica/residual_resip_replica.yaml
 ```
 
 `--dataset` overrides the demos (default: the base policy's `bc.dataset`), `--out` the file.
@@ -622,8 +436,7 @@ the residual passes the blocks on as the agent gave them. The project section's 
 stay at their defaults there (the config refuses them and names `task.cfg.hybrid.*`).
 On the furniture family the force branch is `f_d + K_f (f_d - f)` (`task.cfg.hybrid.force_feedforward`,
 on by default), so a still EE settles at the target. **Forge's law has no such term and is weak**:
-pure P, a force axis settles at `K_f f_d / (1 + K_f)` (~9 % of the target at the default K_f 0.1),
-which holds for the Forge hybrid runs (`residual_hybrid_all`).
+pure P, a force axis settles at `K_f f_d / (1 + K_f)` (~9 % of the target at the default K_f 0.1).
 
 ### The measured wrench in the agent's observation
 
@@ -655,55 +468,6 @@ force-controlled. Needs a hybrid action space and `force_obs.enabled`. With
 | `mode` | str | `no_torque` | `force_obs.mode`: where the force sits in the observation's last columns |
 | `axes` | list[int] | `[0, 1, 2]` | the force components (x, y, z) in selection order, one per selection dim |
 
-`configs/experiments/residual_hybrid_furniture_resip.yaml` puts it together on one_leg in
-ResiP's sim: the ResiP-recipe base (`diffusion_bc_furniture_resip`), the hybrid task id, force on
-x, y, z up to ±10 N, `force_obs` without torque, `force_selection` (weight 1, 0.5 at 3.5 N, scale
-2/N, graph-safe), the residual_sac_furniture recipe otherwise, and no demo transitions (none carry
-the force yet). Point `residual.base_run` at the BC run, then
-`python scripts/train.py --config configs/experiments/residual_hybrid_furniture_resip.yaml --headless`.
-
-`configs/experiments/residual_hybrid_all.yaml` is `residual_sac_all.yaml` (same base, demos,
-history, ensemble and demo-warmed critic) with `hybrid` on: force on x, y, z, targets up to
-±10 N, the choice starting 50/50 (`model.actor.selection_init_bias` at its default 0), and
-`sac.target_entropy: -5.0` (−|A|/2 for its 10 action dims).
-
-```bash
-python scripts/make_demo_transitions.py --config configs/experiments/residual_hybrid_all.yaml
-python scripts/train.py --config configs/experiments/residual_hybrid_all.yaml --headless
-python scripts/watch_residual_eval.py --run runs/hybrid_demo_pih/residual_hybrid_all/residual_hybrid_all_a0 --headless
-```
-
-### Residual RL on nut threading
-
-`configs/experiments/residual_sac_nut.yaml`: everything `residual_sac_all.yaml` uses (history,
-critic ensemble, demo-warmed critic), the residual at 10% of the base's action range, on the
-bolt-relative nut BC run (epoch 140: 77.2% over 250 episodes), with `episode.reset_on_success`.
-Training runs in the eval's conditions (`configs/eval/nut_250.yaml`): the bolt clamped, its
-estimate 2 mm off per axis, the nut at its stock offset. The history is
-`fingertip_pos_rel_fixed` and `ft_force` (the nut observation has no absolute fingertip).
-
-```bash
-python scripts/make_demo_transitions.py --config configs/experiments/residual_sac_nut.yaml
-python scripts/train.py --config configs/experiments/residual_sac_nut.yaml --headless
-python scripts/watch_residual_eval.py --run runs/hybrid_demo_nut/residual_sac_nut/residual_sac_nut_a0 \
-    --eval_config configs/eval/residual_watch_nut.yaml --headless
-```
-
-`residual_sac_nut_scale005.yaml` is the same with the residual at 5% of the base's action
-range (`residual.action_scale_fraction: 0.05`), its own demo-transition file.
-
-A larger check of chosen checkpoints against the base, on 250 episodes, in its own results
-folder and wandb run (`--steps` evaluates the base and those checkpoints, then exits;
-`--out_name` names the folder and the wandb run's suffix):
-
-```bash
-python scripts/watch_residual_eval.py --run runs/hybrid_demo_nut/residual_sac_nut_scale005/residual_sac_nut_scale005_a0 \
-    --eval_config configs/eval/residual_nut_250.yaml --steps 85119 --out_name eval_250 --headless
-```
-
-The watcher's `configs/eval/residual_watch_nut.yaml` keeps the run's 30 s episodes and turns
-the success reset off (100 envs, one round together; success counts at any step anyway).
-
 ## Diffusion-policy behaviour cloning
 
 `scripts/train_bc.py` behaviour-clones a diffusion policy from demonstrations: a port of
@@ -713,8 +477,8 @@ eval. One policy, no RL: `trainer.learner: diffusion_bc` (registered in `setup()
 `experiment.num_agents: 1`. Pure pose control, no hybrid controller.
 
 ```bash
-python scripts/train_bc.py --config configs/experiments/diffusion_bc.yaml --headless bc.dataset=~/demos/peg_insert
-python scripts/train_bc.py --config configs/experiments/diffusion_bc.yaml --headless bc.dataset=~/demos/peg_insert bc.num_demos=200
+python scripts/train_bc.py --config configs/experiments/resip_replica/bc_resip_replica.yaml --headless
+python scripts/train_bc.py --config configs/experiments/resip_replica/bc_resip_replica.yaml --headless bc.num_demos=25
 ```
 
 **Data format** (any preprocessing must keep it): a dataset directory as
