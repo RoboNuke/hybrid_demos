@@ -395,6 +395,10 @@ class BCCfg:
     rollout_every: int = 10
     #: rollouts run only once the test loss is below this
     rollout_loss_threshold: float = 0.1
+    #: show each rollout's progress -- a tqdm bar of episode steps out of eval.num_rollouts x the
+    #: episode length, an episode that ends early adding its unused steps -- and print its
+    #: success rate when it ends
+    rollout_progress: bool = False
 
     #: stop once training has run this long, hours of wall-clock time from the first epoch
     #: (checked after each epoch, whose checkpoints are saved first); null: no limit

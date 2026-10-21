@@ -96,6 +96,7 @@ def rollout_metrics(cfg, env, rollout_policy, best_success_rate: float) -> Dict[
         seed=cfg.experiment.seed,
         save_state=False,
         device=env.device,
+        progress=bool(cfg.bc.rollout_progress),
     )
     summary = result.summary
     if "episode/success/mean" not in summary:
@@ -368,6 +369,13 @@ def _train(args, overrides, setup, app_launcher) -> int:
                         best_success_rate = max(rate, best_success_rate)
                         save("actor_chkpt_best_success_rate.pt", checkpoint_state())
                         saved_best = True
+                    if bc.rollout_progress:
+                        print(
+                            f"[train_bc] rollout at epoch {epoch + 1} step {global_step}: "
+                            f"{round(float(epoch_log['n_success']))}/{round(float(epoch_log['n_rollouts']))} "
+                            f"succeed ({100 * rate:.1f}%), best {100 * best_success_rate:.1f}%",
+                            flush=True,
+                        )
 
                 if test_loss < best_test_loss:
                     best_test_loss = test_loss
