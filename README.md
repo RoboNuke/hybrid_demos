@@ -43,7 +43,7 @@ bodies with your observations, rewards and resets.
   independent of the training method), chained onto `hpc.yaml` (the cluster's resources). Base one on it
   and you get a known task with known physics.
 * `configs/eval/` -- only what one test changes on top of the trained run's own config (more friction, a
-  recording: `one_leg_phases.yaml`), chained onto `hpc.yaml` for the cluster launcher's resources.
+  recording: `one_leg_phases.yaml`; the residual watcher's 100 envs: `residual_watch_furniture.yaml`), chained onto `hpc.yaml` for the cluster launcher's resources.
 * `configs/experiments/<group>/` -- one folder per experiment group: `_foundation.yaml` (based on a
   `base/` task) holds what every training of the group shares -- the seed, the wandb entity, every
   learning parameter -- and one launch config per training (`bc_<group>.yaml`, `residual_<group>.yaml`)
@@ -208,7 +208,16 @@ residual SAC on the frozen `physic_aligned_evalHappy_a0`, named by `residual.bas
 `base_run_name` and downloaded from wandb, logging to its own project
 (`hybrid_demo_furniture_residual`). Its demo transitions read the importer's
 `observation.state_abs` / `action.abs` / `observation.next_state_abs`, with the recorded reward
-times the env's `step_dt` (Isaac Lab's reward manager scales every term by it):
+times the env's `step_dt` (Isaac Lab's reward manager scales every term by it).
+`residual_serl_g099_qmin.yaml` is the same residual with `sac.discount_factor` 0.99 and the actor on
+the min over the critics (`sac.actor_q_reduction: min`), in its own group with its own demo file;
+`residual_serl_g099_qmin_std01_fixed_alpha.yaml` is that one with a small fixed exploration (the actor's
+std held in [0.08, 0.10] by `model.actor.min_log_std` / `max_log_std`) and a fixed temperature
+(`sac.learn_entropy: false`, alpha 0.01); `residual_serl_g0995_qmin_std01_fixed_alpha.yaml` is that one
+with `sac.discount_factor` 0.995, so a success still pays the states hundreds of steps before it;
+`residual_serl_g0995_qmin_std01_fixed_alpha_scale002.yaml` is that one with the residual's authority at 2%
+of the base's range (`residual.action_scale_fraction: 0.02`, at most ~3 mm per dim), logging every 1000
+steps with `episode/success` the mean of the last 10 episodes (`trainer.success_window: 10`):
 
 ```bash
 python scripts/train_bc.py --config configs/experiments/resip_replica/bc_resip_replica.yaml --headless
@@ -297,10 +306,15 @@ as training writes it, each with the same seed (the same 100 starting conditions
 deterministic. It logs `eval/success_rate`, `eval/engaged_rate`, `eval/force_mean`,
 `eval/force_max_mean` and histograms of per-episode max and mean contact force to its own wandb
 run (`<run>_eval`, same group) at the checkpoint's step, and appends each result to
-`<run dir>/eval_watch/results.jsonl`.
+`<run dir>/eval_watch/results.jsonl`. Each round shows a tqdm bar on stderr: env steps out of the
+episode's length (FurnitureBench: with the envs still running and the successes so far).
 
 ```bash
 python scripts/watch_residual_eval.py --run <residual run dir> --eval_config <eval config>
+# e.g. the resip_replica residual, 100 envs:
+python scripts/watch_residual_eval.py \
+  --run runs/hybrid_demo_furniture_residual/residual_resip_replica/residual_resip_replica_a0 \
+  --eval_config configs/eval/residual_watch_furniture.yaml
 ```
 
 On a FurnitureBench residual run each env's first episode counts, and it logs
@@ -369,8 +383,10 @@ is exact from the session start in order, but one demo replayed alone drifts (ep
 26 mm, and it fails). The check builds its env first for that and skips any demo whose peg
 leaves the recording; with the residual's base drawing from the same RNG, the first demo is
 the exact one. The file is written to `sac.demo_transitions` with a fingerprint
-(task cfg up to cosmetic fields, `action`, `residual`, `history`); building the env for a run
-whose fingerprint differs raises, naming the differences. A new observation layout or base is
+(task cfg up to cosmetic fields, `action`, `residual`, `history`, `hybrid`); building the env for a run
+whose fingerprint differs raises, naming the differences. Only training is checked: a config
+rebuilt from a run (eval, debug, the watcher) never reads the file, and its `task.cfg` is the
+live env's, holding the action terms the env derived at `gym.make`. A new observation layout or base is
 a re-conversion, not new demos:
 
 ```bash

@@ -1,0 +1,25 @@
+# residual_serl_g0995_qmin_std01_fixed_alpha.yaml with the residual's authority cut from 10% to 2% of the
+# base's normalized action range (action_scale_fraction 0.1 -> 0.02): at most 3.3 / 2.9 / 1.9 mm per x / y / z
+# dim, which still covers the 90th-percentile demo correction (~1.9 mm per dim; 82% of demo rows fit
+# entirely). There, by 10k, the critic inflated (Q mean 2.8 vs a true max of 0.1) and the actor followed it to
+# 30% of a 24 mm bound (7.4 mm / 2.6 deg), taking eval from 0.65 to 0.01. The std band and alpha are unchanged,
+# so in physical units the exploration noise shrinks 5x too (~0.44 mm) and the alpha pull on the mean is ~25x
+# stiffer. Logging every 1000 steps with episode/success the mean of the last 10 episodes; checkpoints stay
+# every 10000. Episodes end when the env says (a success resets early; the next one gets its full 1000 steps).
+#   python scripts/make_demo_transitions.py --config configs/experiments/resip_replica/residual_serl_g0995_qmin_std01_fixed_alpha_scale002.yaml
+#   python scripts/train.py --config configs/experiments/resip_replica/residual_serl_g0995_qmin_std01_fixed_alpha_scale002.yaml --headless
+base: residual_serl_g0995_qmin_std01_fixed_alpha.yaml
+
+wandb:
+  group: serl_g0995_qmin_std01_fixed_alpha_scale002
+
+trainer:
+  write_interval: 1000
+  success_window: 10
+
+sac:
+  # scripts/make_demo_transitions.py writes it from the base's bc.dataset
+  demo_transitions: data/physic_aligned/transitions/serl_g0995_qmin_std01_fixed_alpha_scale002.pt
+
+residual:
+  action_scale_fraction: 0.02

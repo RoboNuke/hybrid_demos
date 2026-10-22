@@ -1,0 +1,16 @@
+# Conditions for scripts/watch_residual_eval.py on a FurnitureBench residual run, layered on the run's own
+# config: 100 envs, each env's first episode of a round counts, the run's own episode length. Everything
+# else stays as the run trained.
+#   python scripts/watch_residual_eval.py \
+#     --run runs/hybrid_demo_furniture_residual/residual_resip_replica/residual_resip_replica_a0 \
+#     --eval_config configs/eval/residual_watch_furniture.yaml
+# hpc.yaml: the cluster's resources for launchers/launch_eval.py, which reads them from this chain.
+base: ../base/hpc.yaml
+
+eval:
+  num_rollouts: 100
+
+task:
+  cfg:
+    scene:
+      num_envs: 100

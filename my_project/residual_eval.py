@@ -32,7 +32,8 @@ Logged to its own wandb run (``<run name>_eval``, the training run's project and
 ``step`` = the checkpoint's step: ``eval/success_rate``, ``eval/engaged_rate``,
 ``eval/force_mean`` (mean over episodes of each episode's mean force), ``eval/force_max_mean``,
 and histograms ``eval/force_max_hist`` and ``eval/force_mean_hist``. Each result is also
-appended to ``<run dir>/eval_watch/results.jsonl``.
+appended to ``<run dir>/eval_watch/results.jsonl``. Each round shows its progress as a tqdm bar
+on stderr.
 """
 
 from __future__ import annotations
@@ -130,13 +131,20 @@ def _find_residual(env: Any):
     raise RuntimeError("the env has no ResidualPolicyWrapper: is residual.enabled set in the run's config?")
 
 
-def evaluate(env: Any, policy: Any, seed: int) -> Dict[str, Any]:
+def _round_bar(total: int, label: str):
+    """The round's progress on stderr: env steps out of the episode's full length."""
+    from tqdm import tqdm
+
+    return tqdm(total=total, desc=f"[watch] {label}", unit="step", dynamic_ncols=True, leave=False)
+
+
+def evaluate(env: Any, policy: Any, seed: int, label: str = "eval") -> Dict[str, Any]:
     """One round on every env: success, engagement, mean and max force per episode
-    (FurnitureBench: :func:`evaluate_furniture`)."""
+    (FurnitureBench: :func:`evaluate_furniture`). ``label`` names the round's progress bar."""
     import torch
 
     if hasattr(env.unwrapped, "termination_manager"):
-        return evaluate_furniture(env, policy, seed)
+        return evaluate_furniture(env, policy, seed, label)
 
     from robonuke_rl_core.evaluation import env_states, force_env_reset
 
@@ -155,6 +163,7 @@ def evaluate(env: Any, policy: Any, seed: int) -> Dict[str, Any]:
     force_sum = torch.zeros(n, device=u.device)
     force_max = torch.zeros(n, device=u.device)
     steps = int(u.max_episode_length) - 1  # Forge ends an episode one step before the limit
+    bar = _round_bar(steps, label)
     for _ in range(steps):
         with torch.no_grad():
             actions = policy(observations, states)
@@ -167,6 +176,8 @@ def evaluate(env: Any, policy: Any, seed: int) -> Dict[str, Any]:
         # the wrist turned past cfg_task.ee_success_yaw; engagement never checks rotation
         success |= u._get_curr_successes(u.cfg_task.success_threshold, check_rot=u.cfg_task.name == "nut_thread")
         engaged |= u._get_curr_successes(u.cfg_task.engage_threshold, check_rot=False)
+        bar.update(1)
+    bar.close()
     force_mean = force_sum / steps
     return {
         "success_rate": float(success.float().mean()),
@@ -179,9 +190,11 @@ def evaluate(env: Any, policy: Any, seed: int) -> Dict[str, Any]:
     }
 
 
-def evaluate_furniture(env: Any, policy: Any, seed: int) -> Dict[str, Any]:
+def evaluate_furniture(env: Any, policy: Any, seed: int, label: str = "eval") -> Dict[str, Any]:
     """One round on every env of a manager-based FurnitureBench env: each env's first episode
-    (the env resets an env on its own when it ends): success, out of bounds, length."""
+    (the env resets an env on its own when it ends): success, out of bounds, length. The progress
+    bar shows the envs still in their first episode and the successes so far; it stops early when
+    every env's episode has ended."""
     import torch
 
     from robonuke_rl_core.envs.build import reseed_env
@@ -198,18 +211,26 @@ def evaluate_furniture(env: Any, policy: Any, seed: int) -> Dict[str, Any]:
     success = torch.zeros(n, dtype=torch.bool, device=u.device)
     out = torch.zeros(n, dtype=torch.bool, device=u.device)
     length = torch.zeros(n, dtype=torch.long, device=u.device)
+    bar = _round_bar(int(u.max_episode_length), label)
     for _ in range(int(u.max_episode_length)):
         with torch.no_grad():
             actions = policy(observations, states)
         observations, _, terminated, truncated, _ = env.step(actions)
         states = env_states(env)
         length += alive.long()
-        success |= alive & manager.get_term("success").reshape(-1).bool()
+        # a term counts only on the step it ends the episode: Isaac Lab's term buffer keeps the
+        # last ended episode's terms through a reset, so at a round's start it still holds the
+        # previous round's successes
+        ended = alive & terminated.reshape(-1).bool()
+        success |= ended & manager.get_term("success").reshape(-1).bool()
         if "part_out_of_limits" in manager.active_terms:
-            out |= alive & manager.get_term("part_out_of_limits").reshape(-1).bool()
+            out |= ended & manager.get_term("part_out_of_limits").reshape(-1).bool()
         alive &= ~(terminated.reshape(-1).bool() | truncated.reshape(-1).bool())
+        bar.set_postfix(running=int(alive.sum()), success=int(success.sum()), refresh=False)
+        bar.update(1)
         if not alive.any():
             break
+    bar.close()
     return {
         "success_rate": float(success.float().mean()),
         "out_of_bounds_rate": float(out.float().mean()),
@@ -333,7 +354,7 @@ def _evaluate_all(env, cfg, ckpt_dir, done, record, seed, args, run) -> int:
         # the base alone: a residual of exactly zero, no checkpoint needed
         width = int(env.action_space.shape[-1])
         zero = lambda observations, states: torch.zeros((observations.shape[0], width), device=observations.device)
-        record(0, "base only", evaluate(env, zero, seed))
+        record(0, "base only", evaluate(env, zero, seed, "base only"))
         done.add(0)
 
     policy = learner = None
@@ -365,7 +386,7 @@ def _evaluate_all(env, cfg, ckpt_dir, done, record, seed, args, run) -> int:
         for step, path in pending:
             learner.load_agent(path, slot=0, with_optimizer=False)
             learner.enable_training_mode(False)
-            record(step, path.name, evaluate(env, policy, seed))
+            record(step, path.name, evaluate(env, policy, seed, path.name))
             done.add(step)
             if step >= total - 1:
                 print("[watch] reached the run's last checkpoint", flush=True)

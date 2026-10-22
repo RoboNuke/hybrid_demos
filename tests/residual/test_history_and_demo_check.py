@@ -97,6 +97,7 @@ def fake_cfg(path, **changes):
         task_name="T",
         trainer=SimpleNamespace(learner="sac"),
         sac=SimpleNamespace(demo_transitions=str(path)),
+        source_run=None,
     )
 
 
@@ -111,6 +112,18 @@ def test_a_file_made_for_another_setup_is_refused_and_cosmetic_task_fields_are_n
     for change in ({"history.enabled": True}, {"residual.base_run": "runs/other"}, {"task.cfg.obs_order": ["b"]}):
         with pytest.raises(ValueError, match="different setup"):
             residual_demos.check_demo_transitions(fake_cfg(path, **change))
+
+
+def test_a_config_rebuilt_from_a_run_is_not_checked(tmp_path):
+    """Eval / the watcher: the run's task.cfg is the live env's (action terms the env derived), so
+    it never matches the fingerprint taken before gym.make, and nothing there reads the file."""
+    path = tmp_path / "demos.pt"
+    torch.save({"transitions": {}, "meta": {"fingerprint": residual_demos.demo_fingerprint(fake_cfg(path))}}, path)
+    cfg = fake_cfg(path, **{"task.cfg.obs_order": ["derived"]})
+    with pytest.raises(ValueError, match="different setup"):
+        residual_demos.check_demo_transitions(cfg)
+    cfg.source_run = "runs/proj/group/resolved_config.yaml"
+    residual_demos.check_demo_transitions(cfg)
 
 
 def test_a_missing_file_is_left_to_the_learner(tmp_path):

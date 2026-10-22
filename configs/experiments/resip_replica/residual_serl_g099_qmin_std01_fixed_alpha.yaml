@@ -1,0 +1,26 @@
+# residual_serl_g099_qmin.yaml with a small, fixed exploration and a fixed temperature (agreed with an
+# independent review after serl_g099_qmin failed at 51k, ~/overnight/log.md). There the exploration noise
+# (std 0.87 before the tanh, ~13 mm / 4.5 deg per step) left the base no online success, so the critic
+# never saw what an action does, and the learned temperature decayed on Adam's clock (0.01 to 4.5e-5 by
+# 20k), taking away the pull that holds the residual's mean at the base; the mean then ran to the bound.
+# Here the std is held in [0.08, 0.10] (~2.2 mm / 0.8 deg per step) and alpha stays at 0.01: with the std
+# fixed, alpha * log pi pulls the mean back by 2 alpha tanh(u) per dim, never attenuated at the bound.
+#   python scripts/make_demo_transitions.py --config configs/experiments/resip_replica/residual_serl_g099_qmin_std01_fixed_alpha.yaml
+#   python scripts/train.py --config configs/experiments/resip_replica/residual_serl_g099_qmin_std01_fixed_alpha.yaml --headless
+base: residual_serl_g099_qmin.yaml
+
+wandb:
+  group: serl_g099_qmin_std01_fixed_alpha
+
+model:
+  actor:
+    act_init_std: 0.1
+    # std in [exp(-2.53), exp(-2.30)] = [0.080, 0.100]: alpha pushes it to the top edge
+    min_log_std: -2.53
+    max_log_std: -2.30
+
+sac:
+  # alpha stays at _foundation.yaml's initial_entropy_value (0.01)
+  learn_entropy: false
+  # scripts/make_demo_transitions.py writes it from the base's bc.dataset
+  demo_transitions: data/physic_aligned/transitions/serl_g099_qmin_std01_fixed_alpha.pt

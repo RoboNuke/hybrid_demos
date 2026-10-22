@@ -10,7 +10,7 @@ experiment:
 
 wandb:
   project: hybrid_demo_furniture_residual
-  group: residual_resip_replica
+  group: serl_resip_replica
 
 task:
   cfg:
@@ -19,16 +19,24 @@ task:
 
 trainer:
   learner: sac
-  # 432000 env steps: 432 episodes
+  # 432000 env steps: 432 episodes (_foundation.yaml's sac.demo_sampling_end spans them all)
   total_timesteps: 432000
   # every 10 episodes, log and checkpoint together
   write_interval: 10000
   checkpoint_interval: 10000
   log_memory_stats: false
 
+# one 256-wide SimBa block each; the actor's std from the observation (SERL's std head), starting at
+# act_init_std as before
 model:
   actor:
+    actor_n: 1
+    actor_latent: 256
     last_layer_scale: 0.1
+    use_state_dependent_std: true
+  critic:
+    critic_n: 1
+    critic_latent: 256
 
 residual:
   enabled: true

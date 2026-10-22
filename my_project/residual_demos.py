@@ -161,9 +161,15 @@ def demo_fingerprint(cfg: Any) -> Dict[str, Any]:
 
 def check_demo_transitions(cfg: Any) -> None:
     """Refuse ``sac.demo_transitions`` when it was made for another setup. A missing file is
-    left to the learner, which needs it only to train (eval and debug never read it)."""
+    left to the learner, which needs it only to train (eval and debug never read it).
+
+    A config rebuilt from a run (``cfg.source_run``: eval, debug, scripts/watch_residual_eval.py)
+    is not checked: the run checked its file when it trained, nothing it builds reads the file, and
+    its ``task.cfg`` is the live env's, holding what the env derived at ``gym.make`` (the gripper's
+    and the IK's action terms), which the fingerprint -- taken from the config before ``gym.make`` --
+    never holds. Training never starts from a run."""
     path = getattr(getattr(cfg, "sac", None), "demo_transitions", None)
-    if not path or cfg.trainer.learner != "sac" or not Path(path).is_file():
+    if not path or cfg.trainer.learner != "sac" or not Path(path).is_file() or cfg.source_run is not None:
         return
     import torch
 

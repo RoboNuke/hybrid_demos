@@ -1,0 +1,18 @@
+# residual_resip_replica.yaml (the SERL residual SAC) with a shorter-horizon, pessimistic actor-critic:
+# gamma 0.99 instead of 0.999 (one-step targets multiply each update's error by ~1/(1-gamma): 100, not
+# 1000), and the actor on the min over the 10 critics instead of their mean (they disagree most at
+# actions away from the data, so the min charges the residual for leaving it). The reward is the env's
+# own (a success pays 0.1). Its own wandb group and demo file. Convert the demos (offline), then train:
+#   python scripts/make_demo_transitions.py --config configs/experiments/resip_replica/residual_serl_g099_qmin.yaml
+#   python scripts/train.py --config configs/experiments/resip_replica/residual_serl_g099_qmin.yaml --headless
+base: residual_resip_replica.yaml
+
+wandb:
+  group: serl_g099_qmin
+
+sac:
+  # a success 100 steps (10 s) out is still worth 0.99^100 = 0.37
+  discount_factor: 0.99
+  actor_q_reduction: min
+  # scripts/make_demo_transitions.py writes it from the base's bc.dataset
+  demo_transitions: data/physic_aligned/transitions/serl_g099_qmin.pt

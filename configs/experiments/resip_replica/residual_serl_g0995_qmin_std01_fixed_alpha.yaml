@@ -1,0 +1,16 @@
+# residual_serl_g099_qmin_std01_fixed_alpha.yaml with gamma 0.995 instead of 0.99, so a success pays the
+# early states too. There (stopped at 270k, eval flat at the base) the residual stayed at zero: the critic's
+# action gradient fell to ~6e-5, because at gamma 0.99 a success ~600 steps out is worth 0.99^600 = 0.0024 of
+# its 0.1 at the episode start (grasp) and 0.99^300 = 0.049 during transport. At 0.995 those are 0.05 and
+# 0.22 (about 20x and 4.5x the action signal), for twice the error amplification (1/(1 - gamma) = 200, not 100).
+#   python scripts/make_demo_transitions.py --config configs/experiments/resip_replica/residual_serl_g0995_qmin_std01_fixed_alpha.yaml
+#   python scripts/train.py --config configs/experiments/resip_replica/residual_serl_g0995_qmin_std01_fixed_alpha.yaml --headless
+base: residual_serl_g099_qmin_std01_fixed_alpha.yaml
+
+wandb:
+  group: serl_g0995_qmin_std01_fixed_alpha
+
+sac:
+  discount_factor: 0.995
+  # scripts/make_demo_transitions.py writes it from the base's bc.dataset
+  demo_transitions: data/physic_aligned/transitions/serl_g0995_qmin_std01_fixed_alpha.pt

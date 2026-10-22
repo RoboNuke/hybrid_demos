@@ -34,22 +34,33 @@ eval:
   # BC rollouts per evaluation
   num_rollouts: 512
 
-# -- residual SAC (scripts/train.py): 10 critics (target min over a random 2, 10 critic updates per env
-# step, the actor once per env step on the ensemble mean), an 8-step history of the EE position and
-# velocity, the critic warmed up on the demos; the residual bounded at 2% of the base's normalized action
-# range per dim, over all 10 absolute action dims
+# -- residual SAC (scripts/train.py), after SERL (Luo et al. 2024): 10 critics (target min over a random
+# 2, 10 critic updates per env step, the actor once per env step on the ensemble mean), no entropy in the
+# critic's target, the temperature on the batch's next observations, target entropy -|A|/2; half of every
+# critic batch demos for the whole run; an 8-step history of the EE position and velocity; the residual
+# bounded at 10% of the base's normalized action range per dim, over all 10 absolute action dims (ResiP's
+# action_scale 0.1)
 memory:
-  # the newest 100k transitions (100 episodes); older data is dropped
-  memory_size: 100000
+  # every transition of the run (residual_resip_replica.yaml's trainer.total_timesteps): nothing is dropped
+  memory_size: 432000
 
 sac:
+  # over the 1000-step episode: 0.999^1000 = 0.37 of a success reaches the start (0.99^1000 = 4e-5)
+  discount_factor: 0.999
   batch_size: 256
+  # the agent's input is already the base's normalized observation and action (and the history of
+  # those columns): no running normalizer on top (SERL has none; ResiP only clamps)
+  normalize_observations: false
   actor_lr: 3.0e-4
   critic_lr: 3.0e-4
   entropy_lr: 3.0e-4
   initial_entropy_value: 1.0e-2
-  # well below -|A| / 2 (-5): SAC at -5 explored near the full bound
-  target_entropy: -15.0
+  # SERL's -|A| / 2, |A| = 10
+  target_entropy: -5.0
+  # SERL: the critics' target is reward alone, the entropy shapes only the actor
+  backup_entropy: false
+  # SERL: the temperature reads the policy's entropy at the critic batch's next observations
+  entropy_observations: next
   cuda_graph: true
   num_critics: 10
   critic_subset: 2
@@ -60,10 +71,11 @@ sac:
   # 2 episodes of critic-only warm-up
   policy_learning_starts: 2000
   # scripts/make_demo_transitions.py writes it from the base's bc.dataset
-  demo_transitions: data/physic_aligned/transitions/residual_resip_replica.pt
+  demo_transitions: data/physic_aligned/transitions/serl_resip_replica.pt
   demo_sampling_start: 0
-  # demos sampled for the first 10 episodes
-  demo_sampling_end: 10000
+  # half of every critic batch is demos for the whole run: residual_resip_replica.yaml's
+  # trainer.total_timesteps
+  demo_sampling_end: 432000
 
 residual:
   # the frozen base: the BC run on wandb (under wandb.entity), in another project than the residual's
@@ -71,7 +83,7 @@ residual:
   base_run_name: physic_aligned_evalHappy_a0
   base_checkpoint: actor_chkpt_best_success_rate.pt
   action_scale: null
-  action_scale_fraction: 0.02
+  action_scale_fraction: 0.1
 
 history:
   length: 8
