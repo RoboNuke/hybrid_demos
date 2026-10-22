@@ -31,6 +31,7 @@ The starting point for a research project built on
 | SLURM submitters (thin callers of `robonuke_rl_core.hpc`) | `launchers/` | — |
 | model architectures (`nn.Module` + `<Arch>ModelCfg`) | `my_project/models/` | `register_architecture` in `setup()` |
 | overlays | same pattern: register in `setup()` | package CLAUDE.md recipes |
+| analysis notebooks (cells: imports, variables, download, preprocessing, then one plot / table each; downloads cached in the git-ignored `data_analysis/cache/`) | `data_analysis/` | — |
 
 The demo task (`Isaac-Forge-DemoPegInsert-Direct-v0`) subclasses Isaac Lab's Forge peg
 insert unchanged — "forge" in the task name is what lets the package's Forge wrappers
