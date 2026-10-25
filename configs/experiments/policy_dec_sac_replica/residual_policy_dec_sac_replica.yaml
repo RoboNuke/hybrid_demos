@@ -40,6 +40,9 @@ model:
     output_init_scale: 0.01
     use_state_dependent_std: true
     learn_std: true
+    # their fc_logstd has bias 0: log std = -20 + 11 (tanh(0) + 1) = -9 at the start (std 1.2e-4); the
+    # exploration comes from the uniform warm-up and the temperature, not from a wide initial Gaussian
+    init_log_std: -9.0
     log_std_bound: tanh
     min_log_std: -20.0
     max_log_std: 2.0

@@ -346,6 +346,8 @@ def test_the_policy_decorator_replica_is_their_defaults_on_our_base():
     assert c["task.cfg.rewards.step.weight"] * 4 == -1.0 and "task.cfg.rewards.assembled.weight" not in c  # assembled stays the task's 1.0
     assert (c["model.actor.hidden_size"], c["model.actor.num_layers"], c["model.actor.activation"]) == (256, 3, "ReLU")
     assert c["model.actor.use_state_dependent_std"] is True and c["model.actor.log_std_bound"] == "tanh"
+    # their initial log std: the tanh bound's midpoint, -20 + 0.5 * 22 * (0 + 1)
+    assert c["model.actor.init_log_std"] == -20.0 + 0.5 * (2.0 - -20.0) * 1.0 == -9.0
     assert (c["model.actor.min_log_std"], c["model.actor.max_log_std"], c["model.actor.squash"]) == (-20.0, 2.0, True)
     assert (c["model.critic.num_layers"], c["model.critic.output_init_scale"]) == (3, 0.01)
     assert c["trainer.total_timesteps"] * c["task.cfg.scene.num_envs"] == 4_000_000
