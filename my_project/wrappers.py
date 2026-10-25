@@ -204,6 +204,11 @@ class ObservationHistory(gym.Wrapper):
     whose layout is the same), so the base policy's own input is untouched. An env whose
     episode just began gets its current value repeated. Either env family
     (``my_project/envhooks.py``).
+
+    The hook runs every time the env produces an observation, i.e. every env step. With
+    ``residual.steps_per_chunk: k > 1`` the agent acts every ``k`` env steps and the history it
+    sees at a chunk boundary is the previous ``length`` env steps (a one-env-step stride, the
+    chunk's own sub-steps included), not the previous ``length`` agent steps.
     """
 
     def __init__(self, env: Any, cfg: Any) -> None:

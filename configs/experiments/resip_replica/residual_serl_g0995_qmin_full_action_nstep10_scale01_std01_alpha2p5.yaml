@@ -1,0 +1,31 @@
+# residual_serl_g0995_qmin_scale002_std05_alpha4e-4_critic_full_action.yaml with 10-step TD targets and ResiP's
+# authority, on the demos ending where the env ends them (the converter's cut at the env's success; rewards as
+# the MDP weights define them, a success pays 1). An offline fit on the demos alone: corr(Q, true return) -0.08
+# with 1-step targets, 0.80 with 10-step.
+#   authority 0.1 (16.3 / 14.5 / 9.6 mm per unit r in x / y / z), as ResiP; the std band keeps the parent's
+#   physical exploration: std / 5 = [0.08, 0.10] (~2 mm per step). Alpha 2.5 is a mistake, 25x the parent's
+#   physical pull: it scaled the 10% runs' 0.01 by 25 as if it were the 2% value (the parent's is 4e-4; x 25
+#   x 10 for a success of 1 is 0.1). Stopped at 130k with the actor's mean held at zero; the _alpha0p1 child
+#   is this with the intended alpha. Fixed (learn_entropy stays false)
+#   python scripts/make_demo_transitions.py --config configs/experiments/resip_replica/residual_serl_g0995_qmin_full_action_nstep10_scale01_std01_alpha2p5.yaml
+#   python scripts/train.py --config configs/experiments/resip_replica/residual_serl_g0995_qmin_full_action_nstep10_scale01_std01_alpha2p5.yaml --headless
+base: residual_serl_g0995_qmin_scale002_std05_alpha4e-4_critic_full_action.yaml
+
+wandb:
+  group: serl_g0995_qmin_full_action_nstep10_scale01_std01_alpha2p5
+
+model:
+  actor:
+    act_init_std: 0.1
+    # std in [exp(-2.53), exp(-2.30)] = [0.080, 0.100]
+    min_log_std: -2.53
+    max_log_std: -2.30
+
+sac:
+  initial_entropy_value: 2.5
+  n_step: 10
+  # scripts/make_demo_transitions.py writes it from the base's bc.dataset
+  demo_transitions: data/physic_aligned/transitions/serl_g0995_qmin_full_action_nstep10_scale01_std01_alpha2p5.pt
+
+residual:
+  action_scale_fraction: 0.1

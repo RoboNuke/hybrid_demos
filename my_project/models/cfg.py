@@ -72,6 +72,13 @@ class DiffusionActorCfg:
     #: normalized observations are clipped to [-obs_clip, obs_clip] at inference only
     obs_clip: float = 3.0
 
+    # ---- the action the network predicts (my_project/models/action_frame.py)
+    #: "absolute": the dataset's / env's action as it is. "ee_at_obs" (FBAbs tasks, ``action.abs``):
+    #: every step of the chunk as ``[dpos 3 (m), drot 3 (axis-angle, rad), gripper]`` in the frame
+    #: of the EE pose the observation reports, unscaled; turned back into the env's absolute targets
+    #: with that pose when acting, and the warm start's tail re-expressed at the next observation
+    action_frame: str = "absolute"
+
 
 @dataclass
 class DiffusionTransformerActorCfg(DiffusionActorCfg):
@@ -137,6 +144,10 @@ def _validate_diffusion(actor: DiffusionActorCfg) -> None:
         )
     if actor.obs_clip <= 0:
         raise ValueError(f"model.actor.obs_clip must be > 0, got {actor.obs_clip}")
+    from my_project.models.action_frame import FRAMES
+
+    if actor.action_frame not in FRAMES:
+        raise ValueError(f"model.actor.action_frame must be one of {FRAMES}, got {actor.action_frame!r}")
 
 
 @dataclass

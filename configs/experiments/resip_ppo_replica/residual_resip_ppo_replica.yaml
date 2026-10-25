@@ -1,0 +1,49 @@
+# ResiP's residual PPO on physic_aligned_evalHappy_a0 (_foundation.yaml): their MLPs (512 x 2 SiLU actor with a
+# 0.01 output init and a fixed log std of -1, 512 x 2 SiLU critic), 1024 envs, 700-step episodes (70 s at 10 Hz),
+# 1e8 env steps (143 iterations; ResiP's budget is 1e9: raise trainer.total_timesteps to go further), a
+# checkpoint every 5 iterations (their eval interval).
+#   python scripts/train.py --config configs/experiments/resip_ppo_replica/residual_resip_ppo_replica.yaml --headless
+#   python scripts/watch_residual_eval.py --run runs/hybrid_demo_furniture_residual/resip_ppo_replica/resip_ppo_replica_a0 \
+#       --eval_config configs/eval/residual_watch_furniture.yaml --headless
+base: _foundation.yaml
+
+wandb:
+  project: hybrid_demo_furniture_residual
+  group: resip_ppo_replica
+
+task:
+  cfg:
+    scene:
+      num_envs: 1024
+    # ResiP's max_env_steps 700 at 10 Hz
+    episode_length_s: 70.0
+
+trainer:
+  learner: ppo
+  # env steps per env: 143 iterations x 700 (1e8 env steps over 1024 envs)
+  total_timesteps: 100100
+  # every 5 iterations
+  checkpoint_interval: 3500
+
+residual:
+  enabled: true
+
+model:
+  architecture: mlp
+  actor:
+    hidden_size: 512
+    num_layers: 2
+    activation: SiLU
+    init: kaiming
+    output_init_scale: 0.01
+    # exp(-1) = 0.37 in normalized residual units, never learned, an unsquashed Gaussian
+    init_log_std: -1.0
+    learn_std: false
+    use_state_dependent_std: false
+    squash: false
+  critic:
+    hidden_size: 512
+    num_layers: 2
+    activation: SiLU
+    init: kaiming
+    output_init_scale: 1.0

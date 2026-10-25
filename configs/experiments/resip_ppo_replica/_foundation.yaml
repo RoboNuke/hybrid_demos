@@ -1,0 +1,55 @@
+# resip_ppo_replica (the leading _ keeps launch_train from submitting this file on its own): ResiP's own
+# residual recipe (robust-rearrangement src/config/base_residual_rl.yaml and src/train/residual_ppo_w_bc.py)
+# on our frozen base physic_aligned_evalHappy_a0 and our ResiP-replica sim (base/fb_one_leg.yaml), to check the
+# pipeline at their data budget: PPO on 1024 envs, 700-step iterations, 50 epochs on the whole batch, a fixed
+# exploration std of exp(-1) on the normalized residual, rewards scaled by their running std and clipped at 5,
+# every env reset at the start of each iteration, truncation treated as terminal. The residual observes the
+# base's normalized observation and normalized action (ResiP's "state + base action"), no history.
+base: ../../base/fb_one_leg.yaml
+
+experiment:
+  seed: 42
+
+wandb:
+  entity: hur
+
+residual:
+  base_project: hybrid_demo_furniture
+  base_run_name: physic_aligned_evalHappy_a0
+  # ResiP's action_scale 0.1 in normalized action units
+  action_scale: null
+  action_scale_fraction: 0.1
+  critic_action: residual
+  steps_per_chunk: 1
+  normalize_observation: true
+  observe_base_action: true
+
+ppo:
+  discount_factor: 0.999
+  gae_lambda: 0.95
+  # one iteration: 700 steps on every env, 50 epochs over the whole batch (num_minibatches 1)
+  rollouts: 700
+  learning_epochs: 50
+  mini_batches: 1
+  ratio_clip: 0.2
+  # clip_vloss false
+  value_clip: 0.0
+  entropy_loss_scale: 0.0
+  value_loss_scale: 1.0
+  kl_threshold: 0.1
+  grad_norm_clip: 1.0
+  policy_lr: 3.0e-4
+  value_lr: 5.0e-3
+  lr_schedule: cosine
+  lr_end: 0.0
+  # 5 iterations of actor warm-up, none for the critic
+  policy_lr_warmup: 5
+  value_lr_warmup: 0
+  # ResiP normalizes the reward, not the value; the residual's observation is already normalized
+  normalize_values: false
+  normalize_rewards: true
+  reward_clip: 5.0
+  normalize_observations: false
+  # truncation_as_done: true
+  time_limit_bootstrap: false
+  reset_every_iteration: true

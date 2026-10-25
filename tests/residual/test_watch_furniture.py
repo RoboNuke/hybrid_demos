@@ -107,3 +107,37 @@ def test_a_round_does_not_count_the_previous_rounds_successes(monkeypatch):
     assert bool(env.termination_manager.get_term("success")[0])  # stale from round 1
     second = residual_eval.evaluate(env, lambda o, s: torch.zeros(3, 2), seed=0)
     assert second["success_rate"] == 0.0 and second["lengths"] == [6, 6, 6]
+
+
+def test_a_chunked_residuals_round_is_agent_steps_and_lengths_count_sim_steps(monkeypatch):
+    """Two sim steps per agent step on the 6-step episode: 3 agent steps; an episode's length adds the
+    wrapper's counted sub-steps (env 1 ends on the first sub-step of its agent step)."""
+    import robonuke_rl_core.envs.build as build
+    import robonuke_rl_core.evaluation as evaluation
+
+    from my_project.residual import ResidualPolicyWrapper
+
+    monkeypatch.setattr(build, "reseed_env", lambda env, seed: None)
+    monkeypatch.setattr(evaluation, "force_env_reset", lambda env: (torch.zeros(3, 4), None))
+    monkeypatch.setattr(evaluation, "env_states", lambda env: None)
+    stub = ResidualPolicyWrapper.__new__(ResidualPolicyWrapper)
+    stub.steps_per_chunk, stub.env = 2, None
+    env = FakeEnv()
+    env.env = stub  # find_residual walks .env
+
+    def step(actions):  # the agent step: env 0 succeeds on its 2nd (t = 2), env 1 goes out on its 1st, env 2 times out on its 3rd
+        env.t += 1
+        terms = env.termination_manager.terms
+        for k in terms:
+            terms[k] = torch.zeros(3, dtype=torch.bool)
+        terms["success"][0] = env.t == 2
+        terms["part_out_of_limits"][1] = env.t == 1
+        terms["time_out"][2] = env.t == 3
+        stub.counted = torch.tensor([2, 1 if env.t == 1 else 2, 2])
+        terminated = (terms["success"] | terms["part_out_of_limits"]).reshape(3, 1)
+        return torch.zeros(3, 4), None, terminated, terms["time_out"].reshape(3, 1), {}
+
+    env.step = step
+    out = residual_eval.evaluate(env, lambda o, s: torch.zeros(3, 2), seed=0)
+    assert env.t == 3 and out["lengths"] == [4, 1, 6]
+    assert residual_eval._agent_steps(599, 4) == 150 and residual_eval._agent_steps(600, 1) == 600

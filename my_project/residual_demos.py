@@ -13,8 +13,13 @@ frame's next state was never recorded):
   when ``history.enabled``. The base action comes from the frozen base itself
   (:class:`~my_project.models.diffusion_policy.ChunkedBase`, its own chunk clock from the
   demo's first frame), run on the recorded observations: every demo in one batch.
-* **states** / **next_states**: the recorded critic state (``observation.critic``) with the
-  normalized base action (and the history) appended, as the env wrappers append them.
+* **states** / **next_states**: the residual wrapper's critic state
+  (:func:`~my_project.residual.critic_state`): the recorded critic state (``observation.critic``)
+  or, for an env without a critic group (FurnitureBench), the base's observation normalized (widened),
+  then the normalized base action, the EE offset (``accumulate``) and the history, whatever
+  ``residual.normalize_observation`` / ``observe_base_action`` make of the agent's observation. At
+  their defaults (and no critic group) ``states`` equals ``observations``. The file records the
+  layout (``meta["critic_state_format"]``, :data:`CRITIC_STATE_FORMAT`); an older one is refused.
 * **actions**: the residual that reproduces the demo, ``(a_demo - a_base) / scale``, exactly:
   never clipped (a clipped action did not produce the stored next state). Where it lies beyond
   the squashed policy's [-1, 1] in any dim, ``residual.demo_actions_beyond_scale`` stores the
@@ -40,17 +45,35 @@ substep, here the next frame's. Measured on the search demos: 1.4e-5 at most per
 **FurnitureBench demos** (``Isaac-Furniture-*-FB-v0``, imported by
 ``scripts/import_furniture_demos.py``) go through the same conversion with the family's
 columns: the recorded next state is in the row (``observation.next_state``), so every one of
-the ``T`` actions makes a transition; the reward is the recorded one (1 at the assembly step)
-times the env's ``step_dt``, because Isaac Lab's reward manager scales every term by it (so it
-is what the env pays online, 0.1 at 10 Hz); the critic state is the policy observation (the env has no
+the ``T`` actions makes a transition. Each demo is cut where the training env would have ended
+it (:func:`end_at_env_success`): the env's own assembled test (``furniture.success_mode: soft``)
+runs on the recorded part poses after every step, and the env ends an episode on its first
+success, so that step is the demo's last -- terminal, paying the assembly -- and the recording's
+rows after it are dropped (the scripted expert holds its own check 5 steps, then releases and
+lifts clear: 9 rows on every one_leg demo). The reward is what the env's reward terms pay
+(:func:`furniture_rewards`): ``newly_assembled`` from that test, 1 every step for
+``each_step``, each times its weight -- with no ``step_dt``: the package divides Isaac Lab's out
+of a manager-based env's reward (``wrap_for_skrl``), so this is what the agent gets online (a
+success of weight 1 pays 1); any other weighted term is refused, the conversion cannot recompute
+it offline; the critic state is the agent's observation (the env has no
 critic group); the last transition is ``terminated`` when the demo succeeded (the env ends an
 episode on assembly). On the absolute interface (``*-FBAbs-*``) the columns are the
 importer's ``observation.state_abs`` / ``action.abs`` / ``observation.next_state_abs``. Imported demos carry no recording session, so there is nothing to compare
-the experiment's task config with, and ``--check_in_sim`` is Forge-only.
+the experiment's task config with, and ``--check_in_sim`` is Forge-only. A furniture file records
+``meta["furniture_format"]`` (:data:`FURNITURE_FORMAT`); one made before the cut and these reward
+units is refused.
 
 ``meta["fingerprint"]`` records what the transitions depend on (the residual, the history,
 the action interface, the task config); :func:`check_demo_transitions` refuses a file whose
-fingerprint differs from the run's, at env build (``my_project/wrappers.py``).
+fingerprint differs from the run's, at env build (``my_project/wrappers.py``). It also refuses a
+file whose ``meta["agent_obs_narrow_range"]`` is not today's ``MinMaxNormalizer.NARROW_RANGE``:
+one made before :func:`~my_project.residual.residual_observation` widened the base's near-constant
+observation columns holds those columns as float noise stretched over [-1, 1].
+
+``residual.steps_per_chunk > 1`` has no demo transitions (Policy Decorator trains without demos): a
+chunk's transition would need the demo's ``k`` consecutive residuals against the base's ``k``
+actions, the summed reward and chunk-aligned episode pieces, which this conversion does not build;
+it is refused.
 """
 
 from __future__ import annotations
@@ -139,6 +162,10 @@ def _leaves(data: Any, prefix: str = "") -> Dict[str, Any]:
     return {prefix: data}
 
 
+#: residual fields that change nothing in the converted transitions (left out of the fingerprint)
+RESIDUAL_NOT_IN_FILE = ("critic_action",)
+
+
 def _allowed(path: str) -> bool:
     return any(path == a or (a.endswith((".", "_")) and path.startswith(a)) for a in TASK_DIFF_ALLOWED)
 
@@ -153,7 +180,8 @@ def demo_fingerprint(cfg: Any) -> Dict[str, Any]:
         "task_name": cfg.task_name,
         "task_cfg": task,
         "action": root["action"],
-        "residual": root["residual"],
+        # residual.critic_action only says what the critics take; the file stores r either way
+        "residual": {k: v for k, v in root["residual"].items() if k not in RESIDUAL_NOT_IN_FILE},
         "history": root["history"],
         "hybrid": root["hybrid"],
     }
@@ -177,6 +205,30 @@ def check_demo_transitions(cfg: Any) -> None:
     made = meta.get("fingerprint")
     if made is None:
         raise ValueError(f"sac.demo_transitions ({path}) has no meta.fingerprint; regenerate it with scripts/make_demo_transitions.py")
+    from my_project.models.diffusion_policy import MinMaxNormalizer
+
+    if meta.get("agent_obs_narrow_range") != MinMaxNormalizer.NARROW_RANGE:
+        raise ValueError(
+            f"sac.demo_transitions ({path}) was made with agent_obs_narrow_range "
+            f"{meta.get('agent_obs_narrow_range', '<unset>')!r}, the env now builds the agent's observation with "
+            f"{MinMaxNormalizer.NARROW_RANGE!r} (the base's near-constant columns widened, my_project/residual.py "
+            "residual_observation). Regenerate it: python scripts/make_demo_transitions.py --config <this experiment>"
+        )
+    from my_project.families import FORGE, family_of
+
+    if family_of(cfg.task_name) != FORGE and meta.get("furniture_format", 1) != FURNITURE_FORMAT:
+        raise ValueError(
+            f"sac.demo_transitions ({path}) is furniture format {meta.get('furniture_format', 1)}, from before the demos "
+            f"ended at the env's success and paid the reward as the terms define it (format {FURNITURE_FORMAT}). "
+            "Regenerate it: python scripts/make_demo_transitions.py --config <this experiment>"
+        )
+    if family_of(cfg.task_name) != FORGE and meta.get("critic_state_format", 1) != CRITIC_STATE_FORMAT:
+        raise ValueError(
+            f"sac.demo_transitions ({path}) is critic state format {meta.get('critic_state_format', 1)}, not "
+            f"{CRITIC_STATE_FORMAT}: its states column is not the residual wrapper's critic state (residual.critic_state: "
+            "the normalized base observation and the base action(s), whatever the agent observes). "
+            "Regenerate it: python scripts/make_demo_transitions.py --config <this experiment>"
+        )
     want = demo_fingerprint(cfg)
     if made != want:
         made_l, want_l = _leaves(made), _leaves(want)
@@ -215,6 +267,134 @@ def _section_defaults() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------- the reward
+#: 2: furniture demos end at the env's first success and pay the reward as the terms define it
+#: (no ``step_dt``); a file without it (1) kept the recording's rows after the success and paid
+#: ``x step_dt``
+FURNITURE_FORMAT = 2
+
+#: 3: ``states`` / ``next_states`` are the residual wrapper's critic state (``residual.critic_state``):
+#: the recorded critic state or, for an env without a critic group (FurnitureBench), the normalized
+#: base observation, then the base action(s), whatever the agent observes. 2 (an earlier build of
+#: this day) copied the agent's observation there; 1 held the raw recorded policy observation
+CRITIC_STATE_FORMAT = 3
+
+#: the furniture reward terms the conversion recomputes offline, by function name: the term's value
+#: per step from the pairs newly assembled at that step (:func:`end_at_env_success`)
+FURNITURE_REWARD_TERMS = {
+    "newly_assembled": lambda newly: newly,
+    "each_step": lambda newly: newly.new_ones(newly.shape),
+}
+
+
+def furniture_pairs_assembled(env_cfg: Any, parts: slice, states) -> Any:
+    """``(T, M)``: which of the task's pairs test assembled in each of ``states`` ``(T, obs)``, by
+    the env's own test (its tracker's, ``furniture_lab.tasks.furniture.assembly.pairs_assembled``).
+    ``parts`` is the observation's part poses (``parts_poses_b`` / ``parts_poses`` of the FBAbs
+    layouts: ``[pos 3, rot6d 6]`` per part, in ``furniture.part_names`` order), each part's OBJ
+    frame, so the targets and tolerances are the OBJ frame's; a relative pose, so the common frame
+    does not matter. Only ``success_mode: soft`` is recomputed: ``strict`` also needs the hand
+    released and clear, which the observation does not hold exactly."""
+    import torch
+    from furniture_lab.tasks.assembly.mdp.rot6d import rot6d_to_quat
+    from furniture_lab.tasks.furniture.assembly import pairs_assembled
+    from furniture_lab.tasks.furniture.square_table import pairs_for, pos_threshold_in, rel_pose_targets
+
+    fcfg = env_cfg.furniture
+    if fcfg.success_mode != "soft":
+        raise ValueError(
+            f"task.cfg.furniture.success_mode {fcfg.success_mode!r}: the demo conversion recomputes the "
+            "env's success offline for 'soft' only"
+        )
+    count = len(fcfg.part_names)
+    poses = states[:, parts]
+    if poses.shape[1] != 9 * count:
+        raise ValueError(f"the observation's part poses are {poses.shape[1]} wide; {count} parts of [pos 3, rot6d 6] are {9 * count}")
+    poses = poses.reshape(states.shape[0], count, 9)
+    pairs = pairs_for(fcfg.task)
+    as_tensor = lambda x: torch.as_tensor(x, dtype=states.dtype, device=states.device)  # noqa: E731
+    return pairs_assembled(
+        poses[..., :3],
+        rot6d_to_quat(poses[..., 3:]),
+        torch.as_tensor(pairs, device=states.device),
+        as_tensor(rel_pose_targets(pairs, "obj")),
+        as_tensor(pos_threshold_in("obj", fcfg.assembled_pos_threshold)),
+        float(fcfg.ori_bound),
+    )
+
+
+def assembled_after_each_step(cfg: Any, frames: dict) -> Any:
+    """``(T, M)``: the env's assembled test on a furniture demo's state after each of its ``T``
+    steps (:func:`furniture_pairs_assembled` on the observation's part poses)."""
+    from my_project.families import is_abs, obs_term_slices_of
+
+    if not is_abs(cfg.task_name):
+        raise ValueError(
+            f"{cfg.task_name}: the demo conversion reads the parts' poses from the FBAbs observation "
+            "([pos, rot6d] per part) only, to end each demo at the env's success"
+        )
+    slices = obs_term_slices_of(cfg.task_name, cfg.task_cfg)
+    key = next((k for k in ("parts_poses_b", "parts_poses") if k in slices), None)
+    if key is None:
+        raise ValueError(f"{cfg.task_name}: no part poses in the observation layout {sorted(slices)}")
+    return furniture_pairs_assembled(cfg.task_cfg, slices[key], frames["state"][1 : frames["transitions"] + 1])
+
+
+def end_at_env_success(cfg: Any, frames: dict, episode: dict) -> dict:
+    """One furniture demo as the training env would have run it. The env latches each pair the
+    first step after which it tests assembled, pays the pairs newly latched, and ends the episode
+    once every pair is: that step becomes the demo's last (terminal) and the rows after it are
+    dropped. Adds ``newly_assembled`` ``(T,)`` (the pairs latched at each step), sets ``success``
+    to the env's verdict and keeps ``recorded_transitions``. A demo its recording calls a success
+    that the env's test never ends is refused."""
+    import torch
+
+    steps = frames["transitions"]
+    now = assembled_after_each_step(cfg, frames)
+    never = torch.full((now.shape[1],), steps, device=now.device)
+    first = torch.where(now.any(dim=0), now.float().argmax(dim=0), never)
+    out = dict(frames, recorded_transitions=steps)
+    out["success"] = bool((first < steps).all())
+    if out["success"]:
+        end = int(first.max()) + 1
+        out["transitions"] = end
+        out["state"] = frames["state"][: end + 1]
+        for name in ("action", "reward", "next_state"):
+            out[name] = frames[name][:end]
+    elif frames["success"]:
+        raise ValueError(
+            f"{episode.get('file', episode.get('episode_index'))}: the recording calls this demo a success, but the "
+            "env's assembled test never passes on all pairs on its recorded states"
+        )
+    newly = torch.zeros(out["transitions"], device=now.device)
+    for step in first.tolist():
+        if step < out["transitions"]:
+            newly[step] += 1.0
+    out["newly_assembled"] = newly
+    return out
+
+
+def furniture_rewards(env_cfg: Any, newly) -> Any:
+    """What the agent gets per step, ``(T,)``, from the pairs newly assembled ``(T,)``: as Isaac
+    Lab's reward manager does, the sum over ``env_cfg.rewards``' terms of term x weight, skipping
+    the unset and zero-weight ones, with no ``step_dt``: the package divides Isaac Lab's back out
+    (``robonuke_rl_core.envs.build.wrap_for_skrl``). A weighted term this cannot recompute offline
+    is refused rather than left out."""
+    import torch
+
+    total = torch.zeros_like(newly)
+    for name, term in env_cfg.rewards.__dict__.items():
+        if term is None or term.weight == 0.0:
+            continue
+        func = getattr(term.func, "__name__", repr(term.func))
+        if func not in FURNITURE_REWARD_TERMS:
+            raise ValueError(
+                f"task.cfg.rewards.{name} ({func}, weight {term.weight}): the demo conversion recomputes only "
+                f"{sorted(FURNITURE_REWARD_TERMS)} offline; set its weight to 0 or teach FURNITURE_REWARD_TERMS it"
+            )
+        total = total + FURNITURE_REWARD_TERMS[func](newly) * term.weight
+    return total
+
+
 def forge_rewards(env_cfg: Any, *, held_pos, held_quat, fixed_pos, fixed_quat, actions, prev_actions,
                   hole_estimate, fingertip_pos, fingertip_quat, force, force_threshold) -> Dict[str, Any]:
     """Forge's reward for a batch of steps, from the true state after each step.
@@ -361,7 +541,10 @@ def _make(args, overrides, setup) -> int:
 
     torch.manual_seed(int(cfg.experiment.seed))
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    policy = load_base_policy(base_dir, cfg.residual.base_checkpoint, device)
+    from my_project.residual import override_base
+
+    # the base as the env wrapper runs it (residual.base_action_horizon / base_inference_steps)
+    policy = override_base(load_base_policy(base_dir, cfg.residual.base_checkpoint, device), cfg.residual, base_source(cfg))
     from my_project.families import is_abs
 
     absolute = is_abs(cfg.task_name)
@@ -375,8 +558,15 @@ def _make(args, overrides, setup) -> int:
             )
 
     transitions, stats = convert(cfg, policy, episodes, frames, device)
+    from my_project.models.diffusion_policy import MinMaxNormalizer
+
     meta = {
         "fingerprint": demo_fingerprint(cfg),
+        **({} if family == FORGE else {"furniture_format": FURNITURE_FORMAT}),
+        # the agent observation's narrow-column rule (residual_observation), checked at env build
+        "agent_obs_narrow_range": MinMaxNormalizer.NARROW_RANGE,
+        # without a critic group the states columns are the agent's observations, checked at env build
+        "critic_state_format": CRITIC_STATE_FORMAT,
         "dataset": str(dataset),
         "base": f"{base_source(cfg)}/{cfg.residual.base_checkpoint}",
         "base_step": int(getattr(policy, "checkpoint_step", -1)),
@@ -391,7 +581,8 @@ def _make(args, overrides, setup) -> int:
         f"{meta['success_rate']:.0%} of demos\n[demos] residual action beyond the policy's [-1, 1] "
         f"on {meta['beyond_scale_fraction']:.1%} of demo steps ({meta['demo_actions_beyond_scale']}d); "
         f"per dim: " + ", ".join(f"{v:.1%}" for v in meta["beyond_scale_fraction_per_dim"])
-        + "; largest |action| per dim: " + ", ".join(f"{v:.2f}" for v in meta["max_abs_action"]),
+        + "; largest |action| per dim: " + ", ".join(f"{v:.2f}" for v in meta["max_abs_action"])
+        + ("" if family == FORGE else f"\n[demos] ended at the env's success: {meta['rows_after_env_success']} recorded rows after it dropped"),
         flush=True,
     )
     if check_env is not None:
@@ -454,8 +645,9 @@ def _read_columns(dataset: Path, episode: dict, columns: Dict[str, Any], device)
 def _read_episode(
     dataset: Path, episode: dict, obs_dim: int, device, family: str = "forge", absolute: bool = False
 ) -> Dict[str, Any]:
-    """One demo's frames: ``state`` (one more than the transitions), ``critic``, ``action``,
-    ``transitions`` (how many ``t -> t+1`` the demo yields) and the family's reward material."""
+    """One demo's frames: ``state`` (one more than the transitions), ``critic`` (Forge: the recorded
+    critic state; absent for an env without a critic group), ``action``, ``transitions`` (how many
+    ``t -> t+1`` the demo yields) and the family's reward material."""
     import torch
 
     from my_project.families import FURNITURE
@@ -469,7 +661,7 @@ def _read_episode(
         # every action has its next state: T transitions over T + 1 states
         out["transitions"] = out["action"].shape[0]
         out["state"] = torch.cat((out["state"], out["next_state"][-1:]), dim=0)
-        out["critic"] = out["state"]  # the env has no critic group
+        # no "critic": the env has no critic group, its critic state is the agent's observation (convert)
         out["success"] = bool(episode.get("success", False))
         return out
     out = _read_columns(dataset, episode, FORGE_COLUMNS, device)
@@ -498,13 +690,29 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
     import torch
 
     from my_project.models.diffusion_policy import ChunkedBase
-    from my_project.residual import residual_observation, residual_scale
+    from my_project.residual import critic_state, residual_observation, residual_scale
     from my_project.wrappers import HistoryBuffer, history_index, hybrid_demo_block
 
     from my_project.families import FORGE, family_of
 
     env_cfg = cfg.task_cfg
+    rc = cfg.residual
+    if int(rc.steps_per_chunk) > 1:
+        raise NotImplementedError(
+            f"residual.steps_per_chunk {rc.steps_per_chunk}: this conversion makes one transition per demo step, "
+            f"and a chunked residual's transition spans {rc.steps_per_chunk} steps: its action is the demo's "
+            f"{rc.steps_per_chunk} consecutive residuals against the base's chunk, its reward their sum, and the "
+            "demo would have to be cut into chunk-aligned pieces from its first frame; none of that is built, "
+            "and the recipe this serves (Policy Decorator) trains without demos. Unset sac.demo_transitions"
+        )
     forge = family_of(cfg.task_name) == FORGE
+    if not forge:  # each furniture demo ends where the training env would have ended it
+        frames = [end_at_env_success(cfg, f, e) for f, e in zip(frames, episodes)]
+    # an env without a critic group has the agent's observation for its critic state
+    with_critic = [("critic" in f) for f in frames]
+    if any(with_critic) != all(with_critic):
+        raise ValueError("some demos carry a recorded critic state and some do not")
+    critic_group = all(with_critic)
     if forge:
         slices = _state_slices(env_cfg)
         for name in ("fixed_pos", "fixed_quat"):
@@ -512,6 +720,14 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
                 raise ValueError(f"task.cfg.state_order must hold {name}: the reward needs the hole's base pose, from the recorded critic state")
     scale = residual_scale(policy, cfg.residual.action_scale, cfg.residual.action_scale_fraction).to(device)
     n, longest = len(frames), max(f["state"].shape[0] for f in frames)
+    ee = None
+    if rc.action_frame == "ee":  # the EE-frame correction (my_project/residual_ee.py) that reproduces the demo
+        from my_project.residual_ee import EEResidual, WIDTH, ee_rotation
+
+        ee = EEResidual(rc.ee_pos_scale, rc.ee_rot_scale_deg, rc.accumulate, policy.action_horizon)
+        offset_pos, offset_rot = ee.identity(n, device)
+        ee_actions = []
+    width = WIDTH if ee is not None else scale.numel()
 
     # the base on every demo at once, each on its own chunk clock from its first frame; a
     # finished demo keeps repeating its last frame (its outputs are not used)
@@ -524,11 +740,28 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
     agent_obs, agent_state, base_actions = [], [], []
     for t in range(longest):
         obs = torch.stack([f["state"][min(t, f["state"].shape[0] - 1)] for f in frames])
-        critic = torch.stack([f["critic"][min(t, f["critic"].shape[0] - 1)] for f in frames])
+        critic = torch.stack([f["critic"][min(t, f["critic"].shape[0] - 1)] for f in frames]) if critic_group else None
         fresh = torch.full((n,), t == 0, dtype=torch.bool, device=device)
+        # the demos whose base starts a new chunk this step, as the env wrapper reads it (residual.accumulate)
+        new_chunk = fresh | (base.index >= policy.action_horizon) if ee is not None and ee.accumulate else None
         a_base = base.actions(obs, fresh)
-        policy_part, base_n = residual_observation(policy.normalizer, obs, a_base)
-        state_part = torch.cat((critic, base_n), dim=-1)
+        policy_part, _ = residual_observation(
+            policy.normalizer, obs, a_base, rc.normalize_observation, rc.observe_base_action
+        )
+        # the critic state, as the env wrapper builds it whatever the agent observes (residual.critic_state)
+        state_part = critic_state(policy.normalizer, obs, a_base, critic)
+        if ee is not None:
+            R_ee = ee_rotation(obs)
+            if ee.accumulate:  # the offset before this step: zero when the base re-plans
+                zero_o, eye = ee.identity(1, device)
+                offset_pos = torch.where(new_chunk[:, None], zero_o, offset_pos)
+                offset_rot = torch.where(new_chunk[:, None, None], eye, offset_rot)
+                offset = ee.offset_obs(R_ee, offset_pos, offset_rot)
+                policy_part = torch.cat((policy_part, offset), dim=-1)
+                state_part = torch.cat((state_part, offset), dim=-1)
+            a_demo = torch.stack([f["action"][min(t, f["action"].shape[0] - 1)] for f in frames])
+            r, offset_pos, offset_rot = ee.invert(a_base, a_demo, R_ee, offset_pos, offset_rot)
+            ee_actions.append(r)
         if history is not None:
             past = history.step(policy_part, fresh)
             policy_part = torch.cat((policy_part, past), dim=-1)
@@ -539,13 +772,16 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
 
     columns: Dict[str, list] = {k: [] for k in (
         "observations", "actions", "rewards", "next_observations", "terminated", "truncated", "states", "next_states")}
-    beyond_dims = torch.zeros(scale.numel(), device=device)
+    beyond_dims = torch.zeros(width, device=device)
     beyond_rows, kept_rows, per_episode = 0, 0, []
     drop = cfg.residual.demo_actions_beyond_scale == "drop"
     for e, f in enumerate(frames):
         steps = f["transitions"]  # transitions t -> t+1
         now, nxt = slice(0, steps), slice(1, steps + 1)
-        residual = (f["action"][now] - torch.stack([base_actions[t][e] for t in range(steps)])) / scale
+        if ee is not None:
+            residual = torch.stack([ee_actions[t][e] for t in range(steps)])
+        else:
+            residual = (f["action"][now] - torch.stack([base_actions[t][e] for t in range(steps)])) / scale
         beyond = residual.abs() > 1.0
         beyond_dims += beyond.float().sum(dim=0)
         beyond_rows += int(beyond.any(dim=-1).sum())
@@ -568,10 +804,9 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
                 force=f["wrench"][nxt, 0:3],
                 force_threshold=f["force_threshold"][now],
             )
-        else:  # the recorded (sparse) reward; the env ends a successful episode on assembly
-            # Isaac Lab's reward manager pays weight x step_dt: the recorded 1 is 1 x step_dt online
-            total = f["reward"][now, 0] * float(env_cfg.sim.dt * env_cfg.decimation)
-            reward = {"total": total, "curr_success": total > 0}
+        else:  # the env's reward terms; the env ended a successful episode on its success (end_at_env_success)
+            newly = f["newly_assembled"][now]
+            reward = {"total": furniture_rewards(env_cfg, newly), "curr_success": newly > 0}
             terminated[-1, 0] = f["success"]
         columns["observations"].append(torch.stack([agent_obs[t][e] for t in range(steps)])[keep])
         columns["next_observations"].append(torch.stack([agent_obs[t + 1][e] for t in range(steps)])[keep])
@@ -583,12 +818,19 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
         columns["actions"].append(residual[keep])
         columns["rewards"].append(reward["total"].reshape(-1, 1)[keep])
         columns["terminated"].append(terminated[keep])
-        columns["truncated"].append(torch.zeros(steps, 1, dtype=torch.bool, device=device)[keep])
+        # a demo that ends without terminating ends as the recording stopped: truncated (it still
+        # bootstraps), which marks the episode's end for sac.n_step's windows
+        truncated = torch.zeros(steps, 1, dtype=torch.bool, device=device)
+        truncated[-1, 0] = not bool(terminated[-1, 0])
+        columns["truncated"].append(truncated[keep])
         per_episode.append({
             "episode_index": episodes[e]["episode_index"],
             "steps": steps,
             "return": float(reward["total"].sum()),
-            "success": bool(reward["curr_success"].any()),
+            # furniture: the env's verdict (every pair latched); Forge: its success term
+            "success": bool(reward["curr_success"].any()) if forge else bool(f["success"]),
+            # furniture: the recording's rows after the env's success (dropped)
+            "rows_after_env_success": 0 if forge else int(f["recorded_transitions"]) - steps,
             "rewards": reward["total"].tolist(),
             "terms": {k: v.tolist() for k, v in reward.items() if k != "total"},
         })
@@ -605,9 +847,10 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
         "beyond_scale_fraction": beyond_rows / total,
         "beyond_scale_fraction_per_dim": (beyond_dims / total).tolist(),
         "max_abs_action": (
-            transitions["actions"][:, : scale.numel()].abs().amax(dim=0).tolist() if kept_rows else [0.0] * scale.numel()
+            transitions["actions"][:, :width].abs().amax(dim=0).tolist() if kept_rows else [0.0] * width
         ),
-        "residual_scale": scale.tolist(),
+        "residual_scale": scale.tolist() if ee is None else [cfg.residual.ee_pos_scale] * 3 + [cfg.residual.ee_rot_scale_deg] * 3,
+        "rows_after_env_success": sum(p["rows_after_env_success"] for p in per_episode),
         # each demo's per-step offline reward, for --check_in_sim
         "rewards_by_episode": [p["rewards"] for p in per_episode],
         "terms_by_episode": [p["terms"] for p in per_episode],

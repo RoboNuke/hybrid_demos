@@ -80,12 +80,18 @@ def build_noise_net(actor_cfg: Any, obs_dim: int, action_dim: int) -> nn.Module:
 class MinMaxNormalizer(nn.Module):
     """Per-dimension min-max scaling to [-1, 1], one (min, max) pair per key.
 
-    A column that never changes gets a range of ``[value - 1, value + 1]``, as in the
-    reference, so it maps to 0 instead of dividing by zero. The stats are buffers: they
-    travel with the policy's ``state_dict`` and never train.
+    A column whose range is below :attr:`NARROW_RANGE` -- constant, or constant up to float
+    noise -- gets a range of ``[mid - 1, mid + 1]`` around its midpoint, so it maps to ~0
+    instead of stretching that noise over [-1, 1] (and anything just outside it far beyond).
+    The reference widens only an exactly constant column; that one still gets
+    ``[value - 1, value + 1]``. The stats are buffers: they travel with the policy's
+    ``state_dict`` and never train.
     """
 
     KEYS = ("obs", "action")
+    #: a fit range below this is float noise around a constant (the furniture demos' resting
+    #: parts and obstacle span 7.5e-8 .. 9.3e-6; the next narrowest column 3.1e-4)
+    NARROW_RANGE = 1e-4
 
     def __init__(self, obs_dim: int, action_dim: int) -> None:
         super().__init__()
@@ -93,22 +99,52 @@ class MinMaxNormalizer(nn.Module):
             self.register_buffer(f"{key}_min", torch.full((dim,), -1.0))
             self.register_buffer(f"{key}_max", torch.full((dim,), 1.0))
 
+    @classmethod
+    def widen_narrow(cls, low: torch.Tensor, high: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """``(low, high)`` with every column narrower than :attr:`NARROW_RANGE` set to
+        ``[mid - 1, mid + 1]``; the rest unchanged."""
+        narrow = (high - low) < cls.NARROW_RANGE
+        mid = (low + high) / 2
+        return torch.where(narrow, mid - 1, low), torch.where(narrow, mid + 1, high)
+
     @torch.no_grad()
     def fit(self, key: str, data: torch.Tensor) -> None:
         """Set ``key``'s stats from ``data`` of shape ``(N, dim)``."""
-        low, high = data.min(dim=0).values, data.max(dim=0).values
-        constant = high == low
-        low, high = low.clone(), high.clone()
-        low[constant] -= 1
-        high[constant] += 1
+        low, high = self.widen_narrow(data.min(dim=0).values, data.max(dim=0).values)
         getattr(self, f"{key}_min").copy_(low)
         getattr(self, f"{key}_max").copy_(high)
+
+    @torch.no_grad()
+    def fit_symmetric(self, key: str, data: torch.Tensor) -> None:
+        """Set ``key``'s stats to ``[-s, s]`` per dim, ``s = max(|min|, |max|)`` of ``data`` ``(N, dim)``
+        (``bc.symmetric_action``): normalizing is ``x / s``, so zero stays zero. A dim with ``s`` below
+        :attr:`NARROW_RANGE` gets ``[-1, 1]`` (left as it is)."""
+        s = torch.maximum(data.min(dim=0).values.abs(), data.max(dim=0).values.abs())
+        s = torch.where(s < self.NARROW_RANGE, torch.ones_like(s), s)
+        getattr(self, f"{key}_min").copy_(-s)
+        getattr(self, f"{key}_max").copy_(s)
+
+    @torch.no_grad()
+    def fit_identity(self, key: str, data: torch.Tensor, bounded: bool = True) -> None:
+        """Set ``key``'s stats to [-1, 1] in every dim, so normalizing is the identity: for data
+        that is already the policy's own output (``bc.normalize_action: false``), where a zero
+        output must stay the zero action. ``data`` ``(N, dim)`` must lie inside [-1, 1] -- what a
+        clipped sample (``model.actor.clip_sample``) can reach -- unless ``bounded`` is false."""
+        low, high = data.min(dim=0).values, data.max(dim=0).values
+        outside = ((low < -1) | (high > 1)).nonzero().flatten().tolist() if bounded else []
+        if outside:
+            raise ValueError(
+                f"{key} dims {outside} leave [-1, 1] (min {low[outside].tolist()}, max {high[outside].tolist()}): "
+                f"an unnormalized {key} must already lie in [-1, 1]"
+            )
+        getattr(self, f"{key}_min").fill_(-1.0)
+        getattr(self, f"{key}_max").fill_(1.0)
 
     @torch.no_grad()
     def fit_units(self, obs: torch.Tensor, action: torch.Tensor, obs_units, action_units) -> None:
         """One (min, max) per physical unit, over every dim of that unit in ``obs`` ``(N, D)``
         and ``action`` ``(N, A)`` together, written to each of those dims (``bc.normalization:
-        per_unit``). A unit that never changes gets ``[value - 1, value + 1]``, as in :meth:`fit`."""
+        per_unit``). A unit narrower than :attr:`NARROW_RANGE` gets ``[mid - 1, mid + 1]``, as in :meth:`fit`."""
         obs_units, action_units = list(obs_units), list(action_units)
         if len(obs_units) != obs.shape[1] or len(action_units) != action.shape[1]:
             raise ValueError(
@@ -119,14 +155,17 @@ class MinMaxNormalizer(nn.Module):
             o = [i for i, u in enumerate(obs_units) if u == unit]
             a = [i for i, u in enumerate(action_units) if u == unit]
             vals = torch.cat([obs[:, o].reshape(-1), action[:, a].reshape(-1)])
-            low, high = vals.min(), vals.max()
-            if high == low:
-                low, high = low - 1, high + 1
+            low, high = self.widen_narrow(vals.min(), vals.max())
             self.obs_min[o], self.obs_max[o] = low, high
             self.action_min[a], self.action_max[a] = low, high
 
-    def normalize(self, x: torch.Tensor, key: str) -> torch.Tensor:
+    def normalize(self, x: torch.Tensor, key: str, widen: bool = False) -> torch.Tensor:
+        """``widen`` applies :meth:`widen_narrow` to the stored stats first: for stats fit before
+        the narrow-range rule (an older checkpoint's), as the residual agent's observation reads
+        them; a no-op on stats fit since."""
         low, high = getattr(self, f"{key}_min"), getattr(self, f"{key}_max")
+        if widen:
+            low, high = self.widen_narrow(low, high)
         return 2 * (x - low) / (high - low) - 1
 
     def denormalize(self, x: torch.Tensor, key: str) -> torch.Tensor:
@@ -135,19 +174,36 @@ class MinMaxNormalizer(nn.Module):
 
 
 class DiffusionPolicy(nn.Module):
-    """``obs_dim`` / ``action_dim`` come from the dataset; ``actor_cfg`` is ``model.actor``."""
+    """``obs_dim`` / ``action_dim`` come from the dataset; ``actor_cfg`` is ``model.actor``.
+
+    ``action_dim`` is the env's (and the dataset column's) action, what :meth:`act` returns. With
+    ``model.actor.action_frame: ee_at_obs`` the network, its normalizer stats and
+    :meth:`predict_chunk` work on ``net_action_dim`` (7) instead: the chunk in the EE frame of the
+    observation (``my_project/models/action_frame.py``), turned into the absolute action when acting."""
 
     def __init__(self, actor_cfg: Any, obs_dim: int, action_dim: int) -> None:
         super().__init__()
+        from my_project.models.action_frame import ABSOLUTE, ENV_DIM, NET_DIM
+
         self.cfg = actor_cfg
         self.obs_dim = int(obs_dim)
         self.action_dim = int(action_dim)
+        self.action_frame = getattr(actor_cfg, "action_frame", ABSOLUTE)
+        if self.action_frame == ABSOLUTE:
+            self.net_action_dim = self.action_dim
+        elif self.action_dim != ENV_DIM:
+            raise ValueError(
+                f"model.actor.action_frame: {self.action_frame} predicts relative to the EE the FBAbs "
+                f"absolute action ({ENV_DIM}); this dataset's action has {self.action_dim} dims"
+            )
+        else:
+            self.net_action_dim = NET_DIM
         self.horizon = actor_cfg.horizon
         self.n_obs_steps = actor_cfg.n_obs_steps
         self.action_horizon = actor_cfg.action_horizon
 
-        self.model = build_noise_net(actor_cfg, self.obs_dim, self.action_dim)
-        self.normalizer = MinMaxNormalizer(self.obs_dim, self.action_dim)
+        self.model = build_noise_net(actor_cfg, self.obs_dim, self.net_action_dim)
+        self.normalizer = MinMaxNormalizer(self.obs_dim, self.net_action_dim)
 
         schedule = dict(
             num_train_timesteps=actor_cfg.num_diffusion_iters,
@@ -163,6 +219,7 @@ class DiffusionPolicy(nn.Module):
         self._observations: deque = deque(maxlen=self.n_obs_steps)
         self._actions: deque = deque()
         self._prev_naction: Optional[torch.Tensor] = None
+        self._prev_obs: Optional[torch.Tensor] = None
 
     @property
     def device(self) -> torch.device:
@@ -201,7 +258,7 @@ class DiffusionPolicy(nn.Module):
     def _denoise(self, nobs: torch.Tensor, start: Optional[torch.Tensor]) -> torch.Tensor:
         """DDIM from pure noise (``start`` None) or from ``start`` noised to the warm-start step."""
         B = nobs.shape[0]
-        shape = (B, self.horizon, self.action_dim)
+        shape = (B, self.horizon, self.net_action_dim)
         noise = torch.randn(shape, device=nobs.device)
         scheduler = self.inference_noise_scheduler
         scheduler.set_timesteps(self.cfg.inference_steps)
@@ -219,8 +276,29 @@ class DiffusionPolicy(nn.Module):
 
     @torch.no_grad()
     def predict_chunk(self, nobs: torch.Tensor) -> torch.Tensor:
-        """A full predicted chunk in action units, from pure noise: ``(B, horizon, A)``."""
+        """A full predicted chunk in the network's action units, from pure noise:
+        ``(B, horizon, net_action_dim)`` (the EE frame for ``action_frame: ee_at_obs``)."""
         return self.normalizer.denormalize(self._denoise(nobs, None), "action")
+
+    def to_env(self, chunk: torch.Tensor, obs: torch.Tensor) -> torch.Tensor:
+        """A denormalized chunk ``(B, H, net_action_dim)`` predicted at the raw observation ``obs``
+        ``(B, obs_dim)`` -> the env's actions ``(B, H, action_dim)``."""
+        if self.action_frame == "absolute":
+            return chunk
+        from my_project.models.action_frame import ee_pose, from_ee_frame
+
+        p, R = ee_pose(obs)
+        return from_ee_frame(p, R, chunk)
+
+    def reframe(self, naction: torch.Tensor, obs_old: torch.Tensor, obs_new: torch.Tensor) -> torch.Tensor:
+        """A normalized chunk planned at the raw observation ``obs_old`` -> the same targets, normalized,
+        as planned at ``obs_new``: the warm start's tail. The identity for ``action_frame: absolute``."""
+        if self.action_frame == "absolute":
+            return naction
+        from my_project.models.action_frame import reframe
+
+        chunk = reframe(self.normalizer.denormalize(naction, "action"), obs_old, obs_new)
+        return self.normalizer.normalize(chunk, "action")
 
     @torch.no_grad()
     def act(self, obs: torch.Tensor) -> torch.Tensor:
@@ -240,20 +318,24 @@ class DiffusionPolicy(nn.Module):
             history = torch.stack(list(self._observations), dim=1)
             nobs = self.normalizer.normalize(history, "obs")
             nobs = nobs.clamp(-self.cfg.obs_clip, self.cfg.obs_clip)  # inference only
-            naction = self._sample_for_acting(nobs)
-            action = self.normalizer.denormalize(naction, "action")
+            naction = self._sample_for_acting(nobs, obs)
+            action = self.to_env(self.normalizer.denormalize(naction, "action"), obs)
             for i in range(self.action_horizon):
                 self._actions.append(action[:, i, :])
         return self._actions.popleft()
 
-    def _sample_for_acting(self, nobs: torch.Tensor) -> torch.Tensor:
+    def _sample_for_acting(self, nobs: torch.Tensor, obs: torch.Tensor) -> torch.Tensor:
         if not self.cfg.warm_start:
             return self._denoise(nobs, None)
         B = nobs.shape[0]
         if self._prev_naction is None or self._prev_naction.shape[0] != B:
             self._prev_naction = torch.zeros(
-                (B, self.horizon, self.action_dim), device=nobs.device
+                (B, self.horizon, self.net_action_dim), device=nobs.device
             )
+            self._prev_obs = obs.clone()
+        # the tail was planned at the previous chunk's observation: re-expressed at this one
+        self._prev_naction = self.reframe(self._prev_naction, self._prev_obs, obs)
+        self._prev_obs = obs.clone()
         naction = self._denoise(nobs, self._prev_naction)
         # the unexecuted tail seeds the next chunk; the last action_horizon slots keep their
         # previous values, exactly as the reference leaves them
@@ -266,6 +348,7 @@ class DiffusionPolicy(nn.Module):
         self._observations.clear()
         self._actions.clear()
         self._prev_naction = None
+        self._prev_obs = None
 
 
 class ChunkedBase:
@@ -290,7 +373,9 @@ class ChunkedBase:
         self.num_envs = n
         self.chunk = torch.zeros((n, h, a), device=device)
         self.index = torch.full((n,), policy.action_horizon, dtype=torch.long, device=device)
-        self.prev_naction = torch.zeros((n, h, a), device=device)
+        self.prev_naction = torch.zeros((n, h, policy.net_action_dim), device=device)
+        #: the raw observation each env's warm-start tail was planned at
+        self.prev_obs = torch.zeros((n, policy.obs_dim), device=device)
         self.history = torch.zeros((n, policy.n_obs_steps, policy.obs_dim), device=device)
         self._rows = torch.arange(n, device=device)
 
@@ -308,17 +393,36 @@ class ChunkedBase:
         if bool(fresh.any()):
             self.history[fresh] = obs[fresh].unsqueeze(1).expand(-1, p.n_obs_steps, -1)
             self.prev_naction[fresh] = 0.0
+            self.prev_obs[fresh] = obs[fresh]
             self.index[fresh] = p.action_horizon
         need = (self.index >= p.action_horizon).nonzero(as_tuple=False).reshape(-1)
         if need.numel():
             nobs = p.normalizer.normalize(self.history[need], "obs").clamp(-p.cfg.obs_clip, p.cfg.obs_clip)
-            start = self.prev_naction[need] if p.cfg.warm_start else None
+            start = None
+            if p.cfg.warm_start:  # the tail, re-expressed at this observation (absolute: as it is)
+                self.prev_naction[need] = p.reframe(self.prev_naction[need], self.prev_obs[need], obs[need])
+                self.prev_obs[need] = obs[need]
+                start = self.prev_naction[need]
             naction = p._denoise(nobs, start)
             if p.cfg.warm_start:
                 keep = p.horizon - p.action_horizon
                 self.prev_naction[need, :keep] = naction[:, p.action_horizon :]
-            self.chunk[need] = p.normalizer.denormalize(naction, "action")
+            self.chunk[need] = p.to_env(p.normalizer.denormalize(naction, "action"), obs[need])
             self.index[need] = 0
         action = self.chunk[self._rows, self.index]
         self.index += 1
         return action
+
+    def block(self, k: int) -> torch.Tensor:
+        """``(num_envs, k, action_dim)``: the ``k`` actions of each env's current chunk that make up the
+        ``k``-aligned group holding the action :meth:`actions` just returned (positions ``[g k, (g + 1)
+        k)`` of the chunk, ``g`` that action's group). With ``action_horizon`` a multiple of ``k`` the
+        group lies inside the executed part, and at a group's first action it is exactly the next ``k``
+        actions the base will hand out: the residual wrapper's chunk observation
+        (``residual.steps_per_chunk``)."""
+        k = int(k)
+        if self.policy.action_horizon % k:
+            raise ValueError(f"the base executes {self.policy.action_horizon} actions per chunk, not a multiple of {k}")
+        start = ((self.index - 1) // k) * k
+        rows = start.unsqueeze(1) + torch.arange(k, device=start.device).unsqueeze(0)
+        return self.chunk[self._rows.unsqueeze(1), rows]

@@ -1,0 +1,42 @@
+# resip_replica_rel (the leading _ keeps launch_train from submitting this file on its own):
+# resip_replica's diffusion-policy BC on one_leg, on the interface relative to the end-effector
+# (base/fb_one_leg_rel.yaml). What its trainings share: the env, the seed, the wandb entity and the BC
+# parameters -- resip_replica/_foundation.yaml's bc and eval sections unchanged, but for the columns
+# (observation.state_rel / action.rel) of the same 50 demos.
+base: ../../base/fb_one_leg_rel.yaml
+
+experiment:
+  seed: 42
+
+wandb:
+  entity: hur
+
+# -- BC (scripts/train_bc.py): ResiP's released one_leg recipe (robust-rearrangement's checkpoint config)
+bc:
+  # data/physic_aligned's 50 demos (the same episodes, in order), with the relative columns:
+  #   python scripts/import_furniture_demos.py --src ~/Robonuke_Furniture_Bench/datasets/physic_aligned \
+  #       --out data/physic_aligned_rel --control_hz 10 --task_name Isaac-Furniture-OneLeg-FBRel-ResiP-v0 \
+  #       --max_demos 50
+  dataset: data/physic_aligned_rel
+  obs_key: observation.state_rel
+  action_key: action.rel
+  num_demos: 50
+  normalization: per_dim
+  # the relative action is already in [-1, 1] (dpos in units of 0.12 m, rot6d minus the identity):
+  # used as it is, so a zero output holds the EE
+  normalize_action: false
+  batch_size: 1024
+  steps_per_epoch: 1000
+  lr: 1.0e-4
+  weight_decay: 1.0e-6
+  lr_schedule: cosine
+  warmup_steps: 2000
+  # rollouts every 10 epochs (10k gradient steps), whatever the test loss (ResiP waits for 0.1)
+  rollout_every: 10
+  rollout_loss_threshold: 1000.0
+  # only the best rollout's checkpoint, on disk and in wandb (~800 MB each)
+  save_only_best_ckpt: true
+
+eval:
+  # BC rollouts per evaluation
+  num_rollouts: 512

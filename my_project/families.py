@@ -7,7 +7,12 @@
   the observation is FurnitureBench's ``DEFAULT_STATE_OBS`` (``FB_OBS_LAYOUT`` there), the
   observation manager computes it, the reward is the demo's recorded sparse success. The
   ``-FBAbs-v0`` task is the same family with the absolute rot6d interface (``FBABS_*`` there:
-  observation 61, action 10); :func:`is_abs` tells them apart where the layout matters.
+  observation 61, action 10); :func:`is_abs` tells them apart where the layout matters. The
+  ``-FBRel-ResiP-v0`` task is the ResiP FBAbs task with the observation and the action relative to
+  the end-effector (``FBREL_*`` there: observation 55, action 10); :func:`is_rel`. The
+  ``-FBDelta-ResiP-v0`` task is the ResiP FBAbs task (its observation, 63) with only the action
+  relative to the end-effector, its rotation an axis-angle (``FBDELTA_ACTION_DIM`` there: 7);
+  :func:`is_delta`.
 
 Everything that must know the family asks here (:func:`family_of`, :func:`obs_layout`), so
 the wrappers, the residual demo conversion and the config checks keep one code path each
@@ -19,7 +24,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 
 __all__ = [
-    "FORGE", "FURNITURE", "family_of", "is_abs", "obs_layout", "obs_term_slices_of", "action_layout",
+    "FORGE", "FURNITURE", "family_of", "is_abs", "is_rel", "is_delta", "obs_layout", "obs_term_slices_of", "action_layout",
     "action_metric_groups", "obs_units", "action_units",
 ]
 
@@ -38,6 +43,18 @@ def is_abs(task_name: str) -> bool:
     return family_of(task_name) == FURNITURE and "FBAbs" in str(task_name)
 
 
+def is_rel(task_name: str) -> bool:
+    """The furniture family's interface relative to the end-effector (``Isaac-Furniture-*-FBRel-*``):
+    the action ``[dpos 3, drot6d 6, gripper]`` in the EE's frame, every observed pose in it."""
+    return family_of(task_name) == FURNITURE and "FBRel" in str(task_name)
+
+
+def is_delta(task_name: str) -> bool:
+    """The furniture family's ResiP FBAbs observation with the action relative to the end-effector
+    (``Isaac-Furniture-*-FBDelta-*``): ``[dpos 3, drot 3 (axis-angle), gripper]`` in the EE's frame."""
+    return family_of(task_name) == FURNITURE and "FBDelta" in str(task_name)
+
+
 def observes_obstacle(task_name: str) -> bool:
     """The ResiP FBAbs task (``Isaac-Furniture-*-FBAbs-ResiP-*``) also observes the front
     obstacle's x, y, every pose in the robot-base frame (``FBABS_RESIP_OBS_LAYOUT``, 63): the rule the sim-free demo importers use;
@@ -48,9 +65,11 @@ def observes_obstacle(task_name: str) -> bool:
 def obs_layout(task_name: str, task_cfg: Any) -> List[Tuple[str, int]]:
     """``[(term, width), ...]`` of the policy observation's leading terms, in order."""
     if family_of(task_name) == FURNITURE:
-        from furniture_lab.tasks.assembly.assembly_env_cfg import FB_OBS_LAYOUT, fbabs_obs_layout
+        from furniture_lab.tasks.assembly.assembly_env_cfg import FB_OBS_LAYOUT, FBREL_RESIP_OBS_LAYOUT, fbabs_obs_layout
 
-        return list(fbabs_obs_layout(task_cfg) if is_abs(task_name) else FB_OBS_LAYOUT)
+        if is_rel(task_name):
+            return list(FBREL_RESIP_OBS_LAYOUT)
+        return list(fbabs_obs_layout(task_cfg) if is_abs(task_name) or is_delta(task_name) else FB_OBS_LAYOUT)
     from isaaclab_tasks.direct.factory.factory_env_cfg import OBS_DIM_CFG
 
     return [(name, int(OBS_DIM_CFG[name])) for name in task_cfg.obs_order]
@@ -100,9 +119,14 @@ def obs_term_slices_of(task_name: str, task_cfg: Any) -> Dict[str, slice]:
 
 def action_layout(task_name: str) -> Dict[str, Any]:
     """What the policy's action dims mean, for metrics and config checks."""
-    if is_abs(task_name):
-        # the absolute target: [goal_pos 3, goal_rot6d 6, gripper 1]
+    if is_abs(task_name) or is_rel(task_name):
+        # the absolute target [goal_pos 3, goal_rot6d 6, gripper 1], or the relative one in the EE's
+        # frame [dpos 3 (units of the term's pos_limit), drot 6 (rot6d minus the identity's), gripper 1]
         return {"dim": 10, "pos": slice(0, 3), "rot6d": slice(3, 9), "gripper": 9}
+    if is_delta(task_name):
+        # the relative target in the EE's frame [dpos 3 (units of the term's pos_limit), drot 3
+        # (axis-angle, rad), gripper 1]
+        return {"dim": 7, "pos": slice(0, 3), "axis_angle": slice(3, 6), "gripper": 6}
     if family_of(task_name) == FURNITURE:
         # FurnitureBench: [dpos 3, dquat xyzw 4, gripper 1]
         return {"dim": 8, "pos": slice(0, 3), "quat_xyzw": slice(3, 7), "gripper": 7}
@@ -112,8 +136,10 @@ def action_layout(task_name: str) -> Dict[str, Any]:
 
 def action_metric_groups(task_name: str) -> Dict[str, List[int]]:
     """The BC trainer's per-group action error breakdown (``bc.action_metric_groups``)."""
-    if is_abs(task_name):
+    if is_abs(task_name) or is_rel(task_name):
         return {"pos": [0, 1, 2], "rot": [3, 4, 5, 6, 7, 8], "gripper": [9]}
+    if is_delta(task_name):
+        return {"pos": [0, 1, 2], "rot": [3, 4, 5], "gripper": [6]}
     if family_of(task_name) == FURNITURE:
         return {"pos": [0, 1, 2], "rot": [3, 4, 5, 6], "gripper": [7]}
     return {"pos": [0, 1, 2], "yaw": [3]}

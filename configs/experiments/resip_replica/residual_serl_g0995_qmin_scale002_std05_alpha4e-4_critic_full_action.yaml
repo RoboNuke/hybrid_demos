@@ -1,0 +1,30 @@
+# residual_serl_g0995_qmin_std01_fixed_alpha_scale002.yaml with the exploration and the temperature rescaled
+# for its 2% authority, and the critics on the executed action. There (stopped at 110k, eval flat at
+# 0.46-0.61 vs the base's 0.60) the residual never acted: the std band, unchanged from the 10% runs, left
+# ~0.44 mm of noise per step (below the demos' median 1.4 mm correction), and alpha 0.01, unchanged too,
+# held the mean ~25x stiffer in physical units (its pull is 2 alpha tanh(u) in r, the critic's push scales
+# with the authority). So the std band goes up 5x ([0.40, 0.50], ~2 mm per step, as the 10% runs had) and
+# alpha down 25x (0.0004). With residual.critic_action full the critics take normalize(a_base + scale * r)
+# instead of r, so the demo rows beyond the residual's reach (18% at 2%, |r| up to ~55) are ordinary actions.
+#   python scripts/make_demo_transitions.py --config configs/experiments/resip_replica/residual_serl_g0995_qmin_scale002_std05_alpha4e-4_critic_full_action.yaml
+#   python scripts/train.py --config configs/experiments/resip_replica/residual_serl_g0995_qmin_scale002_std05_alpha4e-4_critic_full_action.yaml --headless
+base: residual_serl_g0995_qmin_std01_fixed_alpha_scale002.yaml
+
+wandb:
+  group: serl_g0995_qmin_scale002_std05_alpha4e-4_critic_full_action
+
+model:
+  actor:
+    act_init_std: 0.5
+    # std in [exp(-0.92), exp(-0.69)] = [0.40, 0.50]: the parent's band shifted by ln 5
+    min_log_std: -0.92
+    max_log_std: -0.69
+
+sac:
+  # fixed (learn_entropy stays false): the parent's 0.01 / 25
+  initial_entropy_value: 4.0e-4
+  # scripts/make_demo_transitions.py writes it from the base's bc.dataset
+  demo_transitions: data/physic_aligned/transitions/serl_g0995_qmin_scale002_std05_alpha4e-4_critic_full_action.pt
+
+residual:
+  critic_action: full

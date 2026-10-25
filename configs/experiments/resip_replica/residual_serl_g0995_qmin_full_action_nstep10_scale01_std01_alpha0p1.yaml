@@ -1,0 +1,17 @@
+# residual_serl_g0995_qmin_full_action_nstep10_scale01_std01_alpha2p5.yaml with the alpha it meant to have. There
+# (stopped at 130k, eval 0.50-0.68 vs the base's 0.55) the critic was stable (Q ~0.17, no drift) but the actor's
+# mean sat at zero: its log_prob was the zero-mean Gaussian's to 3 digits and the residual was its noise alone.
+# Alpha 2.5 was 25x too stiff: the 0.01 it was scaled from is already the 10% authority's value. The physical
+# pull of residual_serl_g0995_qmin_scale002_std05_alpha4e-4_critic_full_action.yaml (alpha 4e-4 at 2%, a success
+# paying 0.1) at 10% and a success of 1 is 4e-4 x 25 (authority ratio^2) x 10 = 0.1. Fixed (learn_entropy false)
+#   python scripts/make_demo_transitions.py --config configs/experiments/resip_replica/residual_serl_g0995_qmin_full_action_nstep10_scale01_std01_alpha0p1.yaml
+#   python scripts/train.py --config configs/experiments/resip_replica/residual_serl_g0995_qmin_full_action_nstep10_scale01_std01_alpha0p1.yaml --headless
+base: residual_serl_g0995_qmin_full_action_nstep10_scale01_std01_alpha2p5.yaml
+
+wandb:
+  group: serl_g0995_qmin_full_action_nstep10_scale01_std01_alpha0p1
+
+sac:
+  initial_entropy_value: 0.1
+  # scripts/make_demo_transitions.py writes it from the base's bc.dataset
+  demo_transitions: data/physic_aligned/transitions/serl_g0995_qmin_full_action_nstep10_scale01_std01_alpha0p1.pt

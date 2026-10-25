@@ -167,32 +167,48 @@ def _train(args, overrides, setup, app_launcher) -> int:
 
     # ------------------------------------------------------------------ data
     demos = load_lerobot(bc.dataset, bc.obs_key, bc.action_key)
-    for group, dims in bc.action_metric_groups.items():
-        if max(dims) >= demos.action_dim:
-            raise ValueError(
-                f"bc.action_metric_groups.{group} names dims {list(dims)}, but the dataset's "
-                f"actions have {demos.action_dim} dims"
-            )
     train_eps, test_eps = split_episodes(demos.num_episodes, bc.num_demos, bc.test_split, seed)
     used = demos.frames_of(np.concatenate([train_eps, test_eps]))
     policy = DiffusionPolicy(actor_cfg, demos.obs_dim, demos.action_dim).to(device)
+    for group, dims in bc.action_metric_groups.items():
+        if max(dims) >= policy.net_action_dim:
+            raise ValueError(
+                f"bc.action_metric_groups.{group} names dims {list(dims)}, but the policy's "
+                f"actions have {policy.net_action_dim} dims"
+            )
     policy.normalizer.fit("obs", demos.obs[used].to(device))
-    policy.normalizer.fit("action", demos.action[used].to(device))
-    if bc.normalization == "per_unit":  # one range per physical unit, obs and action together
-        from my_project.families import action_units, obs_units
 
-        policy.normalizer.fit_units(
-            demos.obs[used].to(device), demos.action[used].to(device),
-            obs_units(cfg.task_name, cfg.task_cfg), action_units(cfg.task_name),
-        )
+    def fit_action(data: torch.Tensor) -> None:
+        if bc.normalize_action and bc.symmetric_action:  # zero stays zero
+            policy.normalizer.fit_symmetric("action", data)
+        elif bc.normalize_action:
+            policy.normalizer.fit("action", data)
+        else:  # the action is already the policy's own output: [-1, 1], or anything without clip_sample
+            policy.normalizer.fit_identity("action", data, bounded=bool(actor_cfg.clip_sample))
+
     window = dict(
         n_obs_steps=actor_cfg.n_obs_steps,
         horizon=actor_cfg.horizon,
         action_horizon=actor_cfg.action_horizon,
         device=device,
+        action_frame=policy.action_frame,
     )
-    train_data = WindowedSplit(demos, train_eps, policy.normalizer, **window)
-    test_data = WindowedSplit(demos, test_eps, policy.normalizer, **window)
+    if policy.action_frame == "absolute":
+        fit_action(demos.action[used].to(device))
+        if bc.normalization == "per_unit":  # one range per physical unit, obs and action together
+            from my_project.families import action_units, obs_units
+
+            policy.normalizer.fit_units(
+                demos.obs[used].to(device), demos.action[used].to(device),
+                obs_units(cfg.task_name, cfg.task_cfg), action_units(cfg.task_name),
+            )
+        train_data = WindowedSplit(demos, train_eps, policy.normalizer, **window)
+        test_data = WindowedSplit(demos, test_eps, policy.normalizer, **window)
+    else:  # one label per window (the EE frame of its observation): the action stats come from them
+        train_data = WindowedSplit(demos, train_eps, policy.normalizer, **window)
+        test_data = WindowedSplit(demos, test_eps, policy.normalizer, **window)
+        labels = torch.cat((train_data.window_actions, test_data.window_actions))
+        fit_action(labels.reshape(-1, policy.net_action_dim))
     print(
         f"[train_bc] {demos.source}: {demos.num_episodes} episodes, obs {demos.obs_dim}, "
         f"action {demos.action_dim}; windows train {len(train_data)} / test {len(test_data)}",

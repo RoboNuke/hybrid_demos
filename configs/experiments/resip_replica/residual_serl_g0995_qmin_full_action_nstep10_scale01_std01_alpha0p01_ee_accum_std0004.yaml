@@ -1,0 +1,16 @@
+# residual_serl_g0995_qmin_full_action_nstep10_scale01_std01_alpha0p01_ee_accum.yaml (A + B, demos in the critic)
+# with the exploration noise at ~10% of the demos' own per-step correction instead of ~2.5x it: the demos'
+# median per-step r_pos is 0.039, so std 0.004 (was 0.1). The band keeps the old one's width in log space
+# ([ln std - 0.23, ln std]). Its demo transitions are the A + B run's (the model is not part of their fingerprint).
+#   python scripts/train.py --config configs/experiments/resip_replica/residual_serl_g0995_qmin_full_action_nstep10_scale01_std01_alpha0p01_ee_accum_std0004.yaml --headless
+base: residual_serl_g0995_qmin_full_action_nstep10_scale01_std01_alpha0p01_ee_accum.yaml
+
+wandb:
+  group: serl_g0995_qmin_full_action_nstep10_scale01_std01_alpha0p01_ee_accum_std0004
+
+model:
+  actor:
+    act_init_std: 0.004
+    # std in [exp(-5.75), exp(-5.52)] = [0.0032, 0.0040]
+    min_log_std: -5.75
+    max_log_std: -5.52

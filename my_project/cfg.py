@@ -279,10 +279,56 @@ class ResidualCfg:
     #: as they are (the critic takes the action as an input, so the value is still true) or
     #: "drop" them. Never clipped: a clipped action did not produce the stored next state
     demo_actions_beyond_scale: str = "store"
+    #: what the SAC critics take as the action: "residual", the agent's own r in [-1, 1]
+    #: (the base action reaches them through the observation), or "full", the executed pose
+    #: action normalized as the base's, normalize(a_base + scale * r) = normalize(a_base) +
+    #: scale / half_range * r (``residual_critic_action``); with ``steps_per_chunk`` k, the
+    #: chunk's k executed actions, one row each, step-major. A demo transition's is then exactly
+    #: normalize(a_demo), however far beyond the residual's reach it lies
+    critic_action: str = "residual"
+    #: what the agent's action is (``my_project/residual_ee.py``). "absolute": ``scale * r`` added to the
+    #: base action, every dim (above). "ee" (furniture FBAbs tasks): ``r = [r_pos 3, r_rot 3]``, a correction
+    #: of the base's target in the end-effector's frame -- ``ee_pos_scale * R_ee r_pos`` along the EE's axes,
+    #: a rotation ``Exp(ee_rot_scale * r_rot)`` about the target's own -- the gripper the base's
+    action_frame: str = "absolute"
+    #: m per unit ``r_pos`` per step (action_frame: ee)
+    ee_pos_scale: float = 0.01
+    #: deg per unit ``r_rot`` per step (action_frame: ee)
+    ee_rot_scale_deg: float = 5.0
+    #: action_frame: ee: add each step's correction to an offset that resets to zero whenever the base
+    #: starts a new chunk, instead of re-sending it every step; the offset (in the EE frame, over its
+    #: largest reach in one chunk) joins the agent's and the critic's observation
+    accumulate: bool = False
+    #: env steps per agent action (Policy Decorator's residual chunk). 1: the agent acts every env
+    #: step. k > 1: it acts once every k env steps with a (k x A)-wide action, step-major (row j
+    #: is sub-step j's residual, A the per-step width); the wrapper runs the k env steps, each
+    #: with the base's own next action plus its row, sums the rewards and ORs the dones. The
+    #: base's executed ``action_horizon`` must be a multiple of k (a chunk never straddles a
+    #: base re-plan), so the observed base action is the chunk's k (step-major) and
+    #: ``critic_action: full`` is the chunk's k executed actions. No ``hybrid``, no demo transitions
+    steps_per_chunk: int = 1
+    #: override the base's executed ``model.actor.action_horizon`` (Policy Decorator's act
+    #: horizon 4); null: the base run's own. At most its ``horizon``
+    base_action_horizon: Optional[int] = None
+    #: override the base's DDIM ``model.actor.inference_steps`` (Policy Decorator's 4); null:
+    #: the base run's own. At most its ``num_diffusion_iters``
+    base_inference_steps: Optional[int] = None
+    #: the agent (and the critic state) gets the base's observation normalized with the base's
+    #: normalizer, its near-constant columns widened (``residual_observation``); false: the raw
+    #: observation, as the env produces it (Policy Decorator's). Part of the demo fingerprint
+    normalize_observation: bool = True
+    #: append ``normalize(a_base)`` to the agent's observation and the critic state; false: the
+    #: agent sees the observation alone (Policy Decorator's ``actor_input: obs``), which rules
+    #: out ``critic_action: full`` (it reads the base action there). Part of the demo fingerprint
+    observe_base_action: bool = True
 
     DEMO_ACTIONS_BEYOND_SCALE = ("store", "drop")
+    CRITIC_ACTIONS = ("residual", "full")
+    ACTION_FRAMES = ("absolute", "ee")
 
     def validate(self, cfg: Any) -> None:
+        if self.critic_action not in self.CRITIC_ACTIONS:
+            raise ValueError(f"residual.critic_action must be one of {self.CRITIC_ACTIONS}, got {self.critic_action!r}")
         if self.action_scale_fraction <= 0:
             raise ValueError(f"residual.action_scale_fraction must be > 0, got {self.action_scale_fraction}")
         if self.demo_actions_beyond_scale not in self.DEMO_ACTIONS_BEYOND_SCALE:
@@ -290,8 +336,50 @@ class ResidualCfg:
                 f"residual.demo_actions_beyond_scale must be one of {self.DEMO_ACTIONS_BEYOND_SCALE}, "
                 f"got {self.demo_actions_beyond_scale!r}"
             )
+        if self.action_frame not in self.ACTION_FRAMES:
+            raise ValueError(f"residual.action_frame must be one of {self.ACTION_FRAMES}, got {self.action_frame!r}")
+        if self.ee_pos_scale <= 0 or self.ee_rot_scale_deg <= 0:
+            raise ValueError(f"residual.ee_pos_scale and ee_rot_scale_deg must be > 0, got {self.ee_pos_scale}, {self.ee_rot_scale_deg}")
+        if self.accumulate and self.action_frame != "ee":
+            raise ValueError("residual.accumulate adds up the EE-frame correction: it needs residual.action_frame: ee")
+        if self.steps_per_chunk < 1:
+            raise ValueError(f"residual.steps_per_chunk must be >= 1, got {self.steps_per_chunk}")
+        for name in ("base_action_horizon", "base_inference_steps"):
+            value = getattr(self, name)
+            if value is not None and value < 1:
+                raise ValueError(f"residual.{name} must be null or >= 1, got {value}")
+        if self.base_action_horizon is not None and self.base_action_horizon % self.steps_per_chunk:
+            raise ValueError(
+                f"residual.base_action_horizon ({self.base_action_horizon}) must be a multiple of "
+                f"residual.steps_per_chunk ({self.steps_per_chunk}): a residual chunk never straddles a base re-plan"
+            )
+        if self.critic_action == "full" and self.steps_per_chunk > 1 and self.action_frame == "ee":
+            raise NotImplementedError(
+                f"residual.critic_action: full with action_frame: ee and steps_per_chunk {self.steps_per_chunk} is not "
+                "supported: the EE frame turns between the chunk's sub-steps, so the executed offsets after the "
+                "first sub-step are not determined by the chunk's observation"
+            )
+        if self.critic_action == "full" and not self.observe_base_action:
+            raise ValueError(
+                "residual.critic_action: full reads normalize(a_base) from the agent's observation: it needs "
+                "residual.observe_base_action: true"
+            )
         if not self.enabled or cfg is None:
             return
+        if self.steps_per_chunk > 1 and cfg.hybrid.enabled:
+            raise NotImplementedError(
+                f"residual.steps_per_chunk {self.steps_per_chunk} with hybrid.enabled is not supported: the chunk "
+                "action carries no per-step selection and force blocks"
+            )
+        if self.action_frame == "ee":
+            from my_project.families import is_abs
+
+            if not is_abs(str(cfg.task_name)):
+                raise ValueError(f"residual.action_frame: ee corrects an FBAbs absolute target; got task {cfg.task_name!r}")
+            if cfg.hybrid.enabled:
+                raise ValueError("residual.action_frame: ee has no hybrid blocks; switch hybrid off")
+            if self.action_scale is not None:
+                raise ValueError("residual.action_scale is the absolute frame's per-dim scale; action_frame: ee uses ee_pos_scale / ee_rot_scale_deg")
         remote = self.base_project is not None or self.base_run_name is not None
         if bool(self.base_run) == remote:
             raise ValueError(
@@ -311,6 +399,10 @@ class ResidualCfg:
             )
         if cfg.trainer.learner == BC_LEARNER:
             raise ValueError(f"residual.enabled trains a residual with sac / ppo, not {BC_LEARNER}")
+        if self.critic_action == "full" and cfg.trainer.learner != "sac":
+            raise ValueError(
+                f"residual.critic_action: full is the SAC critics' action input; {cfg.trainer.learner} has no Q critic"
+            )
         from my_project.families import FORGE, action_layout, family_of
 
         family = family_of(cfg.task_name)
@@ -443,6 +535,15 @@ class BCCfg:
     #: a near-constant dim stays near-constant, and the target and the EE scale alike. Needs a
     #: furniture FBAbs task
     normalization: str = "per_dim"
+    #: false: the action is used as it is, never rescaled -- its stats are fixed at [-1, 1], so
+    #: normalizing is the identity and a zero output is the zero action (the -FBRel- interface:
+    #: hold). Every demo action must lie in [-1, 1]. Not with ``normalization: per_unit``
+    normalize_action: bool = True
+    #: with ``normalize_action``: scale each action dim by ``s = max(|min|, |max|)`` of the demos'
+    #: actions to [-s, s] -> [-1, 1] instead of min-max, so a zero action stays a zero output (the
+    #: EE-frame actions: "stay at the pose") while every dim still spans the network's range. Not
+    #: with ``normalization: per_unit``
+    symmetric_action: bool = False
 
     #: early stopping on an EMA of the test loss; .inf never stops (the metrics still log)
     early_stop_patience: float = float("inf")
@@ -493,6 +594,15 @@ class BCCfg:
             )
         if self.normalization not in ("per_dim", "per_unit"):
             raise ValueError(f"bc.normalization must be per_dim or per_unit, got {self.normalization!r}")
+        if self.symmetric_action and not self.normalize_action:
+            raise ValueError("bc.symmetric_action scales the action; bc.normalize_action: false keeps it as it is. Choose one")
+        if self.symmetric_action and self.normalization == "per_unit":
+            raise ValueError("bc.symmetric_action scales each action dim by its own range; bc.normalization: per_unit shares them. Choose one")
+        if self.normalization == "per_unit" and not self.normalize_action:
+            raise ValueError(
+                "bc.normalization: per_unit fits the action's range together with the observation's; "
+                "bc.normalize_action: false keeps the action as it is. Choose one"
+            )
         if self.normalization == "per_unit":
             from my_project.families import is_abs
 
@@ -529,6 +639,23 @@ class BCCfg:
                     f"trainer.{name} ({value}) counts gradient steps for {BC_LEARNER} and must "
                     f"be a multiple of bc.steps_per_epoch ({self.steps_per_epoch})"
                 )
+        frame = getattr(getattr(cfg.model, "actor", None), "action_frame", "absolute")
+        if frame != "absolute":
+            from my_project.families import is_abs
+            from my_project.models.action_frame import METRIC_GROUPS
+
+            if not is_abs(str(cfg.task_name)):
+                raise ValueError(
+                    f"model.actor.action_frame: {frame} reads the EE pose from an FBAbs observation and turns "
+                    f"its chunk into the FBAbs absolute action; got task {cfg.task_name!r}"
+                )
+            if self.normalization == "per_unit":
+                raise ValueError(
+                    f"bc.normalization: per_unit shares the FBAbs action's ranges with the observation; "
+                    f"model.actor.action_frame: {frame} predicts a different action. Use per_dim"
+                )
+            if self.action_metric_groups is None:  # the network's [dpos, drot, gripper]
+                self.action_metric_groups = {k: list(v) for k, v in METRIC_GROUPS.items()}
         if self.action_metric_groups is None:
             from my_project.families import action_metric_groups
 

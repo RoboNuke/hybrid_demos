@@ -11,6 +11,12 @@ from omegaconf import OmegaConf
 from my_project.cfg import HistoryCfg
 from my_project.wrappers import HistoryBuffer, ObservationHistory
 from my_project import residual_demos
+from my_project.models.diffusion_policy import MinMaxNormalizer
+
+#: what every file the converter writes today records about the agent's observation
+NARROW = {"agent_obs_narrow_range": MinMaxNormalizer.NARROW_RANGE}
+#: ... and what a furniture file (no critic group) records besides
+FURNITURE = {"furniture_format": residual_demos.FURNITURE_FORMAT, "critic_state_format": residual_demos.CRITIC_STATE_FORMAT}
 
 
 def make_history(length: int = 3, index=(0, 2), num_envs: int = 2) -> HistoryBuffer:
@@ -103,7 +109,7 @@ def fake_cfg(path, **changes):
 
 def test_a_file_made_for_another_setup_is_refused_and_cosmetic_task_fields_are_not(tmp_path):
     path = tmp_path / "demos.pt"
-    torch.save({"transitions": {}, "meta": {"fingerprint": residual_demos.demo_fingerprint(fake_cfg(path))}}, path)
+    torch.save({"transitions": {}, "meta": {**NARROW, "fingerprint": residual_demos.demo_fingerprint(fake_cfg(path))}}, path)
     residual_demos.check_demo_transitions(fake_cfg(path))
     # episode length, seed and env count do not change a replayed transition
     residual_demos.check_demo_transitions(
@@ -118,7 +124,7 @@ def test_a_config_rebuilt_from_a_run_is_not_checked(tmp_path):
     """Eval / the watcher: the run's task.cfg is the live env's (action terms the env derived), so
     it never matches the fingerprint taken before gym.make, and nothing there reads the file."""
     path = tmp_path / "demos.pt"
-    torch.save({"transitions": {}, "meta": {"fingerprint": residual_demos.demo_fingerprint(fake_cfg(path))}}, path)
+    torch.save({"transitions": {}, "meta": {**NARROW, "fingerprint": residual_demos.demo_fingerprint(fake_cfg(path))}}, path)
     cfg = fake_cfg(path, **{"task.cfg.obs_order": ["derived"]})
     with pytest.raises(ValueError, match="different setup"):
         residual_demos.check_demo_transitions(cfg)
@@ -133,7 +139,7 @@ def test_a_missing_file_is_left_to_the_learner(tmp_path):
 def test_a_field_added_later_at_its_default_does_not_invalidate_a_file(tmp_path):
     path = tmp_path / "demos.pt"
     made = residual_demos.demo_fingerprint(fake_cfg(path))
-    torch.save({"transitions": {}, "meta": {"fingerprint": made}}, path)
+    torch.save({"transitions": {}, "meta": {**NARROW, "fingerprint": made}}, path)
     # the run now carries a residual field the file predates, at its default
     residual_demos.check_demo_transitions(fake_cfg(path, **{"residual.action_scale_fraction": 0.1}))
     with pytest.raises(ValueError, match="action_scale_fraction"):
@@ -145,10 +151,77 @@ def test_physx_buffer_capacities_do_not_invalidate_a_file_even_one_that_recorded
     made = residual_demos.demo_fingerprint(fake_cfg(path))
     # a file made before the buffers were allowed to differ holds them in its fingerprint
     made["task_cfg"]["sim.physx.gpu_collision_stack_size"] = 2**30
-    torch.save({"transitions": {}, "meta": {"fingerprint": made}}, path)
+    torch.save({"transitions": {}, "meta": {**NARROW, "fingerprint": made}}, path)
     cfg = fake_cfg(path)
     cfg.root.task.cfg["sim"] = {"physx": {"gpu_collision_stack_size": 2**28, "gpu_max_rigid_contact_count": 2**20}}
     residual_demos.check_demo_transitions(cfg)
     cfg.root.task.cfg.sim.physx["solver_type"] = 0  # a real physics setting still counts
     with pytest.raises(ValueError, match="solver_type"):
         residual_demos.check_demo_transitions(cfg)
+
+
+def test_what_the_critics_take_does_not_invalidate_a_file(tmp_path):
+    """residual.critic_action only changes the critics' input; the file stores r either way."""
+    path = tmp_path / "demos.pt"
+    torch.save({"transitions": {}, "meta": {**NARROW, "fingerprint": residual_demos.demo_fingerprint(fake_cfg(path))}}, path)
+    residual_demos.check_demo_transitions(fake_cfg(path, **{"residual.critic_action": "full"}))
+
+
+def test_a_file_made_before_the_agent_obs_widened_its_narrow_columns_is_refused(tmp_path):
+    """Such a file holds the base's near-constant columns as float noise over [-1, 1]; online they read ~0."""
+    path = tmp_path / "demos.pt"
+    made = residual_demos.demo_fingerprint(fake_cfg(path))
+    for meta in ({"fingerprint": made}, {"fingerprint": made, "agent_obs_narrow_range": 1e-6}):
+        torch.save({"transitions": {}, "meta": meta}, path)
+        with pytest.raises(ValueError, match="agent_obs_narrow_range"):
+            residual_demos.check_demo_transitions(fake_cfg(path))
+    torch.save({"transitions": {}, "meta": {**NARROW, "fingerprint": made}}, path)
+    residual_demos.check_demo_transitions(fake_cfg(path))
+
+
+def test_a_furniture_file_from_before_the_cut_at_the_envs_success_is_refused(tmp_path):
+    """Format 1 kept the recording's rows after the env's success and paid the reward x step_dt;
+    a Forge file carries no furniture format and is not asked for one."""
+    path = tmp_path / "demos.pt"
+    cfg = fake_cfg(path)
+    cfg.task_name = "Isaac-Furniture-OneLeg-FBAbs-ResiP-v0"
+    made = residual_demos.demo_fingerprint(cfg)
+    torch.save({"transitions": {}, "meta": {**NARROW, "fingerprint": made}}, path)
+    with pytest.raises(ValueError, match="furniture format 1"):
+        residual_demos.check_demo_transitions(cfg)
+    torch.save({"transitions": {}, "meta": {**NARROW, **FURNITURE, "fingerprint": made}}, path)
+    residual_demos.check_demo_transitions(cfg)
+    forge = fake_cfg(path)
+    torch.save({"transitions": {}, "meta": {**NARROW, "fingerprint": residual_demos.demo_fingerprint(forge)}}, path)
+    residual_demos.check_demo_transitions(forge)
+
+
+def test_a_furniture_file_from_before_the_states_were_the_agents_observations_is_refused(tmp_path):
+    """Without a critic group the states must be the agent's (normalized) observation; a file from
+    before held the raw recorded observation there. A Forge file (a real critic state) is not asked."""
+    path = tmp_path / "demos.pt"
+    cfg = fake_cfg(path)
+    cfg.task_name = "Isaac-Furniture-OneLeg-FBAbs-ResiP-v0"
+    made = residual_demos.demo_fingerprint(cfg)
+    for meta in ({}, {"critic_state_format": 1}):
+        torch.save({"transitions": {}, "meta": {**NARROW, "furniture_format": residual_demos.FURNITURE_FORMAT, **meta, "fingerprint": made}}, path)
+        with pytest.raises(ValueError, match="critic state format 1"):
+            residual_demos.check_demo_transitions(cfg)
+    torch.save({"transitions": {}, "meta": {**NARROW, **FURNITURE, "fingerprint": made}}, path)
+    residual_demos.check_demo_transitions(cfg)
+    forge = fake_cfg(path)
+    torch.save({"transitions": {}, "meta": {**NARROW, "fingerprint": residual_demos.demo_fingerprint(forge)}}, path)
+    residual_demos.check_demo_transitions(forge)
+
+
+def test_the_observation_flags_are_in_the_fingerprint(tmp_path):
+    """A file made with the agent's observation normalized and the base action in it is not one for
+    a run that sees the raw observation or no base action (and the other way round)."""
+    path = tmp_path / "demos.pt"
+    flags = {"residual.normalize_observation": True, "residual.observe_base_action": True}
+    assert residual_demos.demo_fingerprint(fake_cfg(path, **flags))["residual"] == {**residual_demos.demo_fingerprint(fake_cfg(path))["residual"], "normalize_observation": True, "observe_base_action": True}
+    torch.save({"transitions": {}, "meta": {**NARROW, "fingerprint": residual_demos.demo_fingerprint(fake_cfg(path))}}, path)
+    residual_demos.check_demo_transitions(fake_cfg(path, **flags))  # the defaults: what the file was made with
+    for field in ("normalize_observation", "observe_base_action"):
+        with pytest.raises(ValueError, match=field):
+            residual_demos.check_demo_transitions(fake_cfg(path, **{f"residual.{field}": False}))

@@ -123,3 +123,61 @@ def test_the_resip_task_appends_the_obstacle_pose(tmp_path):
 
     t = pq.read_table(glob.glob(str(out / "data" / "*" / "*.parquet"))[0]).to_pydict()
     np.testing.assert_allclose(np.array(t["observation.state_abs"])[:, 61:], np.tile(moved[:2], (5, 1)), atol=1e-5)
+
+
+def test_the_relative_task_writes_the_relative_columns_from_the_resip_observation(tmp_path):
+    """Isaac-Furniture-*-FBRel-ResiP: state_abs is the ResiP 63 (obstacle included) and the relative
+    columns are the NumPy twins of the task's terms applied to it, each action relative to its own
+    frame's EE pose; the absolute columns are exactly what the FBAbs-ResiP import writes."""
+    import glob
+    import json
+
+    import pyarrow.parquet as pq
+
+    from furniture_lab.demos import ee_relative_actions, ee_relative_states
+
+    src = tmp_path / "src"
+    demo = _demo(6, True, 1)
+    _write(src, "a", demo)
+    import_demos(src, tmp_path / "abs", task_name="Isaac-Furniture-OneLeg-FBAbs-ResiP-v0")
+    import_demos(src, tmp_path / "rel", task_name="Isaac-Furniture-OneLeg-FBRel-ResiP-v0")
+    read = lambda root: pq.read_table(glob.glob(str(root / "data" / "*" / "*.parquet"))[0]).to_pydict()  # noqa: E731
+    ab, rel = read(tmp_path / "abs"), read(tmp_path / "rel")
+    for col in ("observation.state_abs", "action.abs", "observation.next_state_abs", "observation.state", "action"):
+        assert np.array_equal(np.array(rel[col]), np.array(ab[col])), col
+    s_abs, a_abs = np.array(rel["observation.state_abs"]), np.array(rel["action.abs"])
+    nxt = np.array(rel["observation.next_state_abs"])
+    assert s_abs.shape == (6, 63)
+    np.testing.assert_allclose(np.array(rel["observation.state_rel"]), ee_relative_states(s_abs), atol=1e-6)
+    np.testing.assert_allclose(np.array(rel["observation.next_state_rel"]), ee_relative_states(nxt), atol=1e-6)
+    np.testing.assert_allclose(np.array(rel["action.rel"]), ee_relative_actions(s_abs, a_abs), atol=1e-6)
+    info = json.loads((tmp_path / "rel" / "meta" / "info.json").read_text())
+    assert (info["features"]["observation.state_rel"], info["features"]["action.rel"]) == (55, 10)
+    assert "observation.state_rel" not in json.loads((tmp_path / "abs" / "meta" / "info.json").read_text())["features"]
+
+
+def test_the_delta_task_writes_the_delta_action_on_the_resip_observation(tmp_path):
+    """Isaac-Furniture-*-FBDelta-ResiP: every column the FBAbs-ResiP import writes, exactly, plus
+    action.delta, the NumPy twin of the task's term applied to action.abs, each action relative to its
+    own frame's EE pose."""
+    import glob
+    import json
+
+    import pyarrow.parquet as pq
+
+    from furniture_lab.demos import ee_delta_actions
+
+    src = tmp_path / "src"
+    _write(src, "a", _demo(6, True, 1))
+    import_demos(src, tmp_path / "abs", task_name="Isaac-Furniture-OneLeg-FBAbs-ResiP-v0")
+    import_demos(src, tmp_path / "delta", task_name="Isaac-Furniture-OneLeg-FBDelta-ResiP-v0")
+    read = lambda root: pq.read_table(glob.glob(str(root / "data" / "*" / "*.parquet"))[0]).to_pydict()  # noqa: E731
+    ab, delta = read(tmp_path / "abs"), read(tmp_path / "delta")
+    assert set(delta) - set(ab) == {"action.delta"}
+    for col in ab:
+        assert np.array_equal(np.array(delta[col]), np.array(ab[col])), col
+    s_abs, a_abs = np.array(delta["observation.state_abs"]), np.array(delta["action.abs"])
+    assert s_abs.shape == (6, 63)
+    np.testing.assert_allclose(np.array(delta["action.delta"]), ee_delta_actions(s_abs, a_abs), atol=1e-6)
+    info = json.loads((tmp_path / "delta" / "meta" / "info.json").read_text())
+    assert info["features"]["action.delta"] == 7 and info["features"]["observation.state_abs"] == 63

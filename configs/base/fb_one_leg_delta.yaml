@@ -1,0 +1,10 @@
+# FurnitureBench one_leg with the action relative to the end-effector: Robonuke_Furniture_Bench's
+# Isaac-Furniture-OneLeg-FBDelta-ResiP-v0, fb_one_leg.yaml's task (ResiP's sim, the physics
+# physic_aligned_evalHappy_a0 trained with and its 63-wide observation) with only the action changed:
+# 7 ([dpos 3, drot 3, gripper] in the EE's frame, the pose part in [-1, 1]: dpos in units of 0.12 m,
+# drot an axis-angle in rad; sent on as the absolute target p_ee + 0.12 R_ee dpos, R_ee Exp(drot)).
+# Switching a config between the two is its base (and the dataset's action column: action.delta).
+base: fb_one_leg.yaml
+
+task:
+  name: Isaac-Furniture-OneLeg-FBDelta-ResiP-v0

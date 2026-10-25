@@ -41,7 +41,9 @@ bodies with your observations, rewards and resets.
 ## Configs
 
 * `configs/base/` -- the env: one file per task (`fb_one_leg.yaml`: the task id and its physics, everything
-  independent of the training method), chained onto `hpc.yaml` (the cluster's resources). Base one on it
+  independent of the training method; `fb_one_leg_rel.yaml`: the same with the interface relative to the
+  end-effector, only its task id differs; `fb_one_leg_delta.yaml`: the same with only the action relative
+  to the end-effector), chained onto `hpc.yaml` (the cluster's resources). Base one on it
   and you get a known task with known physics.
 * `configs/eval/` -- only what one test changes on top of the trained run's own config (more friction, a
   recording: `one_leg_phases.yaml`; the residual watcher's 100 envs: `residual_watch_furniture.yaml`), chained onto `hpc.yaml` for the cluster launcher's resources.
@@ -58,6 +60,14 @@ bodies with your observations, rewards and resets.
 python scripts/train_bc.py --config configs/experiments/resip_replica/bc_resip_replica.yaml --headless
 python scripts/make_demo_transitions.py --config configs/experiments/resip_replica/residual_resip_replica.yaml
 python scripts/train.py --config configs/experiments/resip_replica/residual_resip_replica.yaml --headless
+# the same BC on the interface relative to the end-effector (configs/experiments/resip_replica_rel/)
+python scripts/train_bc.py --config configs/experiments/resip_replica_rel/bc_resip_replica_rel.yaml --headless
+# the same BC with only the action relative to the end-effector (configs/experiments/policy_dec_replica/)
+python scripts/train_bc.py --config configs/experiments/policy_dec_replica/bc_policy_dec_replica.yaml --headless
+# the same BC with the chunk relative to the EE pose at the observation (configs/experiments/policy_dec_replica_chunk/)
+python scripts/train_bc.py --config configs/experiments/policy_dec_replica_chunk/bc_policy_dec_replica_chunk.yaml --headless
+# ... with the action scaled per dim, zero-centred (configs/experiments/policy_dec_replica_chunk_zero_centered_norm/)
+python scripts/train_bc.py --config configs/experiments/policy_dec_replica_chunk_zero_centered_norm/bc_policy_dec_replica_chunk_zero_centered_norm.yaml --headless
 
 # evaluate / record a trained run (downloads policy + config from the wandb run's files)
 python scripts/eval.py --run hur/hybrid_demo_furniture/<run_name> \
@@ -197,10 +207,53 @@ Sim, into the recorder's dataset layout (`scripts/import_furniture_demos.py`). P
 from the same frames (`furniture_lab.demos.fb_abs_frames`): `observation.state_abs` and `action.abs`
 (10, the absolute target the delta commanded: `[ee_pos + dpos, rot6d(R_ee R_dq), gripper]`). Raw
 material beside them: `observation.joint_positions`, `observation.next_state` /
-`observation.next_state_abs`, `reward` (the env's sparse assembly reward), `skill`.
+`observation.next_state_abs`, `reward` (the env's sparse assembly reward), `skill`. For the task relative
+to the end-effector (`--task_name Isaac-Furniture-OneLeg-FBRel-ResiP-v0`) also `observation.state_rel`
+(55: every pose relative to the EE pose, in its frame; no EE pose), `action.rel` (10: `action.abs`'s
+target relative to that frame's EE pose, `[dpos, drot, gripper]` in the EE's frame, the pose part in
+[-1, 1]: `dpos` in units of 0.12 m, `drot` a rot6d minus the identity's, the few longer leads -- the
+post-assembly lift -- clipped as the task's term clips them) and
+`observation.next_state_rel`, built from the ResiP `observation.state_abs` (63) by
+`furniture_lab.demos.ee_relative_states` / `ee_relative_actions`, the NumPy twins of the task's terms
+(the command for `data/physic_aligned_rel`, the same 50 demos, is in `resip_replica_rel/_foundation.yaml`).
+For the ResiP observation with the action relative to the end-effector (`--task_name
+Isaac-Furniture-OneLeg-FBDelta-ResiP-v0`) every FBAbs-ResiP column, plus `action.delta` (7: `action.abs`'s
+target relative to that frame's EE pose, `[dpos, drot, gripper]` in the EE's frame, the pose part in
+[-1, 1]: `dpos` in units of 0.12 m, `drot` an axis-angle in rad, clipped as the task's term clips it;
+`furniture_lab.demos.ee_delta_actions`; the command for `data/physic_aligned_delta` is in
+`policy_dec_replica/_foundation.yaml`).
 `meta/episodes.jsonl` carries each demo's success and source file; re-running appends only new
 files. `--include_failures` also imports `fails/*.pkl` (success false). Imported demos carry no
 recording session (no env snapshot), so a residual run's `--check_in_sim` replay is Forge-only.
+
+**Relative to the end-effector** (`configs/experiments/resip_replica_rel/`, on `base/fb_one_leg_rel.yaml`:
+`Isaac-Furniture-OneLeg-FBRel-ResiP-v0`, the same sim and physics): `bc_resip_replica_rel.yaml` is
+`bc_resip_replica.yaml` on `data/physic_aligned_rel`'s `observation.state_rel` / `action.rel`, for 150k
+gradient steps (the cosine schedule spans them). Its action is used as it is (`bc.normalize_action:
+false`): it is already in [-1, 1], so a zero output -- the warm start's buffer at an episode's start
+included -- holds the EE instead of decoding to the demos' mid-range motion. `my_project/families.py`'s
+`is_rel` names the interface; its action has the absolute target's dims (`[pos 3, rot6d 6, gripper]`,
+the rot6d minus the identity's), so the action layout and the BC metric groups are the FBAbs ones.
+
+**The action relative to the end-effector** (`configs/experiments/policy_dec_replica/`, on
+`base/fb_one_leg_delta.yaml`: `Isaac-Furniture-OneLeg-FBDelta-ResiP-v0`, the same sim, physics and
+observation): `bc_policy_dec_replica.yaml` is `bc_resip_replica_rel.yaml` on the ResiP observation
+(`observation.state_abs`, 63, min-max scaled as evalHappy's) and `data/physic_aligned_delta`'s
+`action.delta` (7, its rotation a 3-d axis-angle), used as it is (`bc.normalize_action: false`), for
+150k gradient steps. `my_project/families.py`'s `is_delta` names the interface: the FBAbs ResiP
+observation layout, the action layout `[pos 3, axis_angle 3, gripper]` and the BC metric groups
+`pos` / `rot` / `gripper` on it.
+
+**The chunk relative to the EE pose at the observation** (`configs/experiments/policy_dec_replica_chunk/`,
+on `base/fb_one_leg.yaml`: the FBAbs ResiP task itself): `bc_policy_dec_replica_chunk.yaml` is
+`bc_resip_replica.yaml` on the same demos and columns (`data/physic_aligned`, `observation.state_abs` /
+`action.abs`) with `model.actor.action_frame: ee_at_obs`: the network predicts every step of its chunk
+in m and rad in the EE frame of the observation it acts on (not of the pose each step ends up at), used
+as it is (`bc.normalize_action: false`) and unclipped (`model.actor.clip_sample: false`), for 150k
+gradient steps. The env gets the absolute targets those make with that pose.
+`configs/experiments/policy_dec_replica_chunk_zero_centered_norm/` is the same with the action scaled per
+dim by `max(|min|, |max|)` of its labels (`bc.symmetric_action`; zero stays the observation's pose) and
+clipped to [-1, 1] as the reference clips (`model.actor.clip_sample` at its default).
 
 **Training** (`configs/experiments/resip_replica/`): `bc_resip_replica.yaml` is ResiP's released
 one_leg recipe (batch 1024, warmup 2000, per-dim scaling, 512 rollouts every 10 epochs whatever the
@@ -208,8 +261,13 @@ test loss, warm start, 16 DDIM steps) on `data/physic_aligned`; `residual_resip_
 residual SAC on the frozen `physic_aligned_evalHappy_a0`, named by `residual.base_project` /
 `base_run_name` and downloaded from wandb, logging to its own project
 (`hybrid_demo_furniture_residual`). Its demo transitions read the importer's
-`observation.state_abs` / `action.abs` / `observation.next_state_abs`, with the recorded reward
-times the env's `step_dt` (Isaac Lab's reward manager scales every term by it).
+`observation.state_abs` / `action.abs` / `observation.next_state_abs`. Each demo ends where the
+training env would have ended it: the env's own assembled test (`furniture.success_mode: soft`) runs
+on the recorded part poses after every step, the first success is the demo's terminal step, and the
+recording's rows after it are dropped (the scripted expert holds its own check for 5 steps, then
+releases and lifts: 9 rows per one_leg demo). The reward is what the env's reward terms pay, with no
+`step_dt`, which the package divides out of a manager-based env's reward (a success pays 1). A file
+converted before this (`meta.furniture_format` below 2) is refused.
 `residual_serl_g099_qmin.yaml` is the same residual with `sac.discount_factor` 0.99 and the actor on
 the min over the critics (`sac.actor_q_reduction: min`), in its own group with its own demo file;
 `residual_serl_g099_qmin_std01_fixed_alpha.yaml` is that one with a small fixed exploration (the actor's
@@ -295,10 +353,71 @@ Every step the env (`my_project/residual.py`, applied through the package's
 `model.actor.action_horizon` steps or when its episode restarts, warm-started as in BC). The
 agent observes `[normalize(obs), normalize(a_base)]`, the base's 24-d observation and this
 step's base action, both with the **base policy's** min-max normalizer (28 dims; the critic
-state gets `normalize(a_base)` appended), and its action `r` (4, in [-1, 1]) is sent as
+state gets `normalize(a_base)` appended), except that an observation column whose stored range is
+below `MinMaxNormalizer.NARROW_RANGE` (1e-4) reads as `[mid - 1, mid + 1]`, ~0: a base fit before
+that rule stretched float noise there over [-1, 1] (the furniture base: 7 columns, resting parts and
+the obstacle, 7.5e-8 .. 9.3e-6), and an online value just outside it mapped far beyond. The base
+itself still reads its stats as trained. A demo file records the rule (`meta.agent_obs_narrow_range`)
+and one without it is refused. Its action `r` (4, in [-1, 1]) is sent as
 `a_base + residual.action_scale * r`. `residual/position_mm` and `residual/yaw_deg` log the
 correction's size per agent. The base's architecture comes from its BC run's resolved config,
 its weights and normalizer from the checkpoint, and the env's widths are checked against it.
+`residual.base_action_horizon` and `residual.base_inference_steps` override the base run's executed
+horizon and DDIM steps (null: the run's own); `residual.normalize_observation: false` gives the agent
+(and the critic) the raw observation instead of the base-normalized, widened one, and
+`residual.observe_base_action: false` leaves `normalize(a_base)` out of both (Policy Decorator's
+`actor_input: obs`). Both flags are part of a demo file's fingerprint.
+
+**Chunk-level residual (Policy Decorator).** `residual.steps_per_chunk: k` > 1 makes the agent act
+once every `k` env steps with a `(k x A)`-wide action, step-major (row `j` is sub-step `j`'s residual;
+`A` is the per-step width: 10 on the absolute frame, 6 with `action_frame: ee`). The wrapper's `step`
+runs the `k` env steps itself: sub-step `j` sends the base's own next action plus `scale * r_j`
+(the base hands its chunk out one action per env step, as always), the `k` rewards are summed, the
+dones ORed, and the observation after the last sub-step returned. The base re-plans only on a chunk
+boundary: its executed `action_horizon` must be a multiple of `k` (checked when the base loads;
+Policy Decorator's recipe sets `base_action_horizon: 4`, `base_inference_steps: 4`). So at the chunk
+boundary the base's next `k` actions are known: with `observe_base_action: true` the observation's
+base-action block is those `k` actions normalized, step-major (`k x 10` on the absolute frame: the very
+rows the residual rows are added to; for `k = 1` today's single `normalize(a_base)`), the critic state
+gets the same block, and `critic_action: full` gives the critics the chunk's executed actions,
+`normalize(a_base_j) + gain * r_j` per row, concatenated step-major (`k x 10`, the agent's action
+width). For an env whose episode ends inside the chunk, the rows past its end describe actions its
+episode never took (the sub-steps below). Every env steps
+together, so an env whose episode ends at sub-step `j < k - 1` cannot stop there: Isaac Lab resets
+it, it runs the chunk's remaining sub-steps on the base alone (zero residual), those sub-steps'
+rewards, dones and metrics are not counted for it, its base is made to re-plan at the next chunk
+boundary (so the new episode's chunks line up again), and the agent's first observation of the new
+episode is the one after sub-step `k - 1`. `residual/*` metrics are per-sub-step means; the env's
+`episode_metrics_to_log` are taken from the sub-step each episode closed on; other `infos` entries
+are the last sub-step's. The package counts agent steps: `trainer.total_timesteps` and an eval
+episode's length are in agent steps (`k` sim steps each); `scripts/watch_residual_eval.py` runs
+`ceil(steps / k)` agent steps per round, reads success / engagement / force after each one and
+counts an episode's length in sim steps. The history (`history.*`, the outermost wrapper) runs on
+every env step, so at a chunk boundary it holds the previous `history.length` env steps (a
+one-env-step stride, the chunk's own sub-steps included). Limitations, each refused with an error:
+demo transitions (`scripts/make_demo_transitions.py`: one transition per demo step; a chunk's would
+need the demo's `k` consecutive residuals against the base's chunk, the summed reward and
+chunk-aligned pieces, and Policy Decorator trains without demos), `hybrid.enabled`, and
+`critic_action: full` with `action_frame: ee` (the EE frame turns between sub-steps, so the executed
+offsets after the first are not determined by the chunk's observation; the absolute frame is fine).
+
+**The critic state is the residual's own.** The wrapper always publishes a critic observation group
+(it creates one for an env that has none, such as FurnitureBench): the env's critic state or the
+base's normalized observation, then the base action(s) normalized (the chunk's `k` with
+`steps_per_chunk: k`), then the EE offset (`accumulate`) and the history. It does not change with
+`residual.normalize_observation` / `observe_base_action`, which shape only what the actor sees, and
+the learner hands it to the critic-action transform, so the critics always see what was executed.
+
+```yaml
+residual:
+  enabled: true
+  steps_per_chunk: 4
+  base_action_horizon: 4
+  base_inference_steps: 4
+  normalize_observation: false
+  observe_base_action: true
+  critic_action: full
+```
 
 **Watching a residual run learn.** `scripts/watch_residual_eval.py` runs beside training in
 its own Isaac process, with the eval conditions it is given (`--eval_config`, required). It evaluates the
@@ -347,6 +466,16 @@ python scripts/publish_stochastic_eval.py <residual run dir>
 | `residual.action_scale` | list[float] \| null | `null` | largest correction per step, `[x, y, z, yaw]` in m and rad; `null`: `residual.action_scale_fraction` of the base's normalized action range per dim |
 | `residual.action_scale_fraction` | float | `0.1` | with `action_scale: null`, the correction bound as a fraction of the base's normalized action range: `fraction * (max - min) / 2` of its training actions per dim (robust-rearrangement's `action_scale: 0.1`; Policy Decorator's alpha, 0.1–0.3 typical) |
 | `residual.demo_actions_beyond_scale` | str | `store` | demo transitions (`scripts/make_demo_transitions.py`) whose residual action `(a_demo - a_base) / scale` is beyond the policy's [-1, 1] in any dim: `store` them exactly (the critic takes the action as an input) or `drop` them. Never clipped. Part of the demo file's fingerprint |
+| `residual.critic_action` | str | `residual` | what SAC's critics take as the action: `residual`, the agent's `r` in [-1, 1] (the base action reaches them through their critic state), or `full`, the executed pose action normalized as the base's, `normalize(a_base) + scale / half_range * r` = `normalize(a_base + scale * r)` (`my_project/residual.py` `residual_critic_action`, registered in `scripts/train.py`'s `setup()`), built from the critic state, never from the agent's observation. With `steps_per_chunk: k`, the chunk's `k` executed actions, `normalize(a_base_j) + gain * r_j` per row, step-major (`k x A`; not with `action_frame: ee`). A demo transition's is then exactly `normalize(a_demo)`, however far beyond the residual's reach. The actor still outputs `r`. SAC only |
+| `residual.action_frame` | str | `absolute` | what the agent's action is (`my_project/residual_ee.py`). `absolute`: `scale * r` added to every dim of the base action (the fields above). `ee` (furniture FBAbs tasks; no `hybrid`, no `residual.action_scale`): `r = [r_pos 3, r_rot 3]` (6; the gripper is the base's), a correction of the base's target in the end-effector's frame -- `ee_pos_scale * R_ee r_pos` along the EE's axes (`R_ee` the observation's), a rotation `Exp(ee_rot_scale_deg * r_rot)` about the target's own axes -- re-sent every step. The env still gets the 10-d absolute target; the agent is announced a 6-d action in [-1, 1]. `critic_action: full` gives the critics the executed correction -- the offset after the step, in the EE frame over its reach, 6 like `r`; with `normalize(a_base)` in their input it fixes the target sent -- rebuilt from the observation with the same map, and `scripts/make_demo_transitions.py` stores the `r` that reproduces each demo action |
+| `residual.ee_pos_scale` | float | `0.01` | m per unit `r_pos` per step (`action_frame: ee`) |
+| `residual.ee_rot_scale_deg` | float | `5.0` | deg per unit `r_rot` per step (`action_frame: ee`) |
+| `residual.accumulate` | bool | `false` | `action_frame: ee`: each step's correction adds to an offset that goes back to zero whenever the base starts a new chunk (every `model.actor.action_horizon` steps, and at an episode's start), instead of being re-sent every step; the offset before the step (`R_ee^T o` and `log(O)`, each over its largest reach in one chunk) is appended to the agent's observation and the critic's state after `normalize(a_base)` |
+| `residual.steps_per_chunk` | int | `1` | env steps per agent action (Policy Decorator's residual chunk). `1`: the agent acts every env step. `k > 1`: once every `k` env steps with a `(k x A)`-wide action in [-1, 1], step-major; the wrapper runs the `k` env steps (each the base's own next action plus its row), sums the rewards, ORs the dones, returns the last observation; `residual/*` metrics are per-sub-step means. The base's executed `action_horizon` must be a multiple of `k`, so the observed base action is the chunk's `k` actions (step-major) and `critic_action: full` is the chunk's `k` executed actions. No `hybrid`, no demo transitions. See "Chunk-level residual" above |
+| `residual.base_action_horizon` | int \| null | `null` | override the base's executed `model.actor.action_horizon` (Policy Decorator: 4); `null`: the base run's own. At most the base's `horizon`; with `steps_per_chunk` a multiple of it. Also applied by `scripts/make_demo_transitions.py` |
+| `residual.base_inference_steps` | int \| null | `null` | override the base's DDIM `model.actor.inference_steps` (Policy Decorator: 4); `null`: the base run's own. At most the base's `num_diffusion_iters` |
+| `residual.normalize_observation` | bool | `true` | the **agent** gets the base's observation normalized with the base's normalizer, its near-constant columns widened; `false`: the raw observation as the env produces it (Policy Decorator's). The base action part, when observed, stays `normalize(a_base)`. The critic state is not affected (`residual.critic_state`: always normalized). Part of the demo file's fingerprint |
+| `residual.observe_base_action` | bool | `true` | append `normalize(a_base)` (with `steps_per_chunk: k`, the chunk's `k` base actions normalized, step-major; and, with `accumulate`, the offset) to the **agent's** observation; `false`: the agent sees the observation alone (Policy Decorator's `actor_input: obs`). The critic state always holds the base action(s), so `critic_action: full` works either way. Part of the demo file's fingerprint |
 
 **The critic is asymmetric.** Forge gives the env a critic state (`task.cfg.state_order`: true
 peg and hole poses, joint positions, gains, ...), so SAC's critics train on that 65-d state
@@ -362,8 +491,14 @@ recorded):
 
 * observations: `residual_observation` of the recorded policy observation and the base's own
   action (the frozen base run on the recorded observations, its chunk clock starting at the
-  demo's first frame), plus the `HistoryBuffer` when `history.enabled` — the same code the
-  env wrappers run; critic states: the recorded critic state with the same appendices;
+  demo's first frame, `residual.base_action_horizon` / `base_inference_steps` applied, the
+  `normalize_observation` / `observe_base_action` flags honoured), plus the `HistoryBuffer` when
+  `history.enabled` — the same code the env wrappers run; critic states: the residual wrapper's
+  critic state (`residual.critic_state`): the recorded critic state or, for an env without a critic
+  group (FurnitureBench), the base's observation normalized (widened), then the normalized base
+  action, the EE offset and the history, whatever the agent observes (at the flags' defaults that
+  equals `observations` column for column). The file records the layout (`meta.critic_state_format`
+  3) and an older file is refused at env build;
 * actions: `(a_demo - a_base) / scale`, exactly — never clipped. Where it is beyond the squashed
   policy's [-1, 1] (the demo more than one scale from the base), `residual.demo_actions_beyond_scale`
   stores the transition as it is (default) or drops it; the script prints how often, per dim;
@@ -385,7 +520,10 @@ is exact from the session start in order, but one demo replayed alone drifts (ep
 leaves the recording; with the residual's base drawing from the same RNG, the first demo is
 the exact one. The file is written to `sac.demo_transitions` with a fingerprint
 (task cfg up to cosmetic fields, `action`, `residual`, `history`, `hybrid`); building the env for a run
-whose fingerprint differs raises, naming the differences. Only training is checked: a config
+whose fingerprint differs raises, naming the differences, and so does a file made before the agent's
+observation widened the base's near-constant columns (`meta.agent_obs_narrow_range`, below) or, without
+a critic group, before its states were the agent's observations (`meta.critic_state_format`). A chunked
+residual (`residual.steps_per_chunk` > 1) has no demo transitions: the conversion refuses it. Only training is checked: a config
 rebuilt from a run (eval, debug, the watcher) never reads the file, and its `task.cfg` is the
 live env's, holding the action terms the env derived at `gym.make`. A new observation layout or base is
 a re-conversion, not new demos:
@@ -551,6 +689,7 @@ package's SAC / PPO pipeline (no `VmapEnsemble`). There is no `model.critic` gro
 | `model.actor.warm_start` | bool | `true` | start each chunk from the previous chunk's unexecuted tail, noised to `warm_start_timestep` (the reference); `false`: pure noise |
 | `model.actor.warm_start_timestep` | int | `50` | noise level the warm start re-noises to; in [0, `num_diffusion_iters`) |
 | `model.actor.obs_clip` | float | `3.0` | normalized observations are clipped to ±`obs_clip` when acting (never in training) |
+| `model.actor.action_frame` | str | `absolute` | what the network predicts. `absolute`: the dataset's / env's action as it is. `ee_at_obs` (FBAbs tasks on `action.abs`; `my_project/models/action_frame.py`): every step of the chunk as `[dpos 3 (m), drot 3 (axis-angle, rad), gripper]` in the frame of the EE pose the observation reports (its `ee_pos` / `ee_rot6d`), unscaled -- all the chunk's steps share that one pose, so zeros are that pose. The labels are built per training window from `action.abs`; when acting the chunk becomes the env's absolute targets with the observation's pose, and the warm start's unexecuted tail is re-expressed at the next observation. The network and its action normalizer work on the 7-d action (the BC metric groups default to `pos` / `rot` / `gripper` on it); not with `bc.normalization: per_unit`; a residual refuses such a base |
 
 ### Fields for `model.architecture: diffusion_unet`
 
@@ -597,7 +736,9 @@ when `trainer.learner` is `diffusion_bc`.
 | `bc.rollout_progress` | bool | `false` | show each rollout's progress (a tqdm bar of episode steps out of `eval.num_rollouts` x the episode length; an episode that ends early adds its unused steps) and print its success rate when it ends |
 | `bc.max_hours` | float | `null` | stop after this many hours of wall-clock training (checked after each epoch, after its checkpoints); `null`: no limit |
 | `bc.save_only_best_ckpt` | bool | `false` | keep only `actor_chkpt_best_success_rate.pt`, on disk and in wandb: written at the first rollout, then overwritten only when a rollout beats the best success rate (no last, periodic or best-test-loss checkpoints); needs `bc.rollout_every` > 0 |
-| `bc.normalization` | str | `per_dim` | how obs and actions are scaled to [-1, 1] from the demos' min / max: `per_dim` gives every dim its own range (robust-rearrangement's); `per_unit` gives every dim of one physical unit one shared range, taken over the observation and the action together -- positions (EE, parts, obstacle, the action's target), rot6d, linear velocity, angular velocity, finger width, gripper command (`families.obs_units` / `action_units`) -- so near-constant dims stay near-constant; furniture FBAbs tasks only |
+| `bc.normalization` | str | `per_dim` | how obs and actions are scaled to [-1, 1] from the demos' min / max: `per_dim` gives every dim its own range (robust-rearrangement's); `per_unit` gives every dim of one physical unit one shared range, taken over the observation and the action together -- positions (EE, parts, obstacle, the action's target), rot6d, linear velocity, angular velocity, finger width, gripper command (`families.obs_units` / `action_units`) -- so near-constant dims stay near-constant; furniture FBAbs tasks only. Either way a dim (unit) whose range is below `MinMaxNormalizer.NARROW_RANGE` (1e-4: constant up to float noise) gets `[mid - 1, mid + 1]` and maps to ~0, never noise stretched over [-1, 1] |
+| `bc.normalize_action` | bool | `true` | `false`: the action is used as it is, never rescaled -- its range is fixed at [-1, 1] (`MinMaxNormalizer.fit_identity`), so normalizing is the identity and a zero output is the zero action (the FBRel interface: hold the EE). Every demo action must lie in [-1, 1] (training raises naming the dims that leave it) unless `model.actor.clip_sample` is off, when it may take any value. Not with `bc.normalization: per_unit` |
+| `bc.symmetric_action` | bool | `false` | with `bc.normalize_action`: each action dim scaled by `s = max(\|min\|, \|max\|)` of the demos' actions (`MinMaxNormalizer.fit_symmetric`: stats `[-s, s]`, normalizing is `x / s`) instead of min-max, so a zero action stays a zero output -- for `model.actor.action_frame: ee_at_obs`, the observation's pose -- while every dim still spans [-1, 1]. Not with `bc.normalize_action: false` or `bc.normalization: per_unit` |
 | `bc.early_stop_patience` | float | `.inf` | evals without a new best EMA test loss before stopping; `.inf` never stops |
 | `bc.early_stop_smooth` | float | `0.9` | EMA factor of the early stopper's test loss |
 | `bc.show_waypoints` | bool | `false` | eval / debug: draw each env's predicted chunk as spheres in the scene (viewer and recorded videos): the waypoint executing now yellow, the rest of the executed `action_horizon` green while still to come and grey once done, the remaining tail (never executed) red |

@@ -8,10 +8,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from my_project import residual_demos
 from my_project import wrappers
+from my_project.cfg import ResidualCfg
 
 
 class FakeNormalizer:
@@ -20,7 +22,7 @@ class FakeNormalizer:
     action_min = torch.full((2,), -1.0)
     action_max = torch.full((2,), 1.0)
 
-    def normalize(self, x, key):
+    def normalize(self, x, key, widen=False):  # a [-1, 1] range: widening never applies
         return x
 
     def denormalize(self, x, key):
@@ -31,6 +33,7 @@ class FakePolicy:
     """A base whose chunk is ``[k, k+1, ...]`` x (1, 0) for the k-th chunk it plans per demo."""
 
     obs_dim, action_dim, horizon, action_horizon, n_obs_steps = 3, 2, 4, 2, 1
+    net_action_dim = action_dim  # the absolute frame: the network's action is the env's
     device = torch.device("cpu")
     cfg = SimpleNamespace(obs_clip=10.0, warm_start=False)
     normalizer = FakeNormalizer()
@@ -43,6 +46,12 @@ class FakePolicy:
 
     def parameters(self):
         return []
+
+    def reframe(self, naction, obs_old, obs_new):  # DiffusionPolicy's, for action_frame: absolute
+        return naction
+
+    def to_env(self, chunk, obs):
+        return chunk
 
     def _denoise(self, nobs, start):
         k = float(self.calls)
@@ -70,7 +79,7 @@ def frames(length: int, offset: float) -> dict:
     }
 
 
-def run(monkeypatch, history: bool, beyond: str = "store", hybrid=None):
+def run(monkeypatch, history: bool, beyond: str = "store", hybrid=None, steps_per_chunk: int = 1):
     seen = []
 
     def fake_rewards(env_cfg, **kw):
@@ -83,7 +92,7 @@ def run(monkeypatch, history: bool, beyond: str = "store", hybrid=None):
     cfg = SimpleNamespace(
         task_name="Isaac-Forge-Fake",
         task_cfg=SimpleNamespace(),
-        residual=SimpleNamespace(action_scale=[0.5, 1.0], action_scale_fraction=0.1, demo_actions_beyond_scale=beyond),
+        residual=ResidualCfg(action_scale=[0.5, 1.0], action_scale_fraction=0.1, demo_actions_beyond_scale=beyond, steps_per_chunk=steps_per_chunk),
         history=SimpleNamespace(enabled=history, terms=["a"], length=2),
         hybrid=hybrid or SimpleNamespace(enabled=False),
     )
@@ -111,7 +120,9 @@ def test_transitions_line_up_with_the_frames_and_the_base_runs_on_its_own_clock(
     assert out["actions"][:4, 0].tolist() == [1.0, -1.0, -199.0, -201.0]
     assert torch.all(out["actions"][:, 1] == 3.0)
     assert stats["beyond_scale_fraction"] == 1.0 and stats["beyond_scale_fraction_per_dim"][1] == 1.0
-    assert not out["terminated"].any() and not out["truncated"].any()
+    # a Forge demo never terminates: its last row is truncated (it bootstraps), marking its end
+    assert not out["terminated"].any()
+    assert out["truncated"].flatten().tolist() == [False, False, False, True, False, True]
     # the reward of step t reads the state after it (frame t + 1) and the action of step t
     assert seen[0]["held_pos"][:, 0].tolist() == [1.0, 2.0, 3.0, 4.0]
     assert seen[0]["actions"][:, 0].tolist() == [0.0, 1.0, 2.0, 3.0]
@@ -146,3 +157,8 @@ def test_with_hybrid_the_demos_choose_position_and_no_force(monkeypatch):
     assert bool((out["actions"][:, pose + 3 :] == 0.0).all())
     # the stats describe the pose correction only
     assert len(stats["max_abs_action"]) == pose
+
+
+def test_a_chunked_residual_has_no_demo_transitions(monkeypatch):
+    with pytest.raises(NotImplementedError, match="steps_per_chunk 2"):
+        run(monkeypatch, history=False, steps_per_chunk=2)

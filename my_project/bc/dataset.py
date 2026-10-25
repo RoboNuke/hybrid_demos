@@ -11,6 +11,10 @@ observation history and the ``horizon`` actions start at the last observed frame
 are padded by repeating their first frame (``n_obs_steps - 1`` before) and last frame
 (``action_horizon - 1`` after), so every frame gets to be "now".
 
+With ``model.actor.action_frame: ee_at_obs`` a window's ``horizon`` actions are its absolute
+targets expressed in the EE frame of its last observed frame (``action_frame.to_ee_frame``): one
+label per window, not per frame, so they are built here (:func:`window_actions`).
+
 ``bc.num_demos`` training episodes are drawn at random, and the test set is drawn from the
 episodes left over (see :func:`split_episodes`). Changed from the reference: the train / test
 split is **by episode**. The reference split the windows, so neighbouring windows of one
@@ -178,9 +182,11 @@ class WindowedSplit:
         horizon: int,
         action_horizon: int,
         device,
+        action_frame: str = "absolute",
     ) -> None:
         if len(episodes) == 0:
             raise ValueError("a split needs at least one episode")
+        self.action_frame = action_frame
         self.n_obs_steps = n_obs_steps
         self.horizon = horizon
         self.sequence_length = n_obs_steps + horizon - 1
@@ -207,24 +213,50 @@ class WindowedSplit:
 
         with torch.no_grad():
             self._obs = normalizer.normalize(demos.obs.to(self.device), "obs")
-            self._action = normalizer.normalize(demos.action.to(self.device), "action")
+            # per frame for the absolute action; per window (below) for the EE frame
+            self._action = normalizer.normalize(demos.action.to(self.device), "action") if action_frame == "absolute" else None
         self._steps = torch.arange(self.sequence_length, device=self.device)
+        self._normalizer = normalizer
+        #: ``action_frame: ee_at_obs``: every window's label, raw units (normalized per batch, so
+        #: the trainer can fit the action stats on them after building the splits)
+        self.window_actions: Optional[torch.Tensor] = None
+        if action_frame != "absolute":
+            with torch.no_grad():
+                self.window_actions = self.ee_frame_actions(demos, torch.arange(len(self), device=self.device))
         self._order: Optional[torch.Tensor] = None
         self._cursor = 0
 
     def __len__(self) -> int:
         return int(self._start.numel())
 
-    def windows(self, index: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """``obs`` ``(B, n_obs_steps, obs_dim)`` and ``action`` ``(B, horizon, A)``, normalized."""
+    def _frames(self, index: torch.Tensor) -> torch.Tensor:
+        """``(B, sequence_length)`` dataset rows of the windows ``index``, edge-padded."""
         within = (self._offset[index, None] + self._steps).clamp(min=0)
         within = torch.minimum(within, self._length[index, None] - 1)
-        frames = self._start[index, None] + within
+        return self._start[index, None] + within
+
+    def ee_frame_actions(self, demos: "Demonstrations", index: torch.Tensor) -> torch.Tensor:
+        """The windows' absolute actions in the EE frame of each window's last observed frame,
+        raw units: ``(B, horizon, 7)`` (``action_frame: ee_at_obs``)."""
+        from my_project.models.action_frame import ee_pose, to_ee_frame
+
+        frames = self._frames(index)
         first_action = self.n_obs_steps - 1
-        return {
-            "obs": self._obs[frames[:, : self.n_obs_steps]],
-            "action": self._action[frames[:, first_action : first_action + self.horizon]],
-        }
+        obs = demos.obs.to(self.device)[frames[:, first_action]]
+        p, R = ee_pose(obs.double())
+        actions = demos.action.to(self.device)[frames[:, first_action : first_action + self.horizon]]
+        return to_ee_frame(p, R, actions.double()).float()
+
+    def windows(self, index: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """``obs`` ``(B, n_obs_steps, obs_dim)`` and ``action`` ``(B, horizon, A)``, normalized
+        (``A``: the network's action, 7 for ``action_frame: ee_at_obs``)."""
+        frames = self._frames(index)
+        first_action = self.n_obs_steps - 1
+        if self.window_actions is not None:
+            action = self._normalizer.normalize(self.window_actions[index], "action")
+        else:
+            action = self._action[frames[:, first_action : first_action + self.horizon]]
+        return {"obs": self._obs[frames[:, : self.n_obs_steps]], "action": action}
 
     def batch(self, batch_size: int) -> Dict[str, torch.Tensor]:
         """The next ``batch_size`` windows of a shuffled pass; reshuffles when one ends."""

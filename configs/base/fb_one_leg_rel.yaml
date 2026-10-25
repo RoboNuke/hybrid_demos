@@ -1,0 +1,11 @@
+# FurnitureBench one_leg with the observation and the action relative to the end-effector:
+# Robonuke_Furniture_Bench's Isaac-Furniture-OneLeg-FBRel-ResiP-v0, fb_one_leg.yaml's task (ResiP's sim
+# and the physics physic_aligned_evalHappy_a0 trained with) with only the interface changed: observation
+# 55 (the EE's velocities in its own frame, the finger separation, every part and the front obstacle
+# relative to the EE pose; no EE pose), action 10 ([dpos 3, drot6d 6, gripper] in the EE's frame, sent
+# on as the absolute target p_ee + R_ee dpos, R_ee R(drot6d)). Switching a config between the two
+# interfaces is its base (and the dataset columns: observation.state_rel / action.rel).
+base: fb_one_leg.yaml
+
+task:
+  name: Isaac-Furniture-OneLeg-FBRel-ResiP-v0

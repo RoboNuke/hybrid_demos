@@ -28,6 +28,10 @@ assembly or a part out of bounds) each env's FIRST episode of the round counts: 
 env's ``success`` termination firing in it, plus the share that ended out of bounds and the
 mean episode length; there is no force or engagement.
 
+With ``residual.steps_per_chunk: k > 1`` one ``env.step`` is ``k`` sim steps: a round is
+``ceil(steps / k)`` agent steps, the success / engagement / force reads happen after each agent
+step (every ``k`` sim steps), and an episode's length counts sim steps (the wrapper's ``counted``).
+
 Logged to its own wandb run (``<run name>_eval``, the training run's project and group), at
 ``step`` = the checkpoint's step: ``eval/success_rate``, ``eval/engaged_rate``,
 ``eval/force_mean`` (mean over episodes of each episode's mean force), ``eval/force_max_mean``,
@@ -120,15 +124,22 @@ def _numbered_checkpoints(directory: Path) -> Dict[int, Path]:
 
 
 def _find_residual(env: Any):
-    from my_project.residual import ResidualPolicyWrapper
+    from my_project.residual import find_residual
 
-    node, seen = env, set()
-    while node is not None and id(node) not in seen:
-        seen.add(id(node))
-        if isinstance(node, ResidualPolicyWrapper):
-            return node
-        node = getattr(node, "_env", None) or getattr(node, "env", None)
-    raise RuntimeError("the env has no ResidualPolicyWrapper: is residual.enabled set in the run's config?")
+    return find_residual(env)
+
+
+def _residual_or_none(env: Any):
+    """The env's residual wrapper, or None: ``evaluate`` also runs a plain env (one env.step, one sim step)."""
+    try:
+        return _find_residual(env)
+    except RuntimeError:
+        return None
+
+
+def _agent_steps(sim_steps: int, steps_per_chunk: int) -> int:
+    """Agent steps that cover ``sim_steps`` sim steps when one agent step is ``steps_per_chunk`` of them."""
+    return -(-int(sim_steps) // int(steps_per_chunk))
 
 
 def _round_bar(total: int, label: str):
@@ -152,6 +163,7 @@ def evaluate(env: Any, policy: Any, seed: int, label: str = "eval") -> Dict[str,
 
     u = env.unwrapped
     n = int(u.num_envs)
+    residual = _residual_or_none(env)
     # every generator the reset draws from (Isaac Sim's set_seed), so every evaluation really
     # gets the same starts; torch.manual_seed alone does not reach NumPy, Warp or Replicator
     reseed_env(env, seed)
@@ -162,7 +174,8 @@ def evaluate(env: Any, policy: Any, seed: int, label: str = "eval") -> Dict[str,
     engaged = torch.zeros(n, dtype=torch.bool, device=u.device)
     force_sum = torch.zeros(n, device=u.device)
     force_max = torch.zeros(n, device=u.device)
-    steps = int(u.max_episode_length) - 1  # Forge ends an episode one step before the limit
+    # Forge ends an episode one step before the limit; one env.step is steps_per_chunk sim steps
+    steps = _agent_steps(int(u.max_episode_length) - 1, residual.steps_per_chunk if residual is not None else 1)
     bar = _round_bar(steps, label)
     for _ in range(steps):
         with torch.no_grad():
@@ -202,6 +215,7 @@ def evaluate_furniture(env: Any, policy: Any, seed: int, label: str = "eval") ->
 
     u = env.unwrapped
     n = int(u.num_envs)
+    residual = _residual_or_none(env)
     reseed_env(env, seed)
     observations, states = force_env_reset(env)
     if hasattr(policy, "reset"):
@@ -211,13 +225,16 @@ def evaluate_furniture(env: Any, policy: Any, seed: int, label: str = "eval") ->
     success = torch.zeros(n, dtype=torch.bool, device=u.device)
     out = torch.zeros(n, dtype=torch.bool, device=u.device)
     length = torch.zeros(n, dtype=torch.long, device=u.device)
-    bar = _round_bar(int(u.max_episode_length), label)
-    for _ in range(int(u.max_episode_length)):
+    # one env.step is the residual's steps_per_chunk sim steps
+    steps = _agent_steps(int(u.max_episode_length), residual.steps_per_chunk if residual is not None else 1)
+    bar = _round_bar(steps, label)
+    for _ in range(steps):
         with torch.no_grad():
             actions = policy(observations, states)
         observations, _, terminated, truncated, _ = env.step(actions)
         states = env_states(env)
-        length += alive.long()
+        # the episode's sim steps in this agent step (the residual's counted sub-steps; 1 without one)
+        length += alive.long() * (residual.counted.to(length.device) if residual is not None else 1)
         # a term counts only on the step it ends the episode: Isaac Lab's term buffer keeps the
         # last ended episode's terms through a reset, so at a round's start it still holds the
         # previous round's successes

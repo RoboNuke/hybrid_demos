@@ -27,6 +27,9 @@ def furniture_layout(monkeypatch):
     cfg.FB_OBS_LAYOUT = FB_LAYOUT
     cfg.FBABS_OBS_LAYOUT = (("ee_pos", 3), ("ee_rot6d", 6), ("ee_pos_vel", 3), ("ee_ori_vel", 3), ("gripper_width", 1), ("parts_poses", 45))
     cfg.FBABS_RESIP_OBS_LAYOUT = cfg.FBABS_OBS_LAYOUT[:-1] + (("parts_poses_b", 45), ("obstacle_xy", 2))
+    cfg.FBREL_RESIP_OBS_LAYOUT = (
+        ("ee_pos_vel", 3), ("ee_ori_vel", 3), ("gripper_width", 1), ("parts_poses_ee", 45), ("obstacle_pos_ee", 3)
+    )
 
     def fbabs_obs_layout(env_cfg):  # the real one's rule: the policy group's obstacle term
         policy = getattr(getattr(env_cfg, "observations", None), "policy", None)
@@ -40,6 +43,33 @@ def furniture_layout(monkeypatch):
 
 
 # ---------------------------------------------------------------------- families
+def test_the_relative_interface_is_its_own_task_with_the_abs_action_layout(furniture_layout):
+    rel, ab = "Isaac-Furniture-OneLeg-FBRel-ResiP-v0", "Isaac-Furniture-OneLeg-FBAbs-ResiP-v0"
+    assert families.family_of(rel) == families.FURNITURE and families.is_rel(rel) and not families.is_abs(rel)
+    assert not families.is_rel(ab) and not families.is_rel("Isaac-Furniture-OneLeg-FB-v0")
+    # [dpos 3, drot6d 6, gripper]: the absolute target's dims, so metrics and checks read it the same way
+    assert families.action_layout(rel) == families.action_layout(ab) and families.action_layout(rel)["dim"] == 10
+    assert families.action_metric_groups(rel) == {"pos": [0, 1, 2], "rot": [3, 4, 5, 6, 7, 8], "gripper": [9]}
+    layout = families.obs_layout(rel, None)
+    assert [n for n, _ in layout] == ["ee_pos_vel", "ee_ori_vel", "gripper_width", "parts_poses_ee", "obstacle_pos_ee"]
+    assert sum(w for _, w in layout) == 55
+    assert not families.observes_obstacle(rel)  # the FBAbs rule, unchanged (the importer handles FBRel itself)
+
+
+def test_the_delta_interface_is_the_resip_observation_with_a_7_wide_action(furniture_layout):
+    delta, ab = "Isaac-Furniture-OneLeg-FBDelta-ResiP-v0", "Isaac-Furniture-OneLeg-FBAbs-ResiP-v0"
+    assert families.family_of(delta) == families.FURNITURE and families.is_delta(delta)
+    assert not families.is_abs(delta) and not families.is_rel(delta) and not families.is_delta(ab)
+    # [dpos 3, drot 3 (axis-angle), gripper]
+    assert families.action_layout(delta) == {"dim": 7, "pos": slice(0, 3), "axis_angle": slice(3, 6), "gripper": 6}
+    assert families.action_metric_groups(delta) == {"pos": [0, 1, 2], "rot": [3, 4, 5], "gripper": [6]}
+    # the observation is the FBAbs ResiP task's, read from the env cfg as for that task
+    resip_cfg = SimpleNamespace(observations=SimpleNamespace(policy=SimpleNamespace(obstacle_xy=object())))
+    assert families.obs_layout(delta, resip_cfg) == families.obs_layout(ab, resip_cfg)
+    assert sum(w for _, w in families.obs_layout(delta, resip_cfg)) == 63
+    assert not families.observes_obstacle(delta)  # the FBAbs rule, unchanged (the importer handles FBDelta itself)
+
+
 def test_the_family_comes_from_the_task_name():
     assert families.family_of("Isaac-Furniture-OneLeg-FB-v0") == families.FURNITURE
     assert families.family_of("Isaac-Forge-PegInsert-Direct-v0") == families.FORGE
@@ -173,7 +203,7 @@ class FakeNormalizer:
     action_min = torch.full((8,), -1.0)
     action_max = torch.ones(8)
 
-    def normalize(self, x, key):
+    def normalize(self, x, key, widen=False):  # a [-1, 1] range: widening never applies
         return x
 
     def denormalize(self, x, key):
@@ -200,10 +230,10 @@ def furniture_frames(length: int, success: bool, offset: float = 0.0):
     state = t[:, None].expand(-1, 49).clone()
     reward = torch.zeros(length, 1)
     if success:
-        reward[-1] = 1.0
-    return {
+        reward[-1] = 1.0  # the recording's own reward: the conversion no longer reads it
+    return {  # no "critic": the env has no critic group
         "state": state,
-        "critic": state,
+        "next_state": state[1:],
         "action": torch.full((length, 8), 0.5),
         "reward": reward,
         "transitions": length,
@@ -211,7 +241,33 @@ def furniture_frames(length: int, success: bool, offset: float = 0.0):
     }
 
 
-def test_furniture_demos_yield_a_transition_per_action_with_the_recorded_reward(monkeypatch, furniture_layout):
+def newly_assembled(env):  # stand-ins for the env's reward terms: the conversion reads their names
+    raise AssertionError("never called")
+
+
+def each_step(env):
+    raise AssertionError("never called")
+
+
+def furniture_rewards_cfg(step_weight: float = 0.0, **extra):
+    """The env cfg's ``rewards``: the assembly at weight 1, the per-step term at ``step_weight``."""
+    return SimpleNamespace(
+        assembled=SimpleNamespace(func=newly_assembled, weight=1.0),
+        step=SimpleNamespace(func=each_step, weight=step_weight),
+        **extra,
+    )
+
+
+class DoublingNormalizer(FakeNormalizer):
+    """Not the identity on the observation: tells the agent's normalized observation from the raw one."""
+
+    def normalize(self, x, key, widen=False):
+        return 2.0 * x if key == "obs" else x
+
+
+def _convert_furniture(monkeypatch, rewards, assembled_from=None, normalizer=None, **residual):
+    """Demo 0 (4 steps, a success in its recording) and demo 1 (3 steps, a failure). The env's
+    assembled test is stood in: demo 0's leg tests assembled after step ``assembled_from[0]`` on."""
     from my_project.models import diffusion_policy
 
     class ChunkedBase:
@@ -221,25 +277,137 @@ def test_furniture_demos_yield_a_transition_per_action_with_the_recorded_reward(
         def actions(self, obs, fresh):
             return torch.zeros(self.n, 8)
 
+    assembled_from = {0.0: 2} if assembled_from is None else assembled_from
+
+    def assembled(cfg, frames):
+        steps, start = frames["transitions"], assembled_from.get(float(frames["state"][0, 0]))
+        now = torch.zeros(steps, 1, dtype=torch.bool)
+        if start is not None:
+            now[start:] = True
+        return now
+
     monkeypatch.setattr(diffusion_policy, "ChunkedBase", ChunkedBase)
     monkeypatch.setattr(residual_demos, "forge_rewards", lambda *a, **k: pytest.fail("Forge's reward must not run on furniture demos"))
+    monkeypatch.setattr(residual_demos, "assembled_after_each_step", assembled)
     cfg = SimpleNamespace(
         task_name="Isaac-Furniture-OneLeg-FB-v0",
-        task_cfg=SimpleNamespace(sim=SimpleNamespace(dt=1 / 120), decimation=12),
-        residual=SimpleNamespace(action_scale=[0.5] * 8, action_scale_fraction=0.1, demo_actions_beyond_scale="store"),
+        task_cfg=SimpleNamespace(sim=SimpleNamespace(dt=1 / 120), decimation=12, rewards=rewards),
+        residual=ResidualCfg(action_scale=[0.5] * 8, action_scale_fraction=0.1, demo_actions_beyond_scale="store", **residual),
         history=SimpleNamespace(enabled=False),
         hybrid=SimpleNamespace(enabled=False),
     )
     episodes = [{"episode_index": 0}, {"episode_index": 1}]
-    out, stats = residual_demos.convert(cfg, FakePolicy(), episodes, [furniture_frames(4, True), furniture_frames(3, False, 100.0)], torch.device("cpu"))
-    assert stats["transitions"] == 4 + 3 and stats["demo_steps"] == 7
-    assert out["observations"][:4, 0].tolist() == [0.0, 1.0, 2.0, 3.0]
-    assert out["next_observations"][:4, 0].tolist() == [1.0, 2.0, 3.0, 4.0]  # the last action's next state too
-    # the recorded 1 at assembly, paid as the env pays it: x step_dt (0.1 at 10 Hz)
-    assert out["rewards"].flatten().tolist() == pytest.approx([0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0])
-    assert out["terminated"].flatten().tolist() == [False, False, False, True, False, False, False]
+    policy = FakePolicy()
+    if normalizer is not None:
+        policy.normalizer = normalizer
+    return residual_demos.convert(cfg, policy, episodes, [furniture_frames(4, True), furniture_frames(3, False, 100.0)], torch.device("cpu"))
+
+
+def test_without_a_critic_group_the_states_are_the_agents_observations(monkeypatch, furniture_layout):
+    """The env's critic state is the agent's observation there: the file's states must be the same
+    normalized columns, not the raw recorded observation (the bug this guards against)."""
+    out, _ = _convert_furniture(monkeypatch, furniture_rewards_cfg(), normalizer=DoublingNormalizer())
+    assert out["observations"][:3, 0].tolist() == [0.0, 2.0, 4.0]  # normalized: 2 x the recorded frame
+    assert torch.equal(out["states"], out["observations"]) and torch.equal(out["next_states"], out["next_observations"])
+    assert out["states"].shape == (6, 49 + 8)
+
+
+def test_the_demo_critic_state_does_not_depend_on_what_the_agent_observes(monkeypatch, furniture_layout):
+    """residual.normalize_observation / observe_base_action shape the agent's observation only: the file's
+    states (the critic state) are the normalized observation and the base action whatever they say."""
+    ref, _ = _convert_furniture(monkeypatch, furniture_rewards_cfg(), normalizer=DoublingNormalizer())
+    out, _ = _convert_furniture(monkeypatch, furniture_rewards_cfg(), normalizer=DoublingNormalizer(),
+                                normalize_observation=False, observe_base_action=False)
+    assert torch.equal(out["states"], ref["states"]) and torch.equal(out["next_states"], ref["next_states"])
+    assert out["observations"].shape == (6, 49) and out["observations"][:3, 0].tolist() == [0.0, 1.0, 2.0]  # raw, no base action
+
+
+def test_furniture_demos_end_where_the_env_would_with_the_reward_the_terms_define(monkeypatch, furniture_layout):
+    """Demo 0's leg tests assembled after step 2: the env ends the episode there, so step 2 is
+    terminal and pays the assembly's weight (1: no step_dt, which the package divides out), and
+    the recording's step 3 is dropped. Demo 1 never assembles and keeps every step."""
+    out, stats = _convert_furniture(monkeypatch, furniture_rewards_cfg())
+    assert stats["transitions"] == 3 + 3 and stats["demo_steps"] == 6
+    assert stats["rows_after_env_success"] == 1
+    assert out["observations"][:3, 0].tolist() == [0.0, 1.0, 2.0]
+    assert out["next_observations"][:3, 0].tolist() == [1.0, 2.0, 3.0]
+    assert out["rewards"].flatten().tolist() == pytest.approx([0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+    assert out["terminated"].flatten().tolist() == [False, False, True, False, False, False]
+    assert out["truncated"].flatten().tolist() == [False, False, False, False, False, True]  # demo 1's end
     assert torch.all(out["actions"] == 1.0)  # (0.5 - 0) / 0.5
-    assert stats["success_rate"] == 0.5 and out["states"].shape == (7, 49 + 8)
+    assert stats["success_rate"] == 0.5 and out["states"].shape == (6, 49 + 8)
+
+
+def test_the_per_step_term_reaches_the_demo_rewards_as_the_env_pays_it(monkeypatch, furniture_layout):
+    """rewards.step at weight -1: every step costs 1, the success step pays both."""
+    out, stats = _convert_furniture(monkeypatch, furniture_rewards_cfg(step_weight=-1.0))
+    assert out["rewards"].flatten().tolist() == pytest.approx([-1.0, -1.0, 0.0, -1.0, -1.0, -1.0])
+    assert out["terminated"].flatten().tolist() == [False, False, True, False, False, False]
+    assert stats["success_rate"] == 0.5  # the env's verdict, not a positive total
+
+
+def test_a_recorded_success_the_envs_test_never_ends_is_refused(monkeypatch, furniture_layout):
+    with pytest.raises(ValueError, match="never passes"):
+        _convert_furniture(monkeypatch, furniture_rewards_cfg(), assembled_from={})
+
+
+def test_a_weighted_reward_term_the_conversion_cannot_recompute_is_refused(monkeypatch, furniture_layout):
+    def keypoint_distance(env):
+        raise AssertionError("never called")
+
+    unset = furniture_rewards_cfg(shaping=None, dense=SimpleNamespace(func=keypoint_distance, weight=0.0))
+    _convert_furniture(monkeypatch, unset)  # unset and zero-weight terms pay nothing, online too
+    weighted = furniture_rewards_cfg(dense=SimpleNamespace(func=keypoint_distance, weight=0.5))
+    with pytest.raises(ValueError, match="rewards.dense .*keypoint_distance"):
+        _convert_furniture(monkeypatch, weighted)
+
+
+def _rot6d_module(monkeypatch):
+    """The env repo's rot6d (pure torch) under its own name, without importing its Isaac Lab
+    package (``furniture_lab.tasks.assembly.mdp`` imports isaaclab)."""
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(importlib.util.find_spec("furniture_lab").submodule_search_locations[0])
+    spec = importlib.util.spec_from_file_location("furniture_lab.tasks.assembly.mdp.rot6d", root / "tasks/assembly/mdp/rot6d.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for name in ("furniture_lab.tasks.assembly", "furniture_lab.tasks.assembly.mdp"):
+        monkeypatch.setitem(sys.modules, name, ModuleType(name))
+    monkeypatch.setitem(sys.modules, "furniture_lab.tasks.assembly.mdp.rot6d", module)
+    return module
+
+
+def test_the_envs_assembled_test_runs_on_the_recorded_part_poses(monkeypatch):
+    """The leg at one of the top's assembled poses (in the top's OBJ frame) tests assembled; 2 cm
+    off it, or tilted 30 degrees (cos 0.87 < ori_bound 0.94), it does not."""
+    import math
+
+    from furniture_lab.tasks.furniture import square_table as st
+
+    rot6d = _rot6d_module(monkeypatch)
+    fcfg = SimpleNamespace(success_mode="soft", part_names=list(st.PART_NAMES), task="one_leg",
+                           assembled_pos_threshold=(0.010, 0.005, 0.010), ori_bound=0.94)
+    target = torch.as_tensor(st.rel_pose_targets(st.pairs_for("one_leg"), "obj")[0, 0], dtype=torch.float32)
+    top = torch.tensor([0.5, 0.1, 0.02])
+    identity = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+    half = math.radians(30) / 2
+    tilted = rot6d.quat_to_rot6d(torch.tensor([[math.cos(half), math.sin(half), 0.0, 0.0]]))[0]
+
+    def state(leg_pos, leg_rot):
+        poses = [torch.cat((top, identity))] + [torch.cat((torch.zeros(3), identity))] * 3 + [torch.cat((leg_pos, leg_rot))]
+        return torch.cat([torch.zeros(16)] + poses)  # 16 leading dims, then the 5 part poses
+
+    states = torch.stack([
+        state(top + target, identity),
+        state(top + target + torch.tensor([0.02, 0.0, 0.0]), identity),
+        state(top + target, tilted),
+    ])
+    out = residual_demos.furniture_pairs_assembled(SimpleNamespace(furniture=fcfg), slice(16, 16 + 45), states)
+    assert out.flatten().tolist() == [True, False, False]
+    with pytest.raises(ValueError, match="'soft' only"):
+        strict = SimpleNamespace(**{**vars(fcfg), "success_mode": "strict"})
+        residual_demos.furniture_pairs_assembled(SimpleNamespace(furniture=strict), slice(16, 61), states)
 
 
 def test_the_episode_limit_is_the_managers_full_length_on_furniture():
@@ -312,7 +480,7 @@ def test_the_residual_steps_the_absolute_rot6d_action_and_logs_its_rotation(monk
     monkeypatch.setattr(residual_mod, "load_base_policy", lambda *a, **k: policy.eval())
     cfg = SimpleNamespace(
         task_name="Isaac-Furniture-OneLeg-FBAbs-ResiP-v0",
-        residual=SimpleNamespace(base_run="r", base_checkpoint="c", action_scale=None, action_scale_fraction=0.1),
+        residual=ResidualCfg(base_run="r", base_checkpoint="c", action_scale=None, action_scale_fraction=0.1),
         hybrid=SimpleNamespace(extra_dims=0, enabled=False),
     )
     env = residual_mod.ResidualPolicyWrapper(FakeAbsEnv(), cfg)

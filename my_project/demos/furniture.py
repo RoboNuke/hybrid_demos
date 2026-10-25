@@ -20,6 +20,21 @@ action, is dropped, as the recorder drops it):
   ``observation.state_abs`` (61: every orientation as rot6d, parts in the tag frame; 63 for
   the ResiP task: every pose in the robot-base frame, the front obstacle's x, y appended) and ``action.abs`` (10: the
   target pose the delta commanded, ``[ee_pos + dpos, rot6d(R_ee R_dq), gripper]``);
+* for the interface relative to the end-effector (``Isaac-Furniture-OneLeg-FBRel-ResiP-v0``), also
+  derived from those frames (``furniture_lab.demos.ee_relative_states`` / ``ee_relative_actions``,
+  the NumPy twins of the task's terms): ``observation.state_rel`` (55: the EE's velocities in its
+  frame, the finger separation, every part and the front obstacle relative to the EE pose, no EE
+  pose) and ``action.rel`` (10: ``action.abs``'s target relative to that frame's EE pose, in its
+  frame, ``[dpos, drot, gripper]``, the pose part in [-1, 1]: ``dpos`` in units of
+  ``demos.REL_POS_LIMIT`` (0.12 m), ``drot`` a rot6d minus the identity's, clipped as the task's
+  term clips), with ``observation.next_state_rel``; ``observation.state_abs``
+  is then the ResiP layout (63) they are built from;
+* for the action relative to the end-effector on the ResiP observation
+  (``Isaac-Furniture-OneLeg-FBDelta-ResiP-v0``), also ``action.delta`` (7: ``action.abs``'s target
+  relative to that frame's EE pose, in its frame, ``[dpos, drot, gripper]``, the pose part in
+  [-1, 1]: ``dpos`` in units of ``demos.REL_POS_LIMIT`` (0.12 m), ``drot`` an axis-angle in rad,
+  clipped as the task's term clips; ``furniture_lab.demos.ee_delta_actions``);
+  ``observation.state_abs`` is then the ResiP layout (63), the task's observation;
 * raw material, never trained on by default: ``observation.joint_positions`` (7),
   ``observation.next_state`` (49) / ``observation.next_state_abs`` (61) (the frame after --
   so transitions need no neighbour lookup), ``reward`` (1), ``skill`` (1).
@@ -40,13 +55,17 @@ import numpy as np
 
 from .writer import DemoWriter
 
-__all__ = ["STATE_KEYS", "STATE_DIM", "ACTION_DIM", "ABS_STATE_DIM", "ABS_ACTION_DIM", "find_demos", "load_pkl", "state_vector", "import_demos"]
+__all__ = ["STATE_KEYS", "STATE_DIM", "ACTION_DIM", "ABS_STATE_DIM", "ABS_ACTION_DIM", "REL_STATE_DIM", "REL_ACTION_DIM", "DELTA_ACTION_DIM", "find_demos", "load_pkl", "state_vector", "import_demos"]
 
 #: FurnitureBench's DEFAULT_STATE_OBS, in order (furniture_bench/envs/observation.py)
 STATE_KEYS = ("ee_pos", "ee_quat", "ee_pos_vel", "ee_ori_vel", "gripper_width", "parts_poses")
 STATE_DIM = 3 + 4 + 3 + 3 + 1 + 35
 ACTION_DIM = 8
 ABS_STATE_DIM, ABS_ACTION_DIM = 61, 10
+#: the ``-FBRel-ResiP-v0`` observation and action (``FBREL_RESIP_OBS_LAYOUT`` / ``FBREL_ACTION_DIM``)
+REL_STATE_DIM, REL_ACTION_DIM = 55, 10
+#: the ``-FBDelta-ResiP-v0`` action (``FBDELTA_ACTION_DIM``)
+DELTA_ACTION_DIM = 7
 #: the front obstacle's base-frame ``[x, y]`` the ResiP task appends to ``observation.state_abs``
 OBSTACLE_DIM = 2
 CONTROL_HZ = 20.0  # FurnitureSim's env rate, the collector's too (physics 1/120 x 6)
@@ -95,9 +114,12 @@ def import_demos(
     For the ResiP FBAbs task (``families.observes_obstacle``) ``observation.state_abs`` also
     is the ResiP layout instead (63: the parts in the robot-base frame, then the front obstacle's
     x, y; ``furniture_lab.demos.fb_abs_frames``)."""
-    from my_project.families import observes_obstacle
+    from my_project.families import is_delta, is_rel, observes_obstacle
 
-    obstacle = observes_obstacle(task_name)
+    rel, delta = is_rel(task_name), is_delta(task_name)
+    # the relative columns are built from the ResiP observation, the obstacle included; the delta
+    # task observes it as it is
+    obstacle = observes_obstacle(task_name) or rel or delta
     abs_dim = ABS_STATE_DIM + (OBSTACLE_DIM if obstacle else 0)
     files = list(files) if files is not None else find_demos(src, include_failures)
     if max_demos is not None:
@@ -118,6 +140,24 @@ def import_demos(
             "observation.state_abs": "[ee_pos 3, ee_rot6d 6, ee_pos_vel 3, ee_ori_vel 3, gripper_width 1, parts 5 x [pos 3, rot6d 6]"
             + (" (robot-base frame), obstacle_front [x, y] (robot-base frame)]" if obstacle else " (AprilTag frame)]"),
             "action.abs": "[goal_pos 3 (m, robot frame), goal_rot6d 6, gripper (<0 open)]",
+            **(
+                {
+                    "observation.state_rel": "[ee_pos_vel 3, ee_ori_vel 3 (EE frame), gripper_width 1, parts 5 x "
+                    "[pos 3, rot6d 6] (relative to the EE pose, EE frame), obstacle_front point (x, y, 0) (EE frame)]",
+                    "action.rel": "[dpos 3 (EE frame, units of 0.12 m), drot 6 (EE frame, rot6d minus the identity's), "
+                    "gripper (<0 open)], the pose part clipped to [-1, 1]: action.abs's target relative to the frame's EE pose",
+                }
+                if rel
+                else {}
+            ),
+            **(
+                {
+                    "action.delta": "[dpos 3 (EE frame, units of 0.12 m), drot 3 (EE frame, axis-angle, rad), "
+                    "gripper (<0 open)], the pose part clipped to [-1, 1]: action.abs's target relative to the frame's EE pose",
+                }
+                if delta
+                else {}
+            ),
         },
     )
     already = {e.get("source") for e in writer.episodes}
@@ -140,6 +180,19 @@ def import_demos(
         states_abs, acts_abs = fb_abs_frames(d, obstacle=obstacle)
         if states_abs.shape != (T + 1, abs_dim) or acts_abs.shape != (T, ABS_ACTION_DIM):
             raise ValueError(f"{path}: abs frames {states_abs.shape} / {acts_abs.shape}, expected {(T + 1, abs_dim)} / {(T, ABS_ACTION_DIM)}")
+        if rel:
+            from furniture_lab.demos import ee_relative_actions, ee_relative_states
+
+            states_rel = ee_relative_states(states_abs)
+            acts_rel = ee_relative_actions(states_abs[:T], acts_abs)  # each relative to its own frame's EE pose
+            if states_rel.shape != (T + 1, REL_STATE_DIM) or acts_rel.shape != (T, REL_ACTION_DIM):
+                raise ValueError(f"{path}: rel frames {states_rel.shape} / {acts_rel.shape}")
+        if delta:
+            from furniture_lab.demos import ee_delta_actions
+
+            acts_delta = ee_delta_actions(states_abs[:T], acts_abs)  # each relative to its own frame's EE pose
+            if acts_delta.shape != (T, DELTA_ACTION_DIM):
+                raise ValueError(f"{path}: delta actions {acts_delta.shape}, expected {(T, DELTA_ACTION_DIM)}")
         rewards = np.asarray([float(_np(r)[0]) for r in d.get("rewards", [0.0] * T)], dtype=np.float32)
         skills = np.asarray([float(_np(s)[0]) for s in d.get("skills", [0.0] * T)], dtype=np.float32)
         writer.start()
@@ -153,6 +206,16 @@ def import_demos(
                     "observation.state_abs": states_abs[t],
                     "action.abs": acts_abs[t],
                     "observation.next_state_abs": states_abs[t + 1],
+                    **(
+                        {
+                            "observation.state_rel": states_rel[t],
+                            "action.rel": acts_rel[t],
+                            "observation.next_state_rel": states_rel[t + 1],
+                        }
+                        if rel
+                        else {}
+                    ),
+                    **({"action.delta": acts_delta[t]} if delta else {}),
                     "reward": rewards[t],
                     "skill": skills[t],
                 }

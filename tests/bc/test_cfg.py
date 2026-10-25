@@ -112,11 +112,28 @@ def test_no_field_is_configured_twice():
         ("model.actor.obs_clip=0", "obs_clip"),
         ("model.actor.warm_start_timestep=100", "warm_start_timestep"),
         ("model.actor.inference_steps=200", "inference_steps"),
+        ("model.actor.action_frame=world", "action_frame"),
+        # the EE frame reads its pose from an FBAbs observation: not this fake task's
+        ("model.actor.action_frame=ee_at_obs", "action_frame"),
     ],
 )
 def test_bad_values_raise_naming_the_field(tmp_path, override, match):
     with pytest.raises(ValueError, match=match):
         load(tmp_path, override)
+
+
+def test_a_symmetric_action_scale_needs_a_scaled_per_dim_action(tmp_path):
+    assert load(tmp_path).bc.symmetric_action is False  # the default: min-max, as before
+    with pytest.raises(ValueError, match="symmetric_action"):
+        load(tmp_path, "bc.symmetric_action=true", "bc.normalize_action=false")
+    with pytest.raises(ValueError, match="symmetric_action"):
+        load(tmp_path, "bc.symmetric_action=true", "bc.normalization=per_unit")
+
+
+def test_an_unnormalized_action_cannot_share_a_per_unit_range(tmp_path):
+    assert load(tmp_path).bc.normalize_action is True  # the default: the demos' min / max, as before
+    with pytest.raises(ValueError, match="normalize_action"):
+        load(tmp_path, "bc.normalization=per_unit", "bc.normalize_action=false")
 
 
 def test_bc_needs_a_dataset(tmp_path):

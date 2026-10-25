@@ -1,0 +1,52 @@
+# Policy Decorator's SAC residual on physic_aligned_evalHappy_a0 (_foundation.yaml): their 3 x 256 ReLU actor and
+# critics (0.01 output init, log std tanh-bounded to [-20, 2]), 16 envs, 4M global chunk steps (250k per env), a
+# checkpoint every 50k global steps (their eval interval). The env's step reward is -0.25 so a 4-step chunk sums
+# to their -1 per decision (the assembled reward stays 1).
+#   python scripts/train.py --config configs/experiments/policy_dec_sac_replica/residual_policy_dec_sac_replica.yaml --headless
+#   python scripts/watch_residual_eval.py --run runs/hybrid_demo_furniture_residual/policy_dec_sac_replica/policy_dec_sac_replica_a0 \
+#       --eval_config configs/eval/residual_watch_furniture.yaml --headless
+base: _foundation.yaml
+
+wandb:
+  project: hybrid_demo_furniture_residual
+  group: policy_dec_sac_replica
+
+task:
+  cfg:
+    scene:
+      num_envs: 16
+    rewards:
+      step:
+        # -1 per 4-step chunk
+        weight: -0.25
+
+trainer:
+  learner: sac
+  # agent (chunk) steps per env: 4M global / 16 envs
+  total_timesteps: 250000
+  # every 50k global steps
+  checkpoint_interval: 3125
+
+residual:
+  enabled: true
+
+model:
+  architecture: mlp
+  actor:
+    hidden_size: 256
+    num_layers: 3
+    activation: ReLU
+    init: orthogonal
+    output_init_scale: 0.01
+    use_state_dependent_std: true
+    learn_std: true
+    log_std_bound: tanh
+    min_log_std: -20.0
+    max_log_std: 2.0
+    squash: true
+  critic:
+    hidden_size: 256
+    num_layers: 3
+    activation: ReLU
+    init: orthogonal
+    output_init_scale: 0.01

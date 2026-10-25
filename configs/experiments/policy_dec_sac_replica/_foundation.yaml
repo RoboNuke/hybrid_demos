@@ -1,0 +1,68 @@
+# policy_dec_sac_replica (the leading _ keeps launch_train from submitting this file on its own): Policy
+# Decorator's recipe (policy_decorator online/pi_dec_diffusion_maniskill2.py, its defaults) on our frozen base
+# physic_aligned_evalHappy_a0 and our ResiP-replica sim (base/fb_one_leg.yaml), to see what their method does on
+# this task: one residual decision per 4-step base chunk (a 4 x 10 action), the base executing 4 steps per plan
+# with 4 DDIM steps, the actor on the raw observation alone, SAC with 2 critics, gamma 0.97 per chunk, tau 0.01,
+# lr 1e-4, batch 1024, auto-tuned temperature (target -|A|), UTD 0.25 (16 gradient steps every 4 env steps on
+# 16 envs), 8000 global steps of uniform random residuals before learning, progressive exploration over 100k
+# global steps, -1 reward per chunk, no demos, no history, no observation normalization; the critics take the
+# executed chunk (base + residual), their critic_input "sum".
+base: ../../base/fb_one_leg.yaml
+
+experiment:
+  seed: 42
+
+wandb:
+  entity: hur
+
+residual:
+  base_project: hybrid_demo_furniture
+  base_run_name: physic_aligned_evalHappy_a0
+  # res_scale 0.1
+  action_scale: null
+  action_scale_fraction: 0.1
+  # their actor_input "obs": the raw observation alone, no base action, no normalization
+  normalize_observation: false
+  observe_base_action: false
+  # their critic_input "sum": the executed chunk, base + residual (the critic state carries the base chunk)
+  critic_action: full
+  # act_horizon 4, ddim-steps 4: one residual chunk per base plan
+  steps_per_chunk: 4
+  base_action_horizon: 4
+  base_inference_steps: 4
+
+sac:
+  discount_factor: 0.97
+  polyak: 0.01
+  batch_size: 1024
+  actor_lr: 1.0e-4
+  critic_lr: 1.0e-4
+  entropy_lr: 1.0e-4
+  learn_entropy: true
+  initial_entropy_value: 0.2
+  # -|A| with the 4 x 10 chunk action
+  target_entropy: -40.0
+  entropy_loss_form: log_alpha
+  backup_entropy: true
+  entropy_observations: current
+  num_critics: 2
+  critic_subset: 2
+  actor_q_reduction: min
+  policy_delay: 1
+  # UTD 0.25: 16 gradient steps every 4 env steps x 16 envs = 64 transitions
+  gradient_steps: 16
+  update_every: 4
+  # learning_starts 8000 global steps / 16 envs, uniform random residuals meanwhile
+  random_timesteps: 500
+  learning_starts: 500
+  n_step: 1
+  grad_norm_clip: 50.0
+  normalize_observations: false
+  demo_transitions: null
+  demo_sampling_end: 0
+  # prog_explore 100k global steps / 16 envs, the mask redrawn every step
+  progressive_exploration_steps: 6250
+
+memory:
+  # every transition of the run: 250k agent steps x 16 envs
+  memory_size: 4000000
