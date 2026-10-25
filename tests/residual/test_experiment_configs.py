@@ -351,3 +351,11 @@ def test_the_policy_decorator_replica_is_their_defaults_on_our_base():
     assert c["trainer.total_timesteps"] * c["task.cfg.scene.num_envs"] == 4_000_000
     assert c["memory.memory_size"] == c["trainer.total_timesteps"] * c["task.cfg.scene.num_envs"]
     assert c.get("history.enabled", False) is False
+
+
+def test_the_policy_decorator_replica_validates():
+    """critic_action: full with an actor that does not observe the base action: the critic state carries it."""
+    c = merged(CONFIGS / "experiments" / "policy_dec_sac_replica" / "residual_policy_dec_sac_replica.yaml")
+    rc = ResidualCfg(**{k: v for k, v in c["residual"].items() if k in ResidualCfg.__dataclass_fields__})
+    rc.validate(None)  # the residual's own rules (the env-dependent ones need a loaded task)
+    assert rc.critic_action == "full" and rc.observe_base_action is False and rc.steps_per_chunk == 4

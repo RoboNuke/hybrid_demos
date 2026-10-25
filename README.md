@@ -376,10 +376,10 @@ runs the `k` env steps itself: sub-step `j` sends the base's own next action plu
 dones ORed, and the observation after the last sub-step returned. The base re-plans only on a chunk
 boundary: its executed `action_horizon` must be a multiple of `k` (checked when the base loads;
 Policy Decorator's recipe sets `base_action_horizon: 4`, `base_inference_steps: 4`). So at the chunk
-boundary the base's next `k` actions are known: with `observe_base_action: true` the observation's
-base-action block is those `k` actions normalized, step-major (`k x 10` on the absolute frame: the very
-rows the residual rows are added to; for `k = 1` today's single `normalize(a_base)`), the critic state
-gets the same block, and `critic_action: full` gives the critics the chunk's executed actions,
+boundary the base's next `k` actions are known: the critic state always holds those `k` actions
+normalized, step-major (`k x 10` on the absolute frame: the very rows the residual rows are added to;
+for `k = 1` today's single `normalize(a_base)`), the agent's observation too with
+`observe_base_action: true`, and `critic_action: full` gives the critics the chunk's executed actions,
 `normalize(a_base_j) + gain * r_j` per row, concatenated step-major (`k x 10`, the agent's action
 width). For an env whose episode ends inside the chunk, the rows past its end describe actions its
 episode never took (the sub-steps below). Every env steps
@@ -415,7 +415,7 @@ residual:
   base_action_horizon: 4
   base_inference_steps: 4
   normalize_observation: false
-  observe_base_action: true
+  observe_base_action: false
   critic_action: full
 ```
 

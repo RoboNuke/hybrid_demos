@@ -359,11 +359,6 @@ class ResidualCfg:
                 "supported: the EE frame turns between the chunk's sub-steps, so the executed offsets after the "
                 "first sub-step are not determined by the chunk's observation"
             )
-        if self.critic_action == "full" and not self.observe_base_action:
-            raise ValueError(
-                "residual.critic_action: full reads normalize(a_base) from the agent's observation: it needs "
-                "residual.observe_base_action: true"
-            )
         if not self.enabled or cfg is None:
             return
         if self.steps_per_chunk > 1 and cfg.hybrid.enabled:

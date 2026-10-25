@@ -274,8 +274,8 @@ def test_the_chunk_config_is_validated():
     ResidualCfg(steps_per_chunk=2, critic_action="full").validate(None)
     with pytest.raises(NotImplementedError, match="action_frame: ee"):
         ResidualCfg(steps_per_chunk=2, critic_action="full", action_frame="ee").validate(None)
-    with pytest.raises(ValueError, match="observe_base_action"):
-        ResidualCfg(critic_action="full", observe_base_action=False).validate(None)
+    # the critics read the base action from their own state: full is fine whatever the agent observes
+    ResidualCfg(critic_action="full", observe_base_action=False).validate(None)
     ResidualCfg(steps_per_chunk=4, base_action_horizon=4, base_inference_steps=4, observe_base_action=False, normalize_observation=False).validate(None)
     hybrid = SimpleNamespace(hybrid=SimpleNamespace(enabled=True))
     with pytest.raises(NotImplementedError, match="hybrid"):
