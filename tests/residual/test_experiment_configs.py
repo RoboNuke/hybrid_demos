@@ -341,7 +341,8 @@ def test_the_policy_decorator_replica_is_their_defaults_on_our_base():
     # UTD 0.25: 16 updates per 4 env steps x 16 envs
     assert c["sac.gradient_steps"] / (c["sac.update_every"] * c["task.cfg.scene.num_envs"]) == 0.25
     assert (c["sac.random_timesteps"], c["sac.learning_starts"]) == (8000 // 16, 8000 // 16)
-    assert c["sac.progressive_exploration_steps"] == 100_000 // 16 and c["sac.grad_norm_clip"] == 50.0
+    # theirs is 100k global steps (6250 per env); ours ramps over 50k per env, for 5x longer episodes
+    assert c["sac.progressive_exploration_steps"] == 50_000 and c["sac.grad_norm_clip"] == 50.0
     assert c["sac.demo_transitions"] is None and c["sac.demo_sampling_end"] == 0 and c["sac.normalize_observations"] is False
     assert c["task.cfg.rewards.step.weight"] * 4 == -1.0 and "task.cfg.rewards.assembled.weight" not in c  # assembled stays the task's 1.0
     assert (c["model.actor.hidden_size"], c["model.actor.num_layers"], c["model.actor.activation"]) == (256, 3, "ReLU")

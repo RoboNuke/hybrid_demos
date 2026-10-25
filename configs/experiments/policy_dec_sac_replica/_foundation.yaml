@@ -4,8 +4,8 @@
 # this task: one residual decision per 4-step base chunk (a 4 x 10 action), the base executing 4 steps per plan
 # with 4 DDIM steps, the actor on the raw observation alone, SAC with 2 critics, gamma 0.97 per chunk, tau 0.01,
 # lr 1e-4, batch 1024, auto-tuned temperature (target -|A|), UTD 0.25 (16 gradient steps every 4 env steps on
-# 16 envs), 8000 global steps of uniform random residuals before learning, progressive exploration over 100k
-# global steps, -1 reward per chunk, no demos, no history, no observation normalization; the critics take the
+# 16 envs), 8000 global steps of uniform random residuals before learning, progressive exploration over 50k
+# chunk steps per env (theirs 100k global; our episodes are 5x longer), -1 reward per chunk, no demos, no history, no observation normalization; the critics take the
 # executed chunk (base + residual), their critic_input "sum".
 base: ../../base/fb_one_leg.yaml
 
@@ -60,8 +60,9 @@ sac:
   normalize_observations: false
   demo_transitions: null
   demo_sampling_end: 0
-  # prog_explore 100k global steps / 16 envs, the mask redrawn every step
-  progressive_exploration_steps: 6250
+  # the residual ramped in over 50k chunk steps per env (200 episodes per env), the mask redrawn every step;
+  # Policy Decorator's 100k global steps (6250 here) spans only 25 of our 250-chunk episodes
+  progressive_exploration_steps: 50000
 
 memory:
   # every transition of the run: 250k agent steps x 16 envs
