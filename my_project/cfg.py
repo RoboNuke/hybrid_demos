@@ -290,10 +290,17 @@ class ResidualCfg:
     #: base action, every dim (above). "ee" (furniture FBAbs tasks): ``r = [r_pos 3, r_rot 3]``, a correction
     #: of the base's target in the end-effector's frame -- ``ee_pos_scale * R_ee r_pos`` along the EE's axes,
     #: a rotation ``Exp(ee_rot_scale * r_rot)`` about the target's own -- the gripper the base's
+    #: "target" (furniture FBAbs tasks, ``my_project/residual_target.py``): Policy Decorator's meaning of
+    #: ``r`` on an absolute base, ``r = [r_pos 3, r_rot 3, r_grip 1]`` per step: a relative pose
+    #: ``(ee_pos_scale * r_pos, Exp(ee_rot_scale * r_rot))`` composed on the base's target in the target's own
+    #: frame, ``[p_base + R_base dp, rot6d(R_base dR)]``, and ``scale_grip * r_grip`` added to its gripper (the
+    #: absolute frame's gripper scale). ManiSkill2's ``pd_ee_delta_pose`` with ``res_scale`` 0.1 is 0.01 m and
+    #: 0.01 rad (0.573 deg) per unit, about the EE's axes (here the base target's, which the chunk's critic
+    #: action can rebuild)
     action_frame: str = "absolute"
-    #: m per unit ``r_pos`` per step (action_frame: ee)
+    #: m per unit ``r_pos`` per step (action_frame: ee / target)
     ee_pos_scale: float = 0.01
-    #: deg per unit ``r_rot`` per step (action_frame: ee)
+    #: deg per unit ``r_rot`` per step (action_frame: ee / target)
     ee_rot_scale_deg: float = 5.0
     #: action_frame: ee: add each step's correction to an offset that resets to zero whenever the base
     #: starts a new chunk, instead of re-sending it every step; the offset (in the EE frame, over its
@@ -321,10 +328,36 @@ class ResidualCfg:
     #: agent sees the observation alone (Policy Decorator's ``actor_input: obs``), which rules
     #: out ``critic_action: full`` (it reads the base action there). Part of the demo fingerprint
     observe_base_action: bool = True
+    #: what the SAC critics observe. "residual": the residual's own critic state (``critic_state``: the env's,
+    #: or the normalized base observation, then the base action(s), normalized). "observation": the agent's
+    #: own observation, no critic state (Policy Decorator's critic); ``critic_action: full`` then reads the
+    #: base action(s) from per-transition side inputs the critics never see (``infos["residual_base"]`` /
+    #: ``["next_residual_base"]``, the learner's ``side_inputs``). Furniture envs (no critic group of their
+    #: own), not with ``action_frame: ee`` or demo transitions
+    critic_state: str = "residual"
+    #: Policy Decorator's command form for the base action the agent observes and the executed action the
+    #: critics take (``action_frame: target``, ``critic_state: observation``; ``my_project/residual_target.py``
+    #: ``EERelative``): each of the chunk's absolute targets against the EE pose of the chunk's observation, in the
+    #: EE's frame -- ``[R_ee^T (p - p_ee) / ee_relative_pos_unit, log(R_ee^T R) / ee_relative_rot_unit,
+    #: normalize(gripper)]``, 7 per step (ManiSkill2's ``pd_ee_delta_pose``, ``frame: ee``: 0.1 m and 0.1 rad per
+    #: unit). The observed base action (``observe_base_action``) and the critics' ``full`` action are then the
+    #: same form, the agent's ``k x 7`` and the critics' ``k x 7``; the critic state stays the observation
+    #: without the base action (Policy Decorator's critic input). False: the normalized absolute form
+    ee_relative_actions: bool = False
+    ee_relative_pos_unit: float = 0.1
+    ee_relative_rot_unit: float = 0.1
+    #: one_leg's task phase (``furniture.track_phases``: corner, grasp, insert, screw) from which the residual acts:
+    #: an agent step whose observation's phase is earlier (or an episode-end code) runs the base alone, the agent's
+    #: action zeroed, and ``infos["residual_active"]`` (1 / 0 per env) says which steps used it (set
+    #: ``sac.executed_action_mask: residual_active`` so the memory stores the executed zeros, or ``sac.store_labels`` to
+    #: store only the phases it acts in). "insert": only after the leg is grasped. Train and eval alike. None: every step
+    active_from_phase: Optional[str] = None
 
     DEMO_ACTIONS_BEYOND_SCALE = ("store", "drop")
     CRITIC_ACTIONS = ("residual", "full")
-    ACTION_FRAMES = ("absolute", "ee")
+    ACTION_FRAMES = ("absolute", "ee", "target")
+    CRITIC_STATES = ("residual", "observation")
+    PHASES = ("corner", "grasp", "insert", "screw")
 
     def validate(self, cfg: Any) -> None:
         if self.critic_action not in self.CRITIC_ACTIONS:
@@ -338,6 +371,25 @@ class ResidualCfg:
             )
         if self.action_frame not in self.ACTION_FRAMES:
             raise ValueError(f"residual.action_frame must be one of {self.ACTION_FRAMES}, got {self.action_frame!r}")
+        if self.critic_state not in self.CRITIC_STATES:
+            raise ValueError(f"residual.critic_state must be one of {self.CRITIC_STATES}, got {self.critic_state!r}")
+        if self.active_from_phase is not None and self.active_from_phase not in self.PHASES:
+            raise ValueError(f"residual.active_from_phase must be one of {self.PHASES} or null, got {self.active_from_phase!r}")
+        if self.ee_relative_actions:
+            if self.action_frame != "target" or self.critic_state != "observation":
+                raise NotImplementedError(
+                    "residual.ee_relative_actions is built for action_frame: target with critic_state: observation"
+                )
+            if self.ee_relative_pos_unit <= 0 or self.ee_relative_rot_unit <= 0:
+                raise ValueError(
+                    f"residual.ee_relative_pos_unit and ee_relative_rot_unit must be > 0, got "
+                    f"{self.ee_relative_pos_unit}, {self.ee_relative_rot_unit}"
+                )
+        if self.critic_state == "observation" and self.action_frame == "ee":
+            raise NotImplementedError(
+                "residual.critic_state: observation with action_frame: ee: the EE-frame critic action reads the EE "
+                "pose and the offset from the residual's critic state"
+            )
         if self.ee_pos_scale <= 0 or self.ee_rot_scale_deg <= 0:
             raise ValueError(f"residual.ee_pos_scale and ee_rot_scale_deg must be > 0, got {self.ee_pos_scale}, {self.ee_rot_scale_deg}")
         if self.accumulate and self.action_frame != "ee":
@@ -366,15 +418,23 @@ class ResidualCfg:
                 f"residual.steps_per_chunk {self.steps_per_chunk} with hybrid.enabled is not supported: the chunk "
                 "action carries no per-step selection and force blocks"
             )
-        if self.action_frame == "ee":
+        if self.action_frame in ("ee", "target"):
             from my_project.families import is_abs
 
             if not is_abs(str(cfg.task_name)):
-                raise ValueError(f"residual.action_frame: ee corrects an FBAbs absolute target; got task {cfg.task_name!r}")
+                raise ValueError(f"residual.action_frame: {self.action_frame} corrects an FBAbs absolute target; got task {cfg.task_name!r}")
             if cfg.hybrid.enabled:
-                raise ValueError("residual.action_frame: ee has no hybrid blocks; switch hybrid off")
-            if self.action_scale is not None:
-                raise ValueError("residual.action_scale is the absolute frame's per-dim scale; action_frame: ee uses ee_pos_scale / ee_rot_scale_deg")
+                raise ValueError(f"residual.action_frame: {self.action_frame} has no hybrid blocks; switch hybrid off")
+        if self.action_frame == "ee" and self.action_scale is not None:
+            raise ValueError("residual.action_scale is the absolute frame's per-dim scale; action_frame: ee uses ee_pos_scale / ee_rot_scale_deg")
+        if self.critic_state == "observation":
+            from my_project.families import FORGE, family_of
+
+            if family_of(cfg.task_name) == FORGE:
+                raise NotImplementedError("residual.critic_state: observation: a Forge env has a critic state of its own")
+            sac = getattr(cfg, "sac", None)
+            if sac is not None and sac.demo_transitions:
+                raise ValueError("residual.critic_state: observation has no demo transitions: the conversion writes the residual's critic state")
         remote = self.base_project is not None or self.base_run_name is not None
         if bool(self.base_run) == remote:
             raise ValueError(

@@ -1,0 +1,16 @@
+# flashsac_pd + PARTS' actor terms (residual_flashsac_pd_parts.yaml) with the residual acting only after the leg is
+# grasped: from one_leg's insert phase on (track_phases), the base alone before. Only the transitions starting in the
+# insert and screw phases are stored (sac.store_labels): the memory holds nothing it does not train on.
+#   python scripts/train.py --config configs/experiments/flashsac_pd/residual_flashsac_pd_parts_grasp.yaml --headless
+base: residual_flashsac_pd_parts.yaml
+
+wandb:
+  group: flashsac_pd_parts_grasp
+
+residual:
+  active_from_phase: insert
+
+sac:
+  store_labels:
+    - insert
+    - screw

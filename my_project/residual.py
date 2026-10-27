@@ -52,7 +52,17 @@ import torch
 __all__ = [
     "load_base_policy", "base_run_dir", "base_source", "override_base", "ResidualPolicyWrapper", "residual_scale",
     "residual_observation", "critic_state", "find_residual", "full_action_transform", "residual_critic_action",
+    "SideInputTransform", "SIDE_INPUT",
 ]
+
+#: ``residual.critic_state: observation``: the per-transition side input (the learner's ``side_inputs``) the
+#: critics' executed action is rebuilt from -- this agent step's base action(s), normalized, step-major; the
+#: env publishes it and its ``next_`` value in ``infos`` every agent step
+SIDE_INPUT = "residual_base"
+
+#: one_leg's task phases in phase/id order (furniture_lab assembly/phases.py); ids from len(PHASE_NAMES) on are an
+#: episode's end codes
+PHASE_NAMES = ("corner", "grasp", "insert", "screw")
 
 
 def base_source(cfg: Any) -> str:
@@ -171,6 +181,59 @@ def full_action_transform(base_action_slice: slice, gain: torch.Tensor, steps_pe
     return transform
 
 
+class SideInputTransform:
+    """``(critic_inputs, r, side) -> critic action`` for ``residual.critic_action: full`` with
+    ``residual.critic_state: observation``: the critics observe the agent's observation and nothing else
+    (Policy Decorator's critic), and the executed action is rebuilt from the base action(s) the env publishes
+    as the side input :data:`SIDE_INPUT` (``side_inputs``, stored per transition, never a critic input).
+    ``absolute``: ``normalize(a_base) + gain * r`` per row (:func:`full_action_transform`'s), the agent's width.
+    ``target``: the chunk's executed targets ``normalize(TargetResidual.step(a_base_j, r_j))``, ``k x 10`` wide
+    (``critic_action_width``)."""
+
+    def __init__(self, normalizer, steps_per_chunk: int, base_width: int, gain=None, target=None, ee_rel=None) -> None:
+        self.normalizer = normalizer
+        self.k = int(steps_per_chunk)
+        self.base_width = int(base_width)
+        self.gain = None if gain is None else gain.repeat(self.k)
+        self.target = target
+        #: ``residual.ee_relative_actions``: the executed targets in the EE-relative command form, against the raw EE
+        #: pose the side input carries after the base actions (``k x 7``, the agent's own width)
+        self.ee_rel = ee_rel
+        if ee_rel is not None and target is None:
+            raise ValueError("ee_relative_actions rebuilds the target-frame residual's executed targets: it needs target")
+        self.side_inputs = {SIDE_INPUT: self.k * self.base_width + (9 if ee_rel is not None else 0)}
+        if ee_rel is not None:
+            self.critic_action_width = self.k * 7
+        elif target is not None:
+            self.critic_action_width = self.k * self.base_width
+
+    def __call__(self, critic_inputs: torch.Tensor, actions: torch.Tensor, side) -> torch.Tensor:
+        base_n = side[SIDE_INPUT]
+        if self.target is None:
+            width = self.k * self.base_width
+            return torch.cat((base_n + self.gain * actions[..., :width], actions[..., width:]), dim=-1)
+        n = actions.shape[0]
+        width = self.k * self.base_width
+        base = self.normalizer.denormalize(base_n[..., :width].reshape(n, self.k, self.base_width), "action")
+        sent = self.target.step(base, actions.reshape(n, self.k, -1))
+        if self.ee_rel is not None:
+            return self.ee_rel(sent, base_n[..., width:])
+        return self.normalizer.normalize(sent, "action").reshape(n, -1)
+
+
+def target_full_transform(base_slice: slice, normalizer, steps_per_chunk: int, base_width: int, target):
+    """``(critic_state, r) -> critic action`` for ``critic_action: full`` with ``action_frame: target`` and the
+    residual's critic state: :class:`SideInputTransform`'s target map, the base action(s) read at
+    ``base_slice`` of the critic state."""
+    inner = SideInputTransform(normalizer, steps_per_chunk, base_width, target=target)
+
+    def transform(critic: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        return inner(critic, actions, {SIDE_INPUT: critic[..., base_slice]})
+
+    transform.critic_action_width = inner.critic_action_width
+    return transform
+
+
 def find_residual(env: Any) -> "ResidualPolicyWrapper":
     """The :class:`ResidualPolicyWrapper` in ``env``'s wrapper chain (skrl's ``_env`` or gym's ``env``)."""
     node, seen = env, set()
@@ -190,6 +253,26 @@ def residual_critic_action(cfg: Any, env: Any):
     if rc is None or not rc.enabled or rc.critic_action != "full":
         return None
     wrapper = find_residual(env)
+    critic_mode, target = getattr(wrapper, "critic_mode", "residual"), getattr(wrapper, "target", None)
+    if critic_mode == "observation" or target is not None:
+        k, base_width = wrapper.steps_per_chunk, wrapper.base_action.shape[-1]
+    if critic_mode == "observation":
+        ee_rel = getattr(wrapper, "ee_rel", None)
+        print(
+            "[residual] critics observe the observation alone (residual.critic_state: observation) and take "
+            + ("the executed targets of the target-frame residual" if target is not None else "normalize(a_base) + gain * r")
+            + (f" in the EE-relative command form ({k} x 7)" if ee_rel is not None else "")
+            + f", the base action(s) a side input ({k} x {base_width}{' + the EE pose' if ee_rel is not None else ''})",
+            flush=True,
+        )
+        return SideInputTransform(
+            wrapper.normalizer, k, base_width,
+            gain=None if target is not None else wrapper.critic_action_gain, target=target,
+            ee_rel=getattr(wrapper, "ee_rel", None),
+        )
+    if target is not None:
+        print(f"[residual] critics take the executed targets of the target-frame residual, normalize(a_base) in their state", flush=True)
+        return target_full_transform(wrapper.critic_base_slice, wrapper.normalizer, k, base_width, target)
     if wrapper.ee is not None:
         if wrapper.steps_per_chunk > 1:
             raise NotImplementedError(
@@ -303,9 +386,38 @@ class ResidualPolicyWrapper(gym.Wrapper):
         #: those up to and including the one it ended on): what an episode's length counts
         self.counted = torch.ones((hooks.num_envs,), dtype=torch.long, device=hooks.device)
         base_width = self.steps_per_chunk * policy.action_dim
-        extra_width = base_width if self.observe_base else 0
+        #: residual.ee_relative_actions: the observed base action and the critics' action in Policy Decorator's
+        #: EE-relative command form (my_project/residual_target.py EERelative), 7 per step
+        self.ee_rel = None
+        if rc.ee_relative_actions:
+            from my_project.residual_target import EERelative
+
+            self.ee_rel = EERelative(rc.ee_relative_pos_unit, rc.ee_relative_rot_unit, policy.normalizer, self.layout["gripper"])
+        observed_width = self.steps_per_chunk * 7 if self.ee_rel is not None else base_width
+        extra_width = observed_width if self.observe_base else 0
         critic_extra = base_width
 
+        #: residual.critic_state: "residual" (the critic group below) or "observation" (none: the critics see the
+        #: agent's observation; the base action(s) go out as the side input SIDE_INPUT)
+        self.critic_mode = str(rc.critic_state)
+        if self.critic_mode == "observation" and self.env_critic:
+            raise NotImplementedError("residual.critic_state: observation on an env with a critic state of its own")
+        #: residual.active_from_phase: each env's task phase at its current observation (infos' eval_state phase/id),
+        #: and the first phase the residual acts in (None: always)
+        from my_project.cfg import ResidualCfg
+
+        self.active_from = None if rc.active_from_phase is None else ResidualCfg.PHASES.index(rc.active_from_phase)
+        self.phase = torch.zeros((hooks.num_envs,), dtype=torch.long, device=hooks.device)
+        #: the normalized base action(s) the agent's last observation was made with (the side input), then with
+        #: ee_relative_actions the raw EE pose (9) the chunk's targets are taken against
+        self.side = torch.zeros((hooks.num_envs, base_width + (9 if self.ee_rel is not None else 0)), device=hooks.device)
+        # residual.action_frame: target -- Policy Decorator's relative pose on the base's target (my_project/residual_target.py)
+        self.target = None
+        if rc.action_frame == "target":
+            from my_project.residual_target import TargetResidual
+
+            grip = self.layout["gripper"]
+            self.target = TargetResidual(rc.ee_pos_scale, rc.ee_rot_scale_deg, float(self.scale[grip]))
         # residual.action_frame: ee -- the agent's 6-d EE-frame correction (my_project/residual_ee.py)
         self.ee = None
         self.offset_slice = None
@@ -325,11 +437,20 @@ class ResidualPolicyWrapper(gym.Wrapper):
                 extra_width += OFFSET_WIDTH
                 critic_extra += OFFSET_WIDTH
             self.width = WIDTH
-        if self.ee is not None or self.steps_per_chunk > 1:
+        if self.target is not None:
+            from my_project.residual_target import WIDTH as TARGET_WIDTH
+
+            self.width = TARGET_WIDTH
+        if self.ee is not None or self.target is not None or self.steps_per_chunk > 1:
             hooks.set_agent_action_width(self.steps_per_chunk * self.width)
 
-        # the agent's observation gains what the flags ask for; the critic state is always the residual's own
-        if self.env_critic:
+        # the agent's observation gains what the flags ask for; the critic state is the residual's own, or none
+        if self.critic_mode == "observation":
+            if extra_width:
+                # the critics keep the observation without the agent's additions (Policy Decorator's critic input)
+                hooks.create_critic(obs_width)
+                hooks.widen(extra_width, 0)
+        elif self.env_critic:
             hooks.widen(extra_width, critic_extra)
         else:
             hooks.create_critic(obs_width + critic_extra)
@@ -346,7 +467,12 @@ class ResidualPolicyWrapper(gym.Wrapper):
             + (f"; {self.steps_per_chunk} env steps per agent action ({self.steps_per_chunk} x {self.width})"
                if self.steps_per_chunk > 1 else "")
             + ("" if self.normalize_obs else "; raw observation")
-            + ("" if self.observe_base else "; base action not observed"),
+            + ("" if self.observe_base else "; base action not observed")
+            + (f"; target-frame residual, {rc.ee_pos_scale} m / {rc.ee_rot_scale_deg} deg / {float(self.scale[self.layout['gripper']]):.5f} gripper per unit"
+               if self.target is not None else "")
+            + ("; critics observe the observation alone" if self.critic_mode == "observation" else "")
+            + (f"; base action and critic action EE-relative ({rc.ee_relative_pos_unit} m / {rc.ee_relative_rot_unit} rad per unit)"
+               if self.ee_rel is not None else ""),
             flush=True,
         )
 
@@ -360,10 +486,26 @@ class ResidualPolicyWrapper(gym.Wrapper):
         self.base_action = self.base.actions(obs, fresh)
         # the observed base action: this step's, or the chunk's k (at a chunk boundary, the next k)
         observed = self.base_action if self.steps_per_chunk == 1 else self.base.block(self.steps_per_chunk)
-        observations["policy"], _ = residual_observation(
-            self.normalizer, obs, observed, self.normalize_obs, self.observe_base
+        if self.ee_rel is not None:
+            part = self.normalizer.normalize(obs, "obs", widen=True) if self.normalize_obs else obs
+            block = observed.reshape(obs.shape[0], self.steps_per_chunk, -1)
+            observations["policy"] = torch.cat((part, self.ee_rel(block, obs[:, 0:9])), dim=-1) if self.observe_base else part
+            if self.critic_mode == "observation" and self.observe_base:
+                observations["critic"] = part
+        else:
+            observations["policy"], _ = residual_observation(
+                self.normalizer, obs, observed, self.normalize_obs, self.observe_base
+            )
+            if self.critic_mode == "observation" and self.observe_base:
+                part = self.normalizer.normalize(obs, "obs", widen=True) if self.normalize_obs else obs
+                observations["critic"] = part
+        self.side = self.normalizer.normalize(observed, "action").reshape(obs.shape[0], -1)
+        if self.ee_rel is not None:
+            self.side = torch.cat((self.side, obs[:, 0:9]), dim=-1)
+        critic = (
+            None if self.critic_mode == "observation"
+            else critic_state(self.normalizer, obs, observed, observations.get("critic") if self.env_critic else None)
         )
-        critic = critic_state(self.normalizer, obs, observed, observations.get("critic") if self.env_critic else None)
         if self.ee is not None:
             from my_project.residual_ee import ee_rotation
 
@@ -375,14 +517,30 @@ class ResidualPolicyWrapper(gym.Wrapper):
                 offset = self.ee.offset_obs(self.R_ee, self.offset_pos, self.offset_rot)
                 observations["policy"] = torch.cat((observations["policy"], offset), dim=-1)
                 critic = torch.cat((critic, offset), dim=-1)
-        observations["critic"] = critic
+        if critic is not None:
+            observations["critic"] = critic
         return observations
 
     def step(self, action):
         action = action.to(self.scale.device)
-        if self.steps_per_chunk > 1:
-            return self._step_chunk(action)
-        return self._step_once(action)
+        side = self.side
+        active = None
+        if self.active_from is not None:
+            # the residual acts only from phase active_from on (phase ids 4-6: an episode's end, never)
+            active = (self.phase >= self.active_from) & (self.phase < len(PHASE_NAMES))
+            action = action * active.unsqueeze(-1).to(action.dtype)
+        out = self._step_chunk(action) if self.steps_per_chunk > 1 else self._step_once(action)
+        if self.active_from is not None:
+            infos = out[4]
+            if not isinstance(infos, dict):
+                raise TypeError(f"residual.active_from_phase publishes residual_active in the env's infos dict; got {type(infos)}")
+            infos["residual_active"] = active.to(torch.float32)
+        if self.critic_mode == "observation":
+            infos = out[4]
+            if not isinstance(infos, dict):
+                raise TypeError(f"residual.critic_state: observation publishes its side input in the env's infos dict; got {type(infos)}")
+            infos[SIDE_INPUT], infos[f"next_{SIDE_INPUT}"] = side, self.side
+        return out
 
     def _step_chunk(self, action):
         """One agent step of ``steps_per_chunk`` env steps (the module docstring's **Chunks**)."""
@@ -437,6 +595,8 @@ class ResidualPolicyWrapper(gym.Wrapper):
         """One env step: ``action`` is the agent's per-step action (``width`` plus the hybrid dims)."""
         if self.ee is not None:
             return self._step_ee(action)
+        if self.target is not None:
+            return self._step_target(action)
         width = self.base_action.shape[-1]
         correction = self.scale * action[:, :width]
         base = self.base_action  # env.step's observation hook replaces it with the next step's
@@ -444,6 +604,7 @@ class ResidualPolicyWrapper(gym.Wrapper):
         if self.extra_dims:
             sent = torch.cat((sent, action[:, width:]), dim=-1)
         observations, rewards, terminated, truncated, infos = self.env.step(sent)
+        self._track_phase(infos)
         if isinstance(infos, dict):
             metrics = infos.setdefault("metrics_to_log", {})
             metrics["residual/position_mm"] = correction[:, self.layout["pos"]].norm(dim=-1) * 1000.0
@@ -457,10 +618,35 @@ class ResidualPolicyWrapper(gym.Wrapper):
                 metrics["residual/rot_deg"] = 2.0 * torch.atan2(q[:, 0:3].norm(dim=-1), q[:, 3].abs()) * (180.0 / torch.pi)
         return observations, rewards, terminated, truncated, infos
 
+    def _step_target(self, action):
+        base = self.base_action  # env.step's observation hook replaces it with the next step's
+        sent = self.target.step(base, action[:, : self.width])
+        observations, rewards, terminated, truncated, infos = self.env.step(sent)
+        self._track_phase(infos)
+        if isinstance(infos, dict):
+            metrics = infos.setdefault("metrics_to_log", {})
+            metrics["residual/position_mm"] = (sent[:, 0:3] - base[:, 0:3]).norm(dim=-1) * 1000.0
+            metrics["residual/rot_deg"] = rot6d_angle_deg(base[:, 3:9], sent[:, 3:9])
+        return observations, rewards, terminated, truncated, infos
+
+    def _track_phase(self, infos) -> None:
+        """``active_from_phase``: each env's phase at its new observation, from the env's eval_state phase/id."""
+        if self.active_from is None:
+            return
+        state = infos.get("eval_state") if isinstance(infos, dict) else None
+        phase = state.get("phase/id") if isinstance(state, dict) else None
+        if phase is None:
+            raise RuntimeError(
+                "residual.active_from_phase reads the env's task phase (infos eval_state phase/id): set "
+                "task.cfg.furniture.track_phases: true"
+            )
+        self.phase = torch.as_tensor(phase, device=self.phase.device).reshape(-1).round().long()
+
     def _step_ee(self, action):
         base = self.base_action  # env.step's observation hook replaces it (and R_ee, the offset)
         sent, self.offset_pos, self.offset_rot = self.ee.step(base, self.R_ee, self.offset_pos, self.offset_rot, action[:, :6])
         observations, rewards, terminated, truncated, infos = self.env.step(sent)
+        self._track_phase(infos)
         if isinstance(infos, dict):
             metrics = infos.setdefault("metrics_to_log", {})
             metrics["residual/position_mm"] = (sent[:, 0:3] - base[:, 0:3]).norm(dim=-1) * 1000.0

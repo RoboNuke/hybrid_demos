@@ -332,11 +332,18 @@ def test_the_policy_decorator_replica_is_their_defaults_on_our_base():
     c = leaves(merged(CONFIGS / "experiments" / "policy_dec_sac_replica" / "residual_policy_dec_sac_replica.yaml"))
     assert c["trainer.learner"] == "sac" and c["residual.enabled"] is True and c["model.architecture"] == "mlp"
     assert (c["residual.steps_per_chunk"], c["residual.base_action_horizon"], c["residual.base_inference_steps"]) == (4, 4, 4)
-    # their actor_input "obs": the raw observation alone; the critic takes the executed chunk (their "sum")
-    assert c["residual.normalize_observation"] is False and c["residual.observe_base_action"] is False
+    # the raw observation (their actor_input adds the base chunk below); the critic takes the executed chunk (their "sum")
+    assert c["residual.normalize_observation"] is False
     assert c["residual.critic_action"] == "full" and c["residual.action_scale_fraction"] == 0.1
+    # their critic sees the observation alone; their pd_ee_delta_pose residual: 0.01 m / 0.01 rad per unit, 4 x 7
+    assert c["residual.critic_state"] == "observation" and c["residual.action_frame"] == "target"
+    # the base chunk observed, and the critic's executed chunk, in their EE-relative command form
+    assert c["residual.observe_base_action"] is True and c["residual.ee_relative_actions"] is True
+    assert c["model.actor.squash"] is False and c["sac.unsquashed_actor"] is True  # a plain Gaussian actor
+    assert (c["residual.ee_relative_pos_unit"], c["residual.ee_relative_rot_unit"]) == (0.1, 0.1)
+    assert c["residual.ee_pos_scale"] == 0.01 and abs(c["residual.ee_rot_scale_deg"] - math.degrees(0.01)) < 1e-12
     assert (c["sac.discount_factor"], c["sac.polyak"], c["sac.batch_size"], c["sac.actor_lr"], c["sac.critic_lr"]) == (0.97, 0.01, 1024, 1.0e-4, 1.0e-4)
-    assert c["sac.learn_entropy"] is True and c["sac.target_entropy"] == -40.0 and c["sac.backup_entropy"] is True
+    assert c["sac.learn_entropy"] is True and c["sac.target_entropy"] == -28.0 and c["sac.backup_entropy"] is True
     assert (c["sac.num_critics"], c["sac.critic_subset"], c["sac.policy_delay"], c["sac.n_step"]) == (2, 2, 1, 1)
     # UTD 0.25: 16 updates per 4 env steps x 16 envs
     assert c["sac.gradient_steps"] / (c["sac.update_every"] * c["task.cfg.scene.num_envs"]) == 0.25
@@ -344,12 +351,14 @@ def test_the_policy_decorator_replica_is_their_defaults_on_our_base():
     # theirs is 100k global steps (6250 per env); ours ramps over 50k per env, for 5x longer episodes
     assert c["sac.progressive_exploration_steps"] == 50_000 and c["sac.grad_norm_clip"] == 50.0
     assert c["sac.demo_transitions"] is None and c["sac.demo_sampling_end"] == 0 and c["sac.normalize_observations"] is False
-    assert c["task.cfg.rewards.step.weight"] * 4 == -1.0 and "task.cfg.rewards.assembled.weight" not in c  # assembled stays the task's 1.0
+    assert c["task.cfg.rewards.step.weight"] == 0.0 and "task.cfg.rewards.assembled.weight" not in c  # no step penalty; assembled stays the task's 1.0
+    assert [c[f"task.cfg.rewards.{p}_done.weight"] for p in ("corner", "grasp", "insert")] == [1.0, 1.0, 1.0]
+    assert c["task.cfg.furniture.track_phases"] is True  # the phase rewards' tracker (configs/base/fb_one_leg.yaml)
     assert (c["model.actor.hidden_size"], c["model.actor.num_layers"], c["model.actor.activation"]) == (256, 3, "ReLU")
     assert c["model.actor.use_state_dependent_std"] is True and c["model.actor.log_std_bound"] == "tanh"
     # their initial log std: the tanh bound's midpoint, -20 + 0.5 * 22 * (0 + 1)
     assert c["model.actor.init_log_std"] == -20.0 + 0.5 * (2.0 - -20.0) * 1.0 == -9.0
-    assert (c["model.actor.min_log_std"], c["model.actor.max_log_std"], c["model.actor.squash"]) == (-20.0, 2.0, True)
+    assert (c["model.actor.min_log_std"], c["model.actor.max_log_std"], c["model.actor.squash"]) == (-20.0, 2.0, False)
     assert (c["model.critic.num_layers"], c["model.critic.output_init_scale"]) == (3, 0.01)
     assert c["trainer.total_timesteps"] * c["task.cfg.scene.num_envs"] == 4_000_000
     assert c["memory.memory_size"] == c["trainer.total_timesteps"] * c["task.cfg.scene.num_envs"]
@@ -357,8 +366,78 @@ def test_the_policy_decorator_replica_is_their_defaults_on_our_base():
 
 
 def test_the_policy_decorator_replica_validates():
-    """critic_action: full with an actor that does not observe the base action: the critic state carries it."""
+    """critic_action: full with the base chunk and the executed chunk in the EE-relative command form."""
     c = merged(CONFIGS / "experiments" / "policy_dec_sac_replica" / "residual_policy_dec_sac_replica.yaml")
     rc = ResidualCfg(**{k: v for k, v in c["residual"].items() if k in ResidualCfg.__dataclass_fields__})
     rc.validate(None)  # the residual's own rules (the env-dependent ones need a loaded task)
-    assert rc.critic_action == "full" and rc.observe_base_action is False and rc.steps_per_chunk == 4
+    assert rc.critic_action == "full" and rc.observe_base_action is True and rc.ee_relative_actions and rc.steps_per_chunk == 4
+
+
+def test_the_flashsac_pd_config_is_b_with_every_flashsac_piece():
+    """flashsac_pd: B's residual, FlashSAC's learner and network (Table 9, its IsaacLab script), 16 envs."""
+    from types import SimpleNamespace
+
+    from robonuke_rl_core.learners.cfg import SACCfg
+    from robonuke_rl_core.models.cfg import FlashSACActorCfg, FlashSACCriticCfg, FlashSACModelCfg
+
+    path = CONFIGS / "experiments" / "flashsac_pd" / "residual_flashsac_pd.yaml"
+    c = merged(path)
+    flat = leaves(c)
+    sac = SACCfg(**c["sac"])
+    sac.validate(None)
+    model = FlashSACModelCfg(actor=FlashSACActorCfg(**c["model"]["actor"]), critic=FlashSACCriticCfg(**c["model"]["critic"]))
+    model.validate(SimpleNamespace(trainer=SimpleNamespace(learner=c["trainer"]["learner"])))
+    rc = ResidualCfg(**{k: v for k, v in c["residual"].items() if k in ResidualCfg.__dataclass_fields__})
+    rc.validate(None)
+    # FlashSAC
+    assert flat["model.architecture"] == "flashsac"
+    assert (flat["model.actor.hidden_size"], flat["model.actor.num_blocks"], flat["model.critic.hidden_size"], flat["model.critic.num_blocks"]) == (128, 2, 256, 2)
+    assert (sac.critic_distribution, sac.critic_num_bins, sac.critic_min_value, sac.critic_max_value) == ("categorical", 101, -5.0, 5.0)
+    assert sac.adaptive_reward_scaling and sac.adaptive_reward_g_max == 5.0
+    assert sac.weight_normalization and sac.cross_batch_value and sac.noise_repeat
+    assert (sac.noise_repeat_zeta_s, sac.noise_repeat_max) == (2.0, 16)
+    assert sac.target_entropy is None and sac.target_entropy_sigma == 0.15 and sac.initial_entropy_value == 0.01
+    assert sac.entropy_loss_form == "alpha" and sac.policy_delay == 2 and sac.num_critics == 2 and sac.polyak == 0.01
+    assert (sac.batch_size, sac.gradient_steps, sac.update_every) == (2048, 2, 1)
+    assert (sac.lr_schedule, sac.actor_lr, sac.critic_lr, sac.lr_end) == ("cosine", 3.0e-4, 3.0e-4, 1.5e-4)
+    assert (sac.discount_factor, sac.n_step, sac.learning_starts, sac.random_timesteps) == (0.99, 3, 500, 0)
+    assert sac.grad_norm_clip == 0.0 and sac.normalize_observations is False and sac.unsquashed_actor is False
+    assert flat["model.actor.mean_init_scale"] == 0.01  # the residual starts near zero
+    assert flat["model.actor.init_std"] == 0.15  # the state-dependent std starts at the entropy target
+    assert sac.std_by_label == "eval_state/phase/id" and sac.std_label_names == ["corner", "grasp", "insert", "screw"]
+    assert sac.metrics_by_label == ["residual/position_mm", "residual/rot_deg"]
+    assert sac.bootstrap_time_limits is False  # a reset's observation is never bootstrapped from
+    # B, unchanged
+    assert flat["task.cfg.scene.num_envs"] == 16 and flat["trainer.total_timesteps"] == 250000
+    assert rc.action_frame == "target" and rc.critic_state == "observation" and rc.ee_relative_actions and rc.steps_per_chunk == 4
+    assert [flat[f"task.cfg.rewards.{p}_done.weight"] for p in ("corner", "grasp", "insert")] == [1.0, 1.0, 1.0]
+    assert sac.progressive_exploration_steps == 50000
+
+
+def test_flashsac_pd_v4_is_flashsac_pd_with_small_constant_learning_rates():
+    base = leaves(merged(CONFIGS / "experiments" / "flashsac_pd" / "residual_flashsac_pd.yaml"))
+    low = leaves(merged(CONFIGS / "experiments" / "flashsac_pd" / "residual_flashsac_pd_lowlr.yaml"))
+    assert (low["sac.actor_lr"], low["sac.critic_lr"], low["sac.entropy_lr"]) == (1.0e-5, 1.0e-4, 1.0e-5)
+    assert low["sac.lr_schedule"] == "constant" and low["wandb.group"] == "flashsac_pd_v4"
+    changed = {k for k in set(base) | set(low) if base.get(k) != low.get(k)}
+    assert changed == {"sac.actor_lr", "sac.critic_lr", "sac.entropy_lr", "sac.lr_schedule", "wandb.group"}
+
+
+def test_the_parts_configs_change_only_what_they_say():
+    from robonuke_rl_core.learners.cfg import SACCfg
+
+    folder = CONFIGS / "experiments" / "flashsac_pd"
+    v3 = leaves(merged(folder / "residual_flashsac_pd.yaml"))
+    parts = leaves(merged(folder / "residual_flashsac_pd_parts.yaml"))
+    grasp = leaves(merged(folder / "residual_flashsac_pd_parts_grasp.yaml"))
+    changed = {k for k in set(v3) | set(parts) if v3.get(k) != parts.get(k)}
+    assert changed == {"sac.success_clone_weight", "sac.failure_anchor_weight", "sac.outcome_metric", "sac.actor_q_scale", "wandb.group"}
+    assert (parts["sac.success_clone_weight"], parts["sac.failure_anchor_weight"], parts["sac.actor_q_scale"]) == (1.0, 1.0, 2.5)
+    changed = {k for k in set(parts) | set(grasp) if parts.get(k) != grasp.get(k)}
+    assert changed == {"residual.active_from_phase", "sac.store_labels", "wandb.group"}
+    assert grasp["residual.active_from_phase"] == "insert"
+    assert grasp["sac.store_labels"] == ["insert", "screw"]  # the pre-grasp steps never enter the memory
+    for path in (folder / "residual_flashsac_pd_parts.yaml", folder / "residual_flashsac_pd_parts_grasp.yaml"):
+        c = merged(path)
+        SACCfg(**c["sac"]).validate(None)
+        ResidualCfg(**{k: v for k, v in c["residual"].items() if k in ResidualCfg.__dataclass_fields__}).validate(None)

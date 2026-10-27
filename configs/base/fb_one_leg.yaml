@@ -16,6 +16,10 @@ task:
       robot_self_collisions: true
       gripper_velocity_limit: 0.2
       ik_jacobian: isaaclab
+      # one_leg's task phases (the video overlay's criteria), always tracked on this task: every finished
+      # episode logs phase/passed_<corner|grasp|insert|success> (their means: the share of rollouts that got past
+      # each stage), and the phase rewards (task.cfg.rewards.<corner|grasp|insert>_done, off by default) read it
+      track_phases: true
 
 wrappers:
   task_metrics:

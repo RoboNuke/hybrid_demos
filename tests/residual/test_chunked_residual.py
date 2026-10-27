@@ -391,3 +391,40 @@ def test_the_ee_critic_action_reads_the_critic_state_whatever_the_agent_observes
     env.step(r)
     o, _ = env.ee.from_offset_obs(R_ee, critic_action)
     assert torch.allclose(base[:, 0:3] + o, env.env.sent[:, 0:3], atol=1e-5)
+
+
+class PhaseEnv(ChunkEnv):
+    """ChunkEnv publishing a task phase per env in eval_state (``phases[env]`` after every step)."""
+
+    def __init__(self, phases, **kwargs):
+        super().__init__(**kwargs)
+        self.phases = phases
+
+    def step(self, action):
+        out = super().step(action)
+        out[4]["eval_state"] = {"phase/id": torch.tensor(self.phases, dtype=torch.float32)}
+        return out
+
+
+def test_active_from_phase_runs_the_base_alone_before_that_phase_and_reports_it(monkeypatch):
+    # env 0 stays in grasp (1), env 1 is in insert (2) after the first step
+    env, _ = make(monkeypatch, PhaseEnv([1, 2]), active_from_phase="insert")
+    env.reset()
+    _, _, _, _, infos = env.step(torch.ones(N, ACT))  # a fresh episode starts in corner: nobody acts
+    assert infos["residual_active"].tolist() == [0.0, 0.0]
+    assert env.unwrapped.sent[-1][:, 0].tolist() == pytest.approx([0.0, 0.0])  # the base alone
+    _, _, _, _, infos = env.step(torch.ones(N, ACT))  # now env 1 is past the grasp
+    assert infos["residual_active"].tolist() == [0.0, 1.0]
+    assert env.unwrapped.sent[-1][:, 0].tolist() == pytest.approx([1.0, 1.0 + 0.5])
+
+
+def test_active_from_phase_needs_the_phase_channel(monkeypatch):
+    env, _ = make(monkeypatch, ChunkEnv(), active_from_phase="insert")
+    env.reset()
+    with pytest.raises(RuntimeError, match="track_phases"):
+        env.step(torch.ones(N, ACT))
+
+
+def test_active_from_phase_is_validated():
+    with pytest.raises(ValueError, match="active_from_phase"):
+        ResidualCfg(active_from_phase="lift").validate(None)

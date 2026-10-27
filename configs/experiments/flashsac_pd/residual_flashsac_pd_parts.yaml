@@ -1,0 +1,16 @@
+# flashsac_pd + PARTS' actor terms: residual_flashsac_pd.yaml (v3: B's residual trained by FlashSAC on 16 envs, the actor
+# starting at a zero mean and std 0.15, learning from step 500) with the only change PARTS' actor loss (Su et al.,
+# arXiv:2609.21788, eq. 4): clone the residuals executed in successful episodes (lambda+ 1), pull the actor's mean
+# toward zero on states of failed episodes (lambda- 1), and weigh the Q term by TD3+BC's 2.5 / mean|Q| (lambda_Q).
+# The outcome is the whole episode's success (episode/success); episodes still running count in neither term.
+#   python scripts/train.py --config configs/experiments/flashsac_pd/residual_flashsac_pd_parts.yaml --headless
+base: residual_flashsac_pd.yaml
+
+wandb:
+  group: flashsac_pd_parts
+
+sac:
+  success_clone_weight: 1.0
+  failure_anchor_weight: 1.0
+  outcome_metric: episode/success
+  actor_q_scale: 2.5

@@ -1,7 +1,7 @@
 # Policy Decorator's SAC residual on physic_aligned_evalHappy_a0 (_foundation.yaml): their 3 x 256 ReLU actor and
 # critics (0.01 output init, log std tanh-bounded to [-20, 2]), 16 envs, 4M global chunk steps (250k per env), a
-# checkpoint every 50k global steps (their eval interval). The env's step reward is -0.25 so a 4-step chunk sums
-# to their -1 per decision (the assembled reward stays 1).
+# checkpoint every 50k global steps (their eval interval). No step penalty (their -1 per decision is off); +1 for
+# each of one_leg's phases (corner, grasp, insert) and +1 at assembly.
 #   python scripts/train.py --config configs/experiments/policy_dec_sac_replica/residual_policy_dec_sac_replica.yaml --headless
 #   python scripts/watch_residual_eval.py --run runs/hybrid_demo_furniture_residual/policy_dec_sac_replica/policy_dec_sac_replica_a0 \
 #       --eval_config configs/eval/residual_watch_furniture.yaml --headless
@@ -17,8 +17,16 @@ task:
       num_envs: 16
     rewards:
       step:
-        # -1 per 4-step chunk
-        weight: -0.25
+        # no per-step penalty (Policy Decorator's -1 per chunk turned off)
+        weight: 0.0
+      # one_leg's phase rewards, +1 each on the step the phase is passed (track_phases' criteria), beside the
+      # assembled +1: the top pushed into the corner and let go, leg 4 held and lifted, the leg left in its hole
+      corner_done:
+        weight: 1.0
+      grasp_done:
+        weight: 1.0
+      insert_done:
+        weight: 1.0
 
 trainer:
   learner: sac
@@ -46,7 +54,8 @@ model:
     log_std_bound: tanh
     min_log_std: -20.0
     max_log_std: 2.0
-    squash: true
+    # a plain Gaussian, no tanh (sac.unsquashed_actor): the residual unbounded, its log-probability the Gaussian's own
+    squash: false
   critic:
     hidden_size: 256
     num_layers: 3

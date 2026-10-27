@@ -1,0 +1,16 @@
+# flashsac_pd v4: residual_flashsac_pd.yaml (B's residual trained by FlashSAC on 16 envs, the actor starting at a zero
+# mean and std 0.15, learning from step 500) with constant, smaller learning rates: 1e-5 for the actor and the
+# temperature, 1e-4 for the critics (FlashSAC's cosine 3e-4 -> 1.5e-4 is tuned for 1024 envs; on 16, Adam's ~lr-sized
+# steps erased the actor's near-zero start within ~250 updates). The critics stay 10x the actor, so the actor follows
+# a critic that keeps up; their categorical bins already keep them from running away.
+#   python scripts/train.py --config configs/experiments/flashsac_pd/residual_flashsac_pd_lowlr.yaml --headless
+base: residual_flashsac_pd.yaml
+
+wandb:
+  group: flashsac_pd_v4
+
+sac:
+  actor_lr: 1.0e-5
+  critic_lr: 1.0e-4
+  entropy_lr: 1.0e-5
+  lr_schedule: constant

@@ -41,6 +41,12 @@ def setup() -> None:
 
     register_env_wrapper(project_env_wrappers)  # every env the package builds
 
+    from robonuke_rl_core.learners.sac import register_critic_action
+
+    from my_project.residual import residual_critic_action
+
+    register_critic_action(residual_critic_action)  # residual.critic_action: full (the critics are loaded at its width)
+
     from robonuke_rl_core.evaluation import register_eval_policy
 
     from my_project.bc.eval_policy import build_bc_eval_policy
