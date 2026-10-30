@@ -35,7 +35,12 @@ step (every ``k`` sim steps), and an episode's length counts sim steps (the wrap
 Logged to its own wandb run (``<run name>_eval``, the training run's project and group), at
 ``step`` = the checkpoint's step: ``eval/success_rate``, ``eval/engaged_rate``,
 ``eval/force_mean`` (mean over episodes of each episode's mean force), ``eval/force_max_mean``,
-and histograms ``eval/force_max_hist`` and ``eval/force_mean_hist``. Each result is also
+and histograms ``eval/force_max_hist`` and ``eval/force_mean_hist``; on a FurnitureBench env that tracks one_leg's
+phases, also ``eval/phase_success/<phase>`` (each phase's success among the episodes that reached it, the env's
+``phase/passed_*``; ``screw`` is ``passed_success``), ``eval/phase_reached/<phase>`` (how many episodes reached it)
+and ``eval/residual_mm/<phase>`` / ``eval/residual_deg/<phase>`` (the mean correction over the agent steps that
+started in that phase). ``--skip_base`` leaves out the base-alone round (step 0), for one-off tests on checkpoints whose reference is already
+known. Each result is also
 appended to ``<run dir>/eval_watch/results.jsonl``. Each round shows its progress as a tqdm bar
 on stderr.
 """
@@ -75,6 +80,11 @@ def add_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         nargs="+",
         default=None,
         help="evaluate the base and only these checkpoint steps (each must be on disk), then exit",
+    )
+    parser.add_argument(
+        "--skip_base",
+        action="store_true",
+        help="skip the base-alone round (step 0): for one-off tests on checkpoints whose reference is already known",
     )
     parser.add_argument(
         "--out_name",
@@ -177,11 +187,37 @@ def evaluate(env: Any, policy: Any, seed: int, label: str = "eval") -> Dict[str,
     # Forge ends an episode one step before the limit; one env.step is steps_per_chunk sim steps
     steps = _agent_steps(int(u.max_episode_length) - 1, residual.steps_per_chunk if residual is not None else 1)
     bar = _round_bar(steps, label)
+    # per-phase outcomes (the env's phase/passed_*: NaN for an episode that never reached the phase) and the
+    # residual's correction per phase (the phase each agent step started in), when the env tracks phases
+    passed: Dict[str, Any] = {}
+    correction: Dict[str, List[float]] = {}
+    phase = torch.zeros(n, dtype=torch.long, device=u.device)
     for _ in range(steps):
         with torch.no_grad():
             actions = policy(observations, states)
-        observations, _, terminated, truncated, _ = env.step(actions)
+        observations, _, terminated, truncated, infos = env.step(actions)
+        if hasattr(policy, "observe"):
+            # a routed policy (sac.route_labels) picks each env's residual from the phase the env just published
+            policy.observe(infos)
         states = env_states(env)
+        if isinstance(infos, dict):
+            metrics = infos.get("metrics_to_log") or {}
+            for key, unit in (("residual/position_mm", "mm"), ("residual/rot_deg", "deg")):
+                value = metrics.get(key)
+                if value is None:
+                    continue
+                value = torch.as_tensor(value, device=u.device).reshape(-1)
+                for index, name in enumerate(PHASE_NAMES):
+                    rows = alive & (phase == index)
+                    if bool(rows.any()):
+                        correction.setdefault(f"residual_{unit}/{name}", []).extend(value[rows].tolist())
+            ending = alive & (terminated.reshape(-1).bool() | truncated.reshape(-1).bool())
+            for key, value in (infos.get("episode_metrics_to_log") or {}).items():
+                if key.startswith("phase/passed_") and bool(ending.any()):
+                    passed.setdefault(key, []).extend(torch.as_tensor(value, device=u.device).reshape(-1)[ending].tolist())
+            label = (infos.get("eval_state") or {}).get("phase/id")
+            if label is not None:
+                phase = torch.as_tensor(label, device=u.device).reshape(-1).round().long()
         force = u.force_sensor_smooth[:, 0:3].norm(dim=-1)
         force_sum += force
         force_max = torch.maximum(force_max, force)
@@ -213,6 +249,8 @@ def evaluate_furniture(env: Any, policy: Any, seed: int, label: str = "eval") ->
     from robonuke_rl_core.envs.build import reseed_env
     from robonuke_rl_core.evaluation import env_states, force_env_reset
 
+    from my_project.residual import PHASE_NAMES
+
     u = env.unwrapped
     n = int(u.num_envs)
     residual = _residual_or_none(env)
@@ -228,11 +266,37 @@ def evaluate_furniture(env: Any, policy: Any, seed: int, label: str = "eval") ->
     # one env.step is the residual's steps_per_chunk sim steps
     steps = _agent_steps(int(u.max_episode_length), residual.steps_per_chunk if residual is not None else 1)
     bar = _round_bar(steps, label)
+    # per-phase outcomes (the env's phase/passed_*: NaN for an episode that never reached the phase) and the
+    # residual's correction per phase (the phase each agent step started in), when the env tracks phases
+    passed: Dict[str, Any] = {}
+    correction: Dict[str, List[float]] = {}
+    phase = torch.zeros(n, dtype=torch.long, device=u.device)
     for _ in range(steps):
         with torch.no_grad():
             actions = policy(observations, states)
-        observations, _, terminated, truncated, _ = env.step(actions)
+        observations, _, terminated, truncated, infos = env.step(actions)
+        if hasattr(policy, "observe"):
+            # a routed policy (sac.route_labels) picks each env's residual from the phase the env just published
+            policy.observe(infos)
         states = env_states(env)
+        if isinstance(infos, dict):
+            metrics = infos.get("metrics_to_log") or {}
+            for key, unit in (("residual/position_mm", "mm"), ("residual/rot_deg", "deg")):
+                value = metrics.get(key)
+                if value is None:
+                    continue
+                value = torch.as_tensor(value, device=u.device).reshape(-1)
+                for index, name in enumerate(PHASE_NAMES):
+                    rows = alive & (phase == index)
+                    if bool(rows.any()):
+                        correction.setdefault(f"residual_{unit}/{name}", []).extend(value[rows].tolist())
+            ending = alive & (terminated.reshape(-1).bool() | truncated.reshape(-1).bool())
+            for key, value in (infos.get("episode_metrics_to_log") or {}).items():
+                if key.startswith("phase/passed_") and bool(ending.any()):
+                    passed.setdefault(key, []).extend(torch.as_tensor(value, device=u.device).reshape(-1)[ending].tolist())
+            label = (infos.get("eval_state") or {}).get("phase/id")
+            if label is not None:
+                phase = torch.as_tensor(label, device=u.device).reshape(-1).round().long()
         # the episode's sim steps in this agent step (the residual's counted sub-steps; 1 without one)
         length += alive.long() * (residual.counted.to(length.device) if residual is not None else 1)
         # a term counts only on the step it ends the episode: Isaac Lab's term buffer keeps the
@@ -248,13 +312,24 @@ def evaluate_furniture(env: Any, policy: Any, seed: int, label: str = "eval") ->
         if not alive.any():
             break
     bar.close()
-    return {
+    result = {
         "success_rate": float(success.float().mean()),
         "out_of_bounds_rate": float(out.float().mean()),
         "length_mean": float(length.float().mean()),
         "lengths": length.cpu().tolist(),
         "episodes": n,
     }
+    # phase_success/<phase>: each phase's success among the episodes that reached it (screw: phase/passed_success)
+    for key, values in sorted(passed.items()):
+        reached = [v for v in values if v == v]
+        name = "screw" if key == "phase/passed_success" else key[len("phase/passed_"):]
+        if reached:
+            result[f"phase_success/{name}"] = sum(reached) / len(reached)
+            result[f"phase_reached/{name}"] = len(reached)
+    # residual_mm/<phase>, residual_deg/<phase>: the mean correction over the agent steps that started in that phase
+    for key, values in sorted(correction.items()):
+        result[key] = sum(values) / len(values)
+    return result
 
 
 #: list-valued results logged as histograms, under these names
@@ -265,8 +340,10 @@ def _summary(result: Dict[str, Any]) -> str:
     if "force_mean" in result:
         return (f"success {result['success_rate']:.3f}, engaged {result['engaged_rate']:.3f}, force mean "
                 f"{result['force_mean']:.2f} N, max mean {result['force_max_mean']:.2f} N")
+    phases = "".join(f", {name} {result[f'phase_success/{name}']:.2f}" for name in ("corner", "grasp", "insert", "screw")
+                     if f"phase_success/{name}" in result)
     return (f"success {result['success_rate']:.3f}, out of bounds {result['out_of_bounds_rate']:.3f}, "
-            f"length mean {result['length_mean']:.0f}")
+            f"length mean {result['length_mean']:.0f}{phases}")
 
 
 def _watch(args, overrides, setup) -> int:
@@ -287,6 +364,11 @@ def _watch(args, overrides, setup) -> int:
     )
     if not cfg.residual.enabled:
         raise ValueError(f"{run_dir} is not a residual run (residual.enabled is false)")
+    routes = list(getattr(cfg.sac, "route_labels", None) or []) if cfg.trainer.learner == "sac" else []
+    if routes:
+        # a routed SAC (one residual per phase): each phase writes its own checkpoints of the same names; the first
+        # phase's folder lists them, and every phase's file of a name is loaded together
+        ckpt_dir = run_dir / routes[0] / "checkpoints"
     prepare_task(cfg, cfg.task_name, cfg.task_cfg)
     env = wrap_for_skrl(build_env(cfg, gym.make(cfg.task_name, cfg=cfg.task_cfg), cfg.task_name), cfg.experiment.seed)
     _find_residual(env)  # fails loudly if the run's env has no residual
@@ -367,7 +449,7 @@ def _evaluate_all(env, cfg, ckpt_dir, done, record, seed, args, run) -> int:
     from robonuke_rl_core.evaluation import build_eval_policy
 
     total = int(cfg.trainer.total_timesteps)
-    if 0 not in done:
+    if 0 not in done and not getattr(args, "skip_base", False):
         # the base alone: a residual of exactly zero, no checkpoint needed
         width = int(env.action_space.shape[-1])
         zero = lambda observations, states: torch.zeros((observations.shape[0], width), device=observations.device)

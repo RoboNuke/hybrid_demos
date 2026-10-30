@@ -1,0 +1,12 @@
+# SERL_BC fixed_demo v2: fixed_demo v1 with Insert done on the first step the leg is released in its hole (the env's
+# furniture.phase_hold_steps now defaults to 1; it was 10, so the insert residual was paid only on the 10th of ten
+# in-hole steps it could not tell apart). Its own demos, labelled with the 1-step check.
+#   python scripts/make_phase_demos.py --config configs/experiments/serl_bc/residual_serl_bc_fixed_demo_v2.yaml
+#   python scripts/train.py --config configs/experiments/serl_bc/residual_serl_bc_fixed_demo_v2.yaml --headless
+base: residual_serl_bc_fixed_demo_v1.yaml
+
+wandb:
+  group: serl_bc_fixed_demo_v2
+
+sac:
+  demo_transitions: data/serl_bc_fixed_demo_v2/demos_{route}.pt

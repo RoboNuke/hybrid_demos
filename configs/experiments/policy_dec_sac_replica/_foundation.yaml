@@ -12,6 +12,11 @@ base: ../../base/fb_one_leg.yaml
 experiment:
   seed: 42
 
+trainer:
+  # ckpt_best and episode/best_success_rate follow the highest episode/success: with the phase rewards, the
+  # highest-return interval is not the most successful one
+  best_by: success
+
 wandb:
   entity: hur
 

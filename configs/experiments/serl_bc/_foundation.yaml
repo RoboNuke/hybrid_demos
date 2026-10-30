@@ -1,0 +1,107 @@
+# serl_bc (the leading _ keeps launch_train from submitting this file on its own): everything SERL_BC's runs share
+# except the network -- each launch sets its own model section (a base chain cannot drop another architecture's
+# fields). These are SERL_BC v1's settings; residual_serl_bc_v1.yaml says what they are.
+base: ../parts_pd/_foundation.yaml
+
+wandb:
+  project: hybrid_demo_furniture_residual
+  group: serl_bc_v1
+
+task:
+  cfg:
+    scene:
+      num_envs: 1
+    rewards:
+      step:
+        weight: 0.0
+      corner_done:
+        weight: 1.0
+      grasp_done:
+        weight: 1.0
+      insert_done:
+        weight: 1.0
+    furniture:
+      stall_steps_insert: 30
+      stall_steps_screw: 120
+      stall_pos_mm: 0.5
+      stall_rot_deg: 1.0
+
+trainer:
+  learner: sac
+  # in 4-step chunks: 1M env steps, checkpoints every 10k, a point every 1000
+  total_timesteps: 250000
+  checkpoint_interval: 2500
+  write_interval: 250
+  success_window: 10
+  windowed_metrics:
+    - phase/passed_*
+
+residual:
+  enabled: true
+  steps_per_chunk: 4
+  target_axes: base
+  ee_pos_scale: 0.02
+  ee_relative_actions: false
+  critic_state: residual
+  critic_action: residual
+  base_warm_start: false
+
+sac:
+  # -- the PARTS pieces kept from parts_pd v7
+  route_clock: true
+  hold_still_key: eval_state/phase/still
+  hold_stall_key: eval_state/phase/stalled
+  # the actor's observation stays raw (the running normalizer below does SimBa's input normalization), so v5's
+  # demos are this setup's own
+  demo_transitions: data/parts_pd_v5/demos_{route}.pt
+  demo_storage: memory_critic
+  learning_starts: 0
+  policy_learning_starts: 0
+  learning_starts_rows: 512
+  success_clone_weight: 10.0
+  failure_anchor_weight: 10.0
+  parts_term_reduction: mean
+  actor_q_scale: 2.5
+  retrain_every: 0
+  retrain_failure_fraction: 0.1
+  retrain_gradient_steps: 10000
+  noise_repeat_max: 5
+  reference_dropout: 0.0
+  reference_columns: 0
+  # 0.999 per env step over a 4-step chunk; 3-chunk returns
+  discount_factor: 0.996
+  n_step: 3
+  # -- FlashSAC removed
+  critic_distribution: scalar
+  adaptive_reward_scaling: false
+  weight_normalization: false
+  cross_batch_value: false
+  lr_schedule: constant
+  noise_repeat: false
+  # SimBa's input normalization (RSNorm): the running mean / std of the actor's observations and the critics' states
+  # (FlashSAC's BatchNorm did it inside its network)
+  normalize_observations: true
+  # -- SERL's learner
+  # each kind of gradient step captured once and replayed as one launch (per-phase memories and the critic-only
+  # demos sample with device-side bounds)
+  cuda_graph: true
+  num_critics: 10
+  critic_subset: 2
+  actor_q_reduction: mean
+  batch_size: 256
+  gradient_steps: 10
+  update_every: 1
+  policy_delay: 10
+  polyak: 0.005
+  actor_lr: 3.0e-4
+  critic_lr: 3.0e-4
+  entropy_lr: 3.0e-4
+  learn_entropy: true
+  initial_entropy_value: 1.0e-2
+  # SERL's -|A| / 2 with |A| = 4 x 7
+  target_entropy: -14.0
+  target_entropy_sigma: null
+  entropy_loss_form: log_alpha
+  backup_entropy: false
+  entropy_observations: next
+

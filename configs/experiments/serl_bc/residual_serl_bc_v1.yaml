@@ -1,0 +1,30 @@
+# SERL_BC v1: parts_pd v7's setup with FlashSAC taken out, the SimBa network back and SERL's learner (the earlier
+# resip_replica SERL runs), keeping the PARTS pieces: one residual per phase (insert, screw) with local rewards,
+# phase-only updates (route_clock), each phase starting once it holds 512 of its own chunks, the no-progress reset
+# with its held rows, the demos for the critics only (the actor samples its own online batch), the clone / anchor
+# terms at 10 (per-dim means, the Q term TD3+BC-scaled), 4-step chunks with 3-chunk returns, the absolute 2 cm / 6 deg
+# residual about the robot-base axes, critics on Q(s, a_base, r), the cold-start base. Based on the parts_pd
+# foundation (not v7: its FlashSAC model fields cannot be dropped through a base chain), so v7's run settings are
+# restated here.
+# * removed (FlashSAC): the categorical critic, adaptive reward scaling, weight normalization, cross-batch value,
+#   the cosine LR schedule, the FlashSAC network and its fixed std
+# * SimBa (resip_replica's): actor 1 block x 256, critic 1 block x 256, the actor's mean head scaled 0.01 (a near-zero
+#   start), a state-dependent std starting at 0.1; SimBa's running input normalization (sac.normalize_observations)
+# * SERL: 10 critics with a random-2 target min, 10 critic updates and one actor update per agent step (chunk), the
+#   actor on the ensemble mean, batch 256, tau 0.005, an auto-tuned temperature (target -|A|/2 = -14 for the 4 x 7
+#   chunk, initial 0.01, the entropy left out of the critics' target, the temperature on the batch's next
+#   observations), constant 3e-4 learning rates
+#   python scripts/train.py --config configs/experiments/serl_bc/residual_serl_bc_v1.yaml --headless
+base: _foundation.yaml
+
+model:
+  architecture: simba
+  actor:
+    actor_n: 1
+    actor_latent: 256
+    last_layer_scale: 0.01
+    use_state_dependent_std: true
+    act_init_std: 0.1
+  critic:
+    critic_n: 1
+    critic_latent: 256

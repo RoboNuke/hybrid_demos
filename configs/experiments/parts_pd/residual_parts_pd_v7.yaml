@@ -1,0 +1,13 @@
+# residual_parts_pd_v6.yaml with PARTS' clone and anchor weights at 10 (lambda+ = lambda- = 10, per-dim means): with
+# 1 the Q term (2.5 / mean|Q|) outweighed them ~30x and the actor followed the critics into corrections they had no
+# data for (v6: screw 17 mm at 2.5k chunks, rated above zero by its critic, 7% screw success in eval); 10 holds the
+# actor near its phase's successful actions and zero on failures while the critics learn.
+#   python scripts/train.py --config configs/experiments/parts_pd/residual_parts_pd_v7.yaml --headless
+base: residual_parts_pd_v6.yaml
+
+wandb:
+  group: parts_pd_v7
+
+sac:
+  success_clone_weight: 10.0
+  failure_anchor_weight: 10.0

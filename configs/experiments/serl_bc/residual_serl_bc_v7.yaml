@@ -1,0 +1,13 @@
+# SERL_BC v6 (plain SERL: MLPs, critic-only symmetric sampling, no BC, 2 critic updates per chunk) with one change: an
+# L2 penalty on the actor's mean action (sac.action_l2_weight 1.0, per-dim mean of its square). Without an anchor v6's
+# actor followed its critics out to ~17 mm (insert) by 5k chunks while the insert critic rated every larger correction
+# higher (+0.27 for the full one, in 100% of states). At 1.0 the penalty's quadratic cost meets that roughly linear
+# claimed gain at about half of v6's drift; demo-sized corrections (~0.1 units) cost ~0.01.
+#   python scripts/train.py --config configs/experiments/serl_bc/residual_serl_bc_v7.yaml --headless
+base: residual_serl_bc_v6.yaml
+
+wandb:
+  group: serl_bc_v7
+
+sac:
+  action_l2_weight: 1.0

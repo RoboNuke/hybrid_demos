@@ -407,6 +407,7 @@ def test_the_flashsac_pd_config_is_b_with_every_flashsac_piece():
     assert sac.std_by_label == "eval_state/phase/id" and sac.std_label_names == ["corner", "grasp", "insert", "screw"]
     assert sac.metrics_by_label == ["residual/position_mm", "residual/rot_deg"]
     assert sac.bootstrap_time_limits is False  # a reset's observation is never bootstrapped from
+    assert flat["trainer.best_by"] == "success"  # ckpt_best is the most successful interval's
     # B, unchanged
     assert flat["task.cfg.scene.num_envs"] == 16 and flat["trainer.total_timesteps"] == 250000
     assert rc.action_frame == "target" and rc.critic_state == "observation" and rc.ee_relative_actions and rc.steps_per_chunk == 4
@@ -434,10 +435,376 @@ def test_the_parts_configs_change_only_what_they_say():
     assert changed == {"sac.success_clone_weight", "sac.failure_anchor_weight", "sac.outcome_metric", "sac.actor_q_scale", "wandb.group"}
     assert (parts["sac.success_clone_weight"], parts["sac.failure_anchor_weight"], parts["sac.actor_q_scale"]) == (1.0, 1.0, 2.5)
     changed = {k for k in set(parts) | set(grasp) if parts.get(k) != grasp.get(k)}
-    assert changed == {"residual.active_from_phase", "sac.store_labels", "wandb.group"}
+    assert changed == {"residual.active_from_phase", "residual.ee_rot_scale_deg", "sac.store_labels", "wandb.group"}
+    assert grasp["residual.ee_rot_scale_deg"] == 6.0  # 6 deg per unit r per rotation axis
     assert grasp["residual.active_from_phase"] == "insert"
     assert grasp["sac.store_labels"] == ["insert", "screw"]  # the pre-grasp steps never enter the memory
     for path in (folder / "residual_flashsac_pd_parts.yaml", folder / "residual_flashsac_pd_parts_grasp.yaml"):
         c = merged(path)
         SACCfg(**c["sac"]).validate(None)
         ResidualCfg(**{k: v for k, v in c["residual"].items() if k in ResidualCfg.__dataclass_fields__}).validate(None)
+
+
+def test_the_parts_pd_config_is_the_last_flashsac_run_on_one_env_with_per_phase_residuals():
+    """parts_pd: residual_flashsac_pd_parts_grasp on 1 env, one residual per phase, no chunk, fixed std, no entropy,
+    no exploration ramp, the demos as replay memory rows, no retraining."""
+    from robonuke_rl_core.learners.cfg import SACCfg
+    from robonuke_rl_core.models.cfg import FlashSACActorCfg, FlashSACCriticCfg, FlashSACModelCfg
+
+    grasp = leaves(merged(CONFIGS / "experiments" / "flashsac_pd" / "residual_flashsac_pd_parts_grasp.yaml"))
+    path = CONFIGS / "experiments" / "parts_pd" / "residual_parts_pd.yaml"
+    parts = leaves(merged(path))
+    changed = {k for k in set(grasp) | set(parts) if grasp.get(k) != parts.get(k)}
+    assert changed == {
+        "wandb.group", "task.cfg.scene.num_envs", "trainer.total_timesteps", "trainer.checkpoint_interval",
+        "trainer.write_interval", "trainer.success_window", "trainer.windowed_metrics", "sac.noise_repeat",
+        "residual.active_from_phase", "residual.steps_per_chunk", "sac.store_labels", "sac.route_labels",
+        "sac.std_label_names", "sac.discount_factor", "sac.batch_size", "sac.update_every", "sac.learn_entropy",
+        "sac.initial_entropy_value", "sac.target_entropy_sigma", "sac.backup_entropy",
+        "sac.progressive_exploration_steps", "sac.demo_transitions", "sac.demo_storage",
+        "memory.memory_size", "model.actor.init_std", "model.actor.fixed_std",
+        # each residual's outcome is its local one (route_label): outcome_metric is not read
+        "sac.outcome_metric",
+    }
+    assert parts["sac.route_labels"] == ["insert", "screw"] and parts["task.cfg.scene.num_envs"] == 1
+    assert parts["residual.steps_per_chunk"] == 1 and parts["residual.base_action_horizon"] == 4
+    assert parts["model.actor.fixed_std"] == 0.15
+    assert (parts["sac.learn_entropy"], parts["sac.initial_entropy_value"]) == (False, 0.0)
+    assert "{route}" in parts["sac.demo_transitions"] and parts["sac.demo_storage"] == "memory"
+    assert parts["sac.noise_repeat"] is False and parts["sac.discount_factor"] == 0.999
+    assert "sac.retrain_every" not in parts and parts["trainer.checkpoint_interval"] == 10000
+    assert (parts["trainer.write_interval"], parts["trainer.success_window"]) == (1000, 10)
+    assert parts["trainer.windowed_metrics"] == ["phase/passed_*"]
+    c = merged(path)
+    SACCfg(**c["sac"]).validate(None)
+    ResidualCfg(**{k: v for k, v in c["residual"].items() if k in ResidualCfg.__dataclass_fields__}).validate(None)
+    FlashSACModelCfg(actor=FlashSACActorCfg(**c["model"]["actor"]), critic=FlashSACCriticCfg(**c["model"]["critic"])).validate(None)
+
+
+def test_the_parts_pd_v2_config_changes_only_what_it_says():
+    """parts_pd v2: no-progress resets with held transitions, Q(s, r), reference dropout, per-phase clocks, noise
+    held at most 5 steps, retraining every 10k phase steps."""
+    from robonuke_rl_core.learners.cfg import SACCfg
+
+    folder = CONFIGS / "experiments" / "parts_pd"
+    v1 = leaves(merged(folder / "residual_parts_pd.yaml"))
+    path = folder / "residual_parts_pd_v2.yaml"
+    v2 = leaves(merged(path))
+    changed = {k for k in set(v1) | set(v2) if v1.get(k) != v2.get(k)}
+    assert changed == {
+        "wandb.group", "task.cfg.furniture.stall_steps_insert", "task.cfg.furniture.stall_steps_screw",
+        "task.cfg.furniture.stall_pos_mm", "task.cfg.furniture.stall_rot_deg", "residual.critic_action",
+        "sac.route_clock", "sac.hold_still_key", "sac.hold_stall_key", "sac.reference_dropout", "sac.reference_columns",
+        "sac.noise_repeat", "sac.noise_repeat_max", "sac.retrain_every", "sac.retrain_failure_fraction",
+        "sac.retrain_gradient_steps",
+    }
+    assert (v2["task.cfg.furniture.stall_steps_insert"], v2["task.cfg.furniture.stall_steps_screw"]) == (30, 120)
+    assert v2["residual.critic_action"] == "residual" and v2["residual.critic_state"] == "observation"
+    assert (v2["sac.reference_dropout"], v2["sac.reference_columns"]) == (0.3, 7)
+    assert (v2["sac.noise_repeat"], v2["sac.noise_repeat_max"]) == (True, 5)
+    assert (v2["sac.retrain_every"], v2["sac.retrain_failure_fraction"], v2["sac.retrain_gradient_steps"]) == (10000, 0.1, 10000)
+    c = merged(path)
+    SACCfg(**c["sac"]).validate(None)
+    ResidualCfg(**{k: v for k, v in c["residual"].items() if k in ResidualCfg.__dataclass_fields__}).validate(None)
+    # the evals run every episode to its end
+    ev = leaves(merged(CONFIGS / "eval" / "residual_watch_furniture.yaml"))
+    assert (ev["task.cfg.furniture.stall_steps_insert"], ev["task.cfg.furniture.stall_steps_screw"]) == (0, 0)
+
+
+def test_the_parts_pd_v3_config_is_v2_with_chunks_and_no_correlated_noise():
+    from robonuke_rl_core.learners.cfg import SACCfg
+
+    folder = CONFIGS / "experiments" / "parts_pd"
+    v2 = leaves(merged(folder / "residual_parts_pd_v2.yaml"))
+    path = folder / "residual_parts_pd_v3.yaml"
+    v3 = leaves(merged(path))
+    changed = {k for k in set(v2) | set(v3) if v2.get(k) != v3.get(k)}
+    assert changed == {
+        "wandb.group", "trainer.total_timesteps", "trainer.checkpoint_interval", "trainer.write_interval",
+        "residual.steps_per_chunk", "sac.discount_factor", "sac.learning_starts", "sac.noise_repeat",
+        "sac.reference_columns", "sac.retrain_every", "sac.demo_transitions",
+    }
+    assert v3["residual.steps_per_chunk"] == 4 and v3["residual.base_action_horizon"] == 4
+    assert v3["sac.n_step"] == 3 and v3["sac.noise_repeat"] is False and v3["sac.reference_columns"] == 4 * 7
+    assert v3["trainer.total_timesteps"] * 4 == 1_000_000 and v3["sac.retrain_every"] == 0
+    assert "{route}" in v3["sac.demo_transitions"]
+    c = merged(path)
+    SACCfg(**c["sac"]).validate(None)
+    ResidualCfg(**{k: v for k, v in c["residual"].items() if k in ResidualCfg.__dataclass_fields__}).validate(None)
+
+
+def test_the_parts_pd_v4_config_is_v3_with_an_absolute_residual_no_demos_and_a_base_aware_critic():
+    from robonuke_rl_core.learners.cfg import SACCfg
+
+    folder = CONFIGS / "experiments" / "parts_pd"
+    v3 = leaves(merged(folder / "residual_parts_pd_v3.yaml"))
+    path = folder / "residual_parts_pd_v4.yaml"
+    v4 = leaves(merged(path))
+    changed = {k for k in set(v3) | set(v4) if v3.get(k) != v4.get(k)}
+    assert changed == {
+        "wandb.group", "residual.target_axes", "residual.ee_pos_scale", "residual.ee_relative_actions",
+        "residual.critic_state", "residual.base_warm_start", "sac.demo_transitions", "sac.demo_storage",
+        "sac.parts_term_reduction", "sac.reference_dropout", "sac.reference_columns",
+    }
+    assert (v4["residual.target_axes"], v4["residual.ee_pos_scale"], v4["residual.ee_rot_scale_deg"]) == ("base", 0.02, 6.0)
+    assert (v4["residual.critic_state"], v4["residual.critic_action"]) == ("residual", "residual")
+    assert v4["residual.base_warm_start"] is False and v4["sac.demo_transitions"] is None
+    assert v4["residual.steps_per_chunk"] == 4 and v4["sac.n_step"] == 3 and v4["sac.retrain_every"] == 0
+    c = merged(path)
+    SACCfg(**c["sac"]).validate(None)
+    ResidualCfg(**{k: v for k, v in c["residual"].items() if k in ResidualCfg.__dataclass_fields__}).validate(None)
+
+
+def test_the_parts_pd_v4_warmup_config_is_v4_with_five_base_episodes_first():
+    from robonuke_rl_core.learners.cfg import SACCfg
+
+    folder = CONFIGS / "experiments" / "parts_pd"
+    v4 = leaves(merged(folder / "residual_parts_pd_v4.yaml"))
+    path = folder / "residual_parts_pd_v4_warmup.yaml"
+    w = leaves(merged(path))
+    assert {k for k in set(v4) | set(w) if v4.get(k) != w.get(k)} == {"wandb.group", "sac.warmup_episodes"}
+    assert w["sac.warmup_episodes"] == 5
+    SACCfg(**merged(path)["sac"]).validate(None)
+
+
+def test_the_parts_pd_v5_config_is_v4_with_critic_only_demos_and_a_critic_first_start():
+    from robonuke_rl_core.learners.cfg import SACCfg
+
+    folder = CONFIGS / "experiments" / "parts_pd"
+    v4 = leaves(merged(folder / "residual_parts_pd_v4.yaml"))
+    path = folder / "residual_parts_pd_v5.yaml"
+    v5 = leaves(merged(path))
+    assert {k for k in set(v4) | set(v5) if v4.get(k) != v5.get(k)} == {
+        "wandb.group", "sac.demo_transitions", "sac.demo_storage", "sac.policy_learning_starts",
+    }
+    assert v5["sac.demo_storage"] == "memory_critic" and "{route}" in v5["sac.demo_transitions"]
+    assert (v5["sac.learning_starts"], v5["sac.policy_learning_starts"]) == (125, 250)
+    assert v5["sac.parts_term_reduction"] == "mean" and v5.get("sac.warmup_episodes", 0) == 0
+    SACCfg(**merged(path)["sac"]).validate(None)
+
+
+def test_the_parts_pd_v6_config_is_v5_with_a_data_based_start_and_std_0p1():
+    from robonuke_rl_core.learners.cfg import SACCfg
+
+    folder = CONFIGS / "experiments" / "parts_pd"
+    v5 = leaves(merged(folder / "residual_parts_pd_v5.yaml"))
+    path = folder / "residual_parts_pd_v6.yaml"
+    v6 = leaves(merged(path))
+    assert {k for k in set(v5) | set(v6) if v5.get(k) != v6.get(k)} == {
+        "wandb.group", "sac.learning_starts", "sac.policy_learning_starts", "sac.learning_starts_rows", "model.actor.fixed_std",
+    }
+    assert (v6["sac.learning_starts_rows"], v6["sac.batch_size"], v6["model.actor.fixed_std"]) == (512, 512, 0.1)
+    assert v6["sac.demo_storage"] == "memory_critic"
+    SACCfg(**merged(path)["sac"]).validate(None)
+
+
+def test_the_parts_pd_v7_config_is_v6_with_clone_and_anchor_weights_of_10():
+    from robonuke_rl_core.learners.cfg import SACCfg
+
+    folder = CONFIGS / "experiments" / "parts_pd"
+    v6 = leaves(merged(folder / "residual_parts_pd_v6.yaml"))
+    path = folder / "residual_parts_pd_v7.yaml"
+    v7 = leaves(merged(path))
+    assert {k for k in set(v6) | set(v7) if v6.get(k) != v7.get(k)} == {
+        "wandb.group", "sac.success_clone_weight", "sac.failure_anchor_weight",
+    }
+    assert (v7["sac.success_clone_weight"], v7["sac.failure_anchor_weight"]) == (10.0, 10.0)
+    SACCfg(**merged(path)["sac"]).validate(None)
+
+
+def test_the_serl_bc_v1_config_is_parts_pd_v7_without_flashsac_on_simba_with_serls_learner():
+    """SERL_BC v1 keeps every run setting of parts_pd v7 except the FlashSAC pieces, the network, SERL's learner and
+    the actor's normalized observation (and its own demo files, group)."""
+    from robonuke_rl_core.learners.cfg import SACCfg
+    from robonuke_rl_core.models.cfg import SimbaActorCfg, SimbaCriticCfg, SimbaModelCfg
+
+    v7 = leaves(merged(CONFIGS / "experiments" / "parts_pd" / "residual_parts_pd_v7.yaml"))
+    path = CONFIGS / "experiments" / "serl_bc" / "residual_serl_bc_v1.yaml"
+    s = leaves(merged(path))
+    changed = {k for k in set(v7) | set(s) if v7.get(k) != s.get(k)}
+    expected_sac = {
+        "sac.critic_distribution", "sac.adaptive_reward_scaling", "sac.weight_normalization",
+        "sac.cross_batch_value", "sac.lr_schedule", "sac.num_critics", "sac.actor_q_reduction", "sac.batch_size",
+        "sac.normalize_observations", "sac.cuda_graph",
+        "sac.gradient_steps", "sac.update_every", "sac.policy_delay", "sac.polyak", "sac.learn_entropy",
+        "sac.initial_entropy_value", "sac.target_entropy", "sac.entropy_loss_form", "sac.entropy_observations",
+    }
+    model = {k for k in changed if k.startswith("model.")}
+    assert changed - model == expected_sac | {"wandb.group"}
+    assert s["sac.normalize_observations"] is True and s.get("residual.normalize_observation") in (None, False)
+    assert s["model.architecture"] == "simba" and s["model.actor.act_init_std"] == 0.1
+    assert (s["sac.num_critics"], s["sac.critic_subset"], s["sac.gradient_steps"], s["sac.policy_delay"]) == (10, 2, 10, 10)
+    assert s["sac.actor_q_reduction"] == "mean" and s["sac.n_step"] == 3 and s["sac.learn_entropy"] is True
+    assert s["sac.cuda_graph"] is True
+    # the PARTS pieces are v7's
+    for key in ("sac.route_clock", "sac.demo_storage", "sac.learning_starts_rows", "sac.success_clone_weight",
+                "sac.failure_anchor_weight", "sac.parts_term_reduction", "residual.steps_per_chunk", "residual.target_axes",
+                "task.cfg.furniture.stall_steps_screw", "sac.hold_still_key"):
+        assert s[key] == v7[key], key
+    c = merged(path)
+    SACCfg(**c["sac"]).validate(None)
+    SimbaModelCfg(actor=SimbaActorCfg(**c["model"]["actor"]), critic=SimbaCriticCfg(**c["model"]["critic"])).validate(None)
+    ResidualCfg(**{k: v for k, v in c["residual"].items() if k in ResidualCfg.__dataclass_fields__}).validate(None)
+
+
+def test_the_serl_bc_v2_config_is_v1_with_a_std_ceiling_and_a_faster_temperature():
+    import math
+
+    from robonuke_rl_core.learners.cfg import SACCfg
+    from robonuke_rl_core.models.cfg import SimbaActorCfg, SimbaCriticCfg, SimbaModelCfg
+
+    folder = CONFIGS / "experiments" / "serl_bc"
+    v1 = leaves(merged(folder / "residual_serl_bc_v1.yaml"))
+    path = folder / "residual_serl_bc_v2.yaml"
+    v2 = leaves(merged(path))
+    assert {k for k in set(v1) | set(v2) if v1.get(k) != v2.get(k)} == {"wandb.group", "sac.entropy_lr", "model.actor.max_log_std"}
+    assert v2["sac.entropy_lr"] == 3.0e-3 and math.exp(v2["model.actor.max_log_std"]) == pytest.approx(0.2)
+    c = merged(path)
+    SACCfg(**c["sac"]).validate(None)
+    SimbaModelCfg(actor=SimbaActorCfg(**c["model"]["actor"]), critic=SimbaCriticCfg(**c["model"]["critic"])).validate(None)
+
+
+def test_the_serl_bc_v3_config_is_v2_with_symmetric_sampling_and_no_bc_terms():
+    from robonuke_rl_core.learners.cfg import SACCfg
+
+    folder = CONFIGS / "experiments" / "serl_bc"
+    v2 = leaves(merged(folder / "residual_serl_bc_v2.yaml"))
+    path = folder / "residual_serl_bc_v3.yaml"
+    v3 = leaves(merged(path))
+    assert {k for k in set(v2) | set(v3) if v2.get(k) != v3.get(k)} == {
+        "wandb.group", "sac.demo_storage", "sac.demo_sampling_end", "sac.demo_batch_shared",
+        "sac.success_clone_weight", "sac.failure_anchor_weight", "sac.actor_q_scale",
+    }
+    assert v3["sac.demo_batch_shared"] is True and v3["sac.demo_sampling_end"] == v3["trainer.total_timesteps"]
+    assert (v3["sac.success_clone_weight"], v3["sac.failure_anchor_weight"], v3["sac.actor_q_scale"]) == (0.0, 0.0, None)
+    SACCfg(**merged(path)["sac"]).validate(None)
+
+
+def test_the_serl_bc_v4_config_is_v3_with_the_bc_terms_back():
+    from robonuke_rl_core.learners.cfg import SACCfg
+
+    folder = CONFIGS / "experiments" / "serl_bc"
+    v3 = leaves(merged(folder / "residual_serl_bc_v3.yaml"))
+    path = folder / "residual_serl_bc_v4.yaml"
+    v4 = leaves(merged(path))
+    assert {k for k in set(v3) | set(v4) if v3.get(k) != v4.get(k)} == {
+        "wandb.group", "sac.success_clone_weight", "sac.failure_anchor_weight", "sac.actor_q_scale",
+    }
+    assert (v4["sac.success_clone_weight"], v4["sac.failure_anchor_weight"], v4["sac.actor_q_scale"]) == (10.0, 10.0, 2.5)
+    assert v4["sac.demo_batch_shared"] is True
+    SACCfg(**merged(path)["sac"]).validate(None)
+
+
+def test_the_serl_bc_v5_config_is_v4_cloning_the_demo_rows():
+    from robonuke_rl_core.learners.cfg import SACCfg
+
+    folder = CONFIGS / "experiments" / "serl_bc"
+    v4 = leaves(merged(folder / "residual_serl_bc_v4.yaml"))
+    path = folder / "residual_serl_bc_v5.yaml"
+    v5 = leaves(merged(path))
+    assert {k for k in set(v4) | set(v5) if v4.get(k) != v5.get(k)} == {"wandb.group", "sac.clone_demo_rows"}
+    assert v5["sac.clone_demo_rows"] is True
+    SACCfg(**merged(path)["sac"]).validate(None)
+
+
+def test_the_serl_bc_v6_config_is_plain_serl_with_critic_only_symmetric_sampling_and_mlps():
+    import math
+
+    from robonuke_rl_core.learners.cfg import SACCfg
+    from robonuke_rl_core.models.cfg import MlpActorCfg, MlpCriticCfg, MlpModelCfg
+
+    folder = CONFIGS / "experiments" / "serl_bc"
+    v5 = leaves(merged(folder / "residual_serl_bc_v5.yaml"))
+    path = folder / "residual_serl_bc_v6.yaml"
+    v6 = leaves(merged(path))
+    changed = {k for k in set(v5) | set(v6) if v5.get(k) != v6.get(k)}
+    assert {k for k in changed if not k.startswith("model.")} == {
+        "wandb.group", "sac.demo_batch_shared", "sac.clone_demo_rows", "sac.success_clone_weight",
+        "sac.failure_anchor_weight", "sac.actor_q_scale", "sac.gradient_steps", "sac.policy_delay", "sac.entropy_lr",
+    }
+    assert v6.get("sac.demo_batch_shared", False) is False and v6.get("sac.clone_demo_rows", False) is False
+    assert (v6["sac.gradient_steps"], v6["sac.policy_delay"], v6["sac.entropy_lr"]) == (2, 2, 3.0e-4)
+    assert v6["sac.demo_storage"] == "sample" and v6["sac.demo_sampling_end"] == 250000
+    assert v6["model.architecture"] == "mlp" and (v6["model.actor.hidden_size"], v6["model.actor.num_layers"]) == (256, 2)
+    assert math.exp(v6["model.actor.init_log_std"]) == pytest.approx(0.1) and math.exp(v6["model.actor.max_log_std"]) == pytest.approx(0.2)
+    c = merged(path)
+    SACCfg(**c["sac"]).validate(None)
+    MlpModelCfg(actor=MlpActorCfg(**c["model"]["actor"]), critic=MlpCriticCfg(**c["model"]["critic"])).validate(None)
+
+
+def test_the_serl_bc_v7_config_is_v6_with_an_action_l2_penalty():
+    from robonuke_rl_core.learners.cfg import SACCfg
+
+    folder = CONFIGS / "experiments" / "serl_bc"
+    v6 = leaves(merged(folder / "residual_serl_bc_v6.yaml"))
+    path = folder / "residual_serl_bc_v7.yaml"
+    v7 = leaves(merged(path))
+    assert {k for k in set(v6) | set(v7) if v6.get(k) != v7.get(k)} == {"wandb.group", "sac.action_l2_weight"}
+    assert v7["sac.action_l2_weight"] == 1.0
+    SACCfg(**merged(path)["sac"]).validate(None)
+
+
+def test_serl_bc_v8_is_v7_per_env_step_with_shaping_and_no_l2():
+    from omegaconf import OmegaConf
+
+    from robonuke_rl_core.learners.cfg import SACCfg
+
+    folder = CONFIGS / "experiments" / "serl_bc"
+    v7 = leaves(merged(folder / "residual_serl_bc_v7.yaml"))
+    v8 = leaves(merged(folder / "residual_serl_bc_v8.yaml"))
+    changed = {k for k in set(v7) | set(v8) if v7.get(k) != v8.get(k)}
+    assert changed == {
+        "wandb.group", "trainer.total_timesteps", "trainer.checkpoint_interval", "trainer.write_interval",
+        "residual.steps_per_chunk", "sac.action_l2_weight", "sac.potential_terms", "sac.demo_transitions",
+        "sac.demo_sampling_end", "sac.discount_factor", "sac.learning_starts_rows", "sac.update_every", "sac.target_entropy",
+    }
+    assert v8["residual.steps_per_chunk"] == 1 and v8["sac.action_l2_weight"] == 0.0
+    # the section's schema takes the entries as the strict config loader does (struct mode), and they validate
+    schema = OmegaConf.structured(SACCfg)
+    OmegaConf.set_struct(schema, True)
+    sac = OmegaConf.to_object(OmegaConf.merge(schema, OmegaConf.create(merged(folder / "residual_serl_bc_v8.yaml")["sac"])))
+    sac.validate(None)
+    terms = {(t.route, t.channel): t.weight for t in sac.potential_terms}
+    assert terms == {("insert", "eval_state/phase/tip_mm"): 0.01, ("insert", "eval_state/phase/tilt_deg"): 0.01,
+                     ("screw", "eval_state/phase/height_mm"): 0.1, ("screw", "eval_state/phase/tilt_deg"): 0.05}
+
+
+def test_serl_bc_fixed_demo_v1_is_v8_on_its_own_demo_files():
+    folder = CONFIGS / "experiments" / "serl_bc"
+    v8 = leaves(merged(folder / "residual_serl_bc_v8.yaml"))
+    fixed = leaves(merged(folder / "residual_serl_bc_fixed_demo_v1.yaml"))
+    changed = {k for k in set(v8) | set(fixed) if v8.get(k) != fixed.get(k)}
+    assert changed == {"wandb.group", "sac.demo_transitions"}
+    assert fixed["sac.demo_transitions"] == "data/serl_bc_fixed_demo_v1/demos_{route}.pt"
+
+
+def test_serl_bc_fixed_demo_v2_is_v1_on_its_own_demo_files():
+    folder = CONFIGS / "experiments" / "serl_bc"
+    v1 = leaves(merged(folder / "residual_serl_bc_fixed_demo_v1.yaml"))
+    v2 = leaves(merged(folder / "residual_serl_bc_fixed_demo_v2.yaml"))
+    changed = {k for k in set(v1) | set(v2) if v1.get(k) != v2.get(k)}
+    assert changed == {"wandb.group", "sac.demo_transitions"}
+
+
+def test_serl_bc_fixed_demo_v3_changes_only_the_posing():
+    folder = CONFIGS / "experiments" / "serl_bc"
+    v2 = leaves(merged(folder / "residual_serl_bc_fixed_demo_v2.yaml"))
+    v3 = leaves(merged(folder / "residual_serl_bc_fixed_demo_v3.yaml"))
+    changed = {k for k in set(v2) | set(v3) if v2.get(k) != v3.get(k)}
+    assert changed == {"wandb.group", "sac.demo_transitions", "residual.observation_drop", "residual.critic_action",
+                       "residual.residual_gripper", "sac.discount_factor", "sac.target_entropy"}
+    assert v3["residual.observation_drop"] == [[25, 52], [61, 63]]
+    c = merged(folder / "residual_serl_bc_fixed_demo_v3.yaml")
+    ResidualCfg(**{k: v for k, v in c["residual"].items() if k in ResidualCfg.__dataclass_fields__}).validate(None)
+
+
+def test_serl_bc_fixed_demo_v4_is_v3_with_the_shaping_ten_times_stronger():
+    folder = CONFIGS / "experiments" / "serl_bc"
+    v3 = merged(folder / "residual_serl_bc_fixed_demo_v3.yaml")
+    v4 = merged(folder / "residual_serl_bc_fixed_demo_v4.yaml")
+    a, b = leaves(v3), leaves(v4)
+    changed = {k for k in set(a) | set(b) if a.get(k) != b.get(k)}
+    assert changed == {"wandb.group", "sac.demo_transitions", "sac.potential_terms"}
+    w3 = {(t["route"], t["channel"]): t["weight"] for t in v3["sac"]["potential_terms"]}
+    w4 = {(t["route"], t["channel"]): t["weight"] for t in v4["sac"]["potential_terms"]}
+    assert w4.keys() == w3.keys() and all(abs(w4[k] - 10 * w3[k]) < 1e-9 for k in w3)

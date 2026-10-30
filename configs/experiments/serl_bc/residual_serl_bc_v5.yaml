@@ -1,0 +1,12 @@
+# SERL_BC v4 (symmetric 50/50 demo sampling, one batch for the critics and the actor, clone / anchor terms at 10, the
+# Q term TD3+BC-scaled) with the demo rows of every batch as clone targets too (sac.clone_demo_rows): TD3+BC's anchor
+# to the dataset's actions. In v4 the clone term reached only the online successes (12-22% of a batch) and the critics
+# still diverged (insert Q 3.8 at 4k chunks); now it covers the demo half of every batch as well.
+#   python scripts/train.py --config configs/experiments/serl_bc/residual_serl_bc_v5.yaml --headless
+base: residual_serl_bc_v4.yaml
+
+wandb:
+  group: serl_bc_v5
+
+sac:
+  clone_demo_rows: true

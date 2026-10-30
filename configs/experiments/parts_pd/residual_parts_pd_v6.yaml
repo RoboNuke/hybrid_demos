@@ -1,0 +1,22 @@
+# residual_parts_pd_v5.yaml (absolute 2 cm / 6 deg residual, Q(s, a_base, r), cold-start base, per-dim PARTS terms,
+# demos for the critics only) with:
+# * the actor's own full batch: the critics sample the whole memory (demos included), the actor 512 rows of its
+#   phase's online data only (sac.demo_storage: memory_critic) -- v5 zeroed the demo rows out of one shared batch,
+#   leaving the actor 55-130 of 512
+# * no fixed start: each residual starts training (critics and actor) once its memory holds 512 online chunks of its
+#   own phase (sac.learning_starts_rows), however long its phase takes to give them
+# * exploration std 0.1 (2 mm / 0.6 deg per axis per step; v5's 0.15 was 3 mm at 2 cm per unit)
+#   python scripts/train.py --config configs/experiments/parts_pd/residual_parts_pd_v6.yaml --headless
+base: residual_parts_pd_v5.yaml
+
+wandb:
+  group: parts_pd_v6
+
+sac:
+  learning_starts: 0
+  policy_learning_starts: 0
+  learning_starts_rows: 512
+
+model:
+  actor:
+    fixed_std: 0.1

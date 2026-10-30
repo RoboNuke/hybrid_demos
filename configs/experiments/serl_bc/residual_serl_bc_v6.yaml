@@ -1,0 +1,41 @@
+# SERL_BC v6: the critics keep SERL's symmetric sampling (half of every critic batch each phase's demos, data/parts_pd_v5,
+# for the whole run), and everything else steps back toward plain SERL:
+# * demos out of the actor: it trains on its own online rows (no shared batch)
+# * no BC: PARTS' clone / anchor terms off, the Q term unscaled
+# * fewer critic updates: 2 per chunk (v1-v5: 10), the actor once per chunk
+# * the temperature at SERL's 3e-4 (v2-v5: 3e-3); the std still starts at 0.1 and is capped at 0.2
+# * SERL-sized networks: plain MLPs, 2 x 256 ReLU, for the actor and each of the 10 critics (v1-v5: SimBa 1 block x 256
+#   with a 4x expansion and LayerNorms), the actor's mean head at gain 0.01 (a near-zero start), a state-dependent std
+#   python scripts/train.py --config configs/experiments/serl_bc/residual_serl_bc_v6.yaml --headless
+base: _foundation.yaml
+
+wandb:
+  group: serl_bc_v6
+
+sac:
+  demo_storage: sample
+  demo_sampling_end: 250000
+  success_clone_weight: 0.0
+  failure_anchor_weight: 0.0
+  actor_q_scale: null
+  gradient_steps: 2
+  policy_delay: 2
+
+model:
+  architecture: mlp
+  actor:
+    hidden_size: 256
+    num_layers: 2
+    activation: ReLU
+    output_init_scale: 0.01
+    use_state_dependent_std: true
+    # log(0.1)
+    init_log_std: -2.302585092994046
+    log_std_bound: clip
+    # log(0.2)
+    max_log_std: -1.6094379124341003
+    squash: true
+  critic:
+    hidden_size: 256
+    num_layers: 2
+    activation: ReLU

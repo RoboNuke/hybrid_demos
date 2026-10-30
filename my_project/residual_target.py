@@ -31,17 +31,37 @@ WIDTH = 7
 
 
 class TargetResidual:
-    def __init__(self, pos_scale: float, rot_scale_deg: float, grip_scale: float) -> None:
+    """``axes`` (``residual.target_axes``): "target" composes the correction in the base target's own frame
+    (``p_base + R_base (pos_scale r_pos)``, ``R_base Exp(rot_scale r_rot)``); "base" adds it in the robot-base frame
+    the absolute targets are in (``p_base + pos_scale r_pos``, ``Exp(rot_scale r_rot) R_base``), so r = 1 is the same
+    fixed absolute correction whatever the target's orientation."""
+
+    AXES = ("target", "base")
+
+    def __init__(self, pos_scale: float, rot_scale_deg: float, grip_scale: float, axes: str = "target",
+                 gripper: bool = True) -> None:
+        if axes not in self.AXES:
+            raise ValueError(f"TargetResidual axes must be one of {self.AXES}, got {axes!r}")
         self.pos_scale = float(pos_scale)
         self.rot_scale = math.radians(float(rot_scale_deg))
         self.grip_scale = float(grip_scale)
+        self.axes = axes
+        #: ``residual.residual_gripper``: r carries r_grip (7 per step), or the pose alone (6) and the gripper is the base's
+        self.gripper = bool(gripper)
+        self.width = WIDTH if self.gripper else WIDTH - 1
 
     def step(self, base: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
-        """``base`` ``(..., 10)`` absolute targets, ``r`` ``(..., 7)`` -> the sent targets ``(..., 10)``."""
+        """``base`` ``(..., 10)`` absolute targets, ``r`` ``(..., width)`` -> the sent targets ``(..., 10)``."""
+        if r.shape[-1] != self.width:
+            raise ValueError(f"the target-frame residual is {self.width} per step, got {r.shape[-1]}")
         R_base = rot6d_to_mat(base[..., 3:9])
+        gripper = base[..., 9:10] + self.grip_scale * r[..., 6:7] if self.gripper else base[..., 9:10]
+        if self.axes == "base":
+            dp = self.pos_scale * r[..., 0:3]
+            R = exp_so3(self.rot_scale * r[..., 3:6]) @ R_base
+            return torch.cat((base[..., 0:3] + dp, mat_to_rot6d(R), gripper), dim=-1)
         dp = self.pos_scale * (R_base @ r[..., 0:3].unsqueeze(-1)).squeeze(-1)
         R = R_base @ exp_so3(self.rot_scale * r[..., 3:6])
-        gripper = base[..., 9:10] + self.grip_scale * r[..., 6:7]
         return torch.cat((base[..., 0:3] + dp, mat_to_rot6d(R), gripper), dim=-1)
 
 

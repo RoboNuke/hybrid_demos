@@ -1,0 +1,41 @@
+# residual_parts_pd.yaml (PARTS on 1 env, one residual per phase) closer to the paper (Su et al., arXiv:2609.21788):
+# * no-progress reset: an Insert or Screw attempt ends as a failure once leg 4 has moved at most 0.5 mm and turned at
+#   most 1 deg per step, step to step, for 30 (Insert) or 120 (Screw) consecutive steps (the demos' longest such runs:
+#   13 and 93); its stalled transitions are held and, on the reset, only the first is stored, as the terminal failure
+#   (sac.hold_*); progress writes them
+# * the critics take the observation and the residual r alone, Q(s, r): the base action never reaches them
+# * reference dropout: the actor's base-action block (its last 7 columns) zeroed for 30% of each actor batch
+# * each residual updates, starts learning and retrains on its own phase's steps only (sac.route_clock): nothing
+#   while its phase is not running, nothing in Corner or Grasp
+# * correlated exploration: FlashSAC's noise repetition, held at most 5 steps
+# * success-reweighted retraining every 10k steps of the residual's own phase: every success and 10% of the failed
+#   attempts kept, fresh networks, 10k offline updates (the paper gives no numbers)
+#   python scripts/train.py --config configs/experiments/parts_pd/residual_parts_pd_v2.yaml --headless
+base: residual_parts_pd.yaml
+
+wandb:
+  group: parts_pd_v2
+
+task:
+  cfg:
+    furniture:
+      stall_steps_insert: 30
+      stall_steps_screw: 120
+      stall_pos_mm: 0.5
+      stall_rot_deg: 1.0
+
+residual:
+  critic_action: residual
+
+sac:
+  route_clock: true
+  hold_still_key: eval_state/phase/still
+  hold_stall_key: eval_state/phase/stalled
+  reference_dropout: 0.3
+  # the EE-relative base action, 1 x 7, last in the actor's observation
+  reference_columns: 7
+  noise_repeat: true
+  noise_repeat_max: 5
+  retrain_every: 10000
+  retrain_failure_fraction: 0.1
+  retrain_gradient_steps: 10000

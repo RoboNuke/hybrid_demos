@@ -1,0 +1,15 @@
+# SERL_BC fixed_demo v1: SERL_BC v8 (per-step residual, potential shaping, no action L2) on the fixed demos. Two
+# bugs in the earlier demo files (phase_demos.py; every SERL_BC run through v8 trained on them):
+#   * the actions were the DART collection's clean expert labels, while the next observations came from the
+#     perturbed commands the env executed (4 mm / 2 deg off during a burst): now the executed actions
+#   * screw's success row was the step after assembly (the expert's hold-and-open no-op, then lifting clear): now
+#     the step that assembles the leg is the success (reward 1, terminal) and nothing after it is used
+#   python scripts/make_phase_demos.py --config configs/experiments/serl_bc/residual_serl_bc_fixed_demo_v1.yaml
+#   python scripts/train.py --config configs/experiments/serl_bc/residual_serl_bc_fixed_demo_v1.yaml --headless
+base: residual_serl_bc_v8.yaml
+
+wandb:
+  group: serl_bc_fixed_demo_v1
+
+sac:
+  demo_transitions: data/serl_bc_fixed_demo_v1/demos_{route}.pt

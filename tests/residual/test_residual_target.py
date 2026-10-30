@@ -141,3 +141,75 @@ def test_ee_relative_needs_the_target_frame_and_the_observation_critic():
     with pytest.raises(NotImplementedError, match="ee_relative"):
         ResidualCfg(ee_relative_actions=True).validate(None)
     ResidualCfg(ee_relative_actions=True, action_frame="target", critic_state="observation").validate(None)
+
+
+def test_base_axes_r_one_is_two_centimetres_and_six_degrees_about_the_robot_base_axes():
+    """residual.target_axes: base: r = 1 is a fixed absolute correction in the robot-base frame, whatever the target's
+    orientation: p_base + 0.02 m e_axis, Exp(6 deg e_axis) R_base."""
+    target = TargetResidual(0.02, 6.0, 0.004, axes="base")
+    base = random_targets(8)
+    R_base = rot6d_to_mat(base[:, 3:9])
+    for axis in range(3):
+        r = torch.zeros(8, WIDTH)
+        r[:, axis] = 1.0
+        sent = target.step(base, r)
+        step = torch.zeros(8, 3)
+        step[:, axis] = 0.02
+        torch.testing.assert_close(sent[:, 0:3] - base[:, 0:3], step)
+        torch.testing.assert_close(sent[:, 3:9], base[:, 3:9])
+        r = torch.zeros(8, WIDTH)
+        r[:, 3 + axis] = 1.0
+        R_sent = rot6d_to_mat(target.step(base, r)[:, 3:9])
+        world = R_sent @ R_base.transpose(-1, -2)  # the rotation applied in the robot-base frame
+        angle = torch.arccos(((world.diagonal(dim1=-2, dim2=-1).sum(-1) - 1) / 2).clamp(-1, 1))
+        torch.testing.assert_close(angle, torch.full((8,), math.radians(6.0)), atol=1e-4, rtol=0)
+        axis_vec = torch.stack((world[:, 2, 1] - world[:, 1, 2], world[:, 0, 2] - world[:, 2, 0], world[:, 1, 0] - world[:, 0, 1]), -1)
+        assert torch.all(axis_vec.argmax(dim=-1) == axis)  # about the base frame's own axis
+    with pytest.raises(ValueError, match="axes"):
+        TargetResidual(0.02, 6.0, 0.004, axes="world")
+
+
+def test_target_axes_and_warm_start_are_validated_and_applied():
+    from types import SimpleNamespace
+
+    from my_project.residual import override_base
+
+    with pytest.raises(ValueError, match="target_axes"):
+        ResidualCfg(enabled=True, base_run="r", action_frame="target", target_axes="world").validate(SimpleNamespace(task_name="Isaac-Furniture-OneLeg-FBAbs-ResiP-v0", hybrid=SimpleNamespace(enabled=False)))
+    with pytest.raises(ValueError, match="target_axes"):
+        ResidualCfg(enabled=True, base_run="r", action_frame="absolute", target_axes="base").validate(SimpleNamespace(task_name="Isaac-Furniture-OneLeg-FBAbs-ResiP-v0", hybrid=SimpleNamespace(enabled=False)))
+    policy = SimpleNamespace(cfg=SimpleNamespace(warm_start=True, inference_steps=4, num_diffusion_iters=100), horizon=32, action_horizon=8)
+    override_base(policy, SimpleNamespace(base_action_horizon=4, base_inference_steps=None, steps_per_chunk=4, base_warm_start=False))
+    assert policy.cfg.warm_start is False and policy.action_horizon == 4
+
+
+def test_without_the_gripper_the_residual_is_the_pose_and_the_gripper_is_the_bases():
+    base = torch.cat((torch.randn(5, 3), mat_to_rot6d(exp_so3(torch.randn(5, 3))), torch.randn(5, 1)), dim=-1)
+    full = TargetResidual(0.02, 6.0, 0.004, axes="base")
+    pose = TargetResidual(0.02, 6.0, 0.004, axes="base", gripper=False)
+    assert (full.width, pose.width) == (7, 6)
+    r = torch.randn(5, 7)
+    sent = pose.step(base, r[:, :6])
+    torch.testing.assert_close(sent[:, :9], full.step(base, r)[:, :9])  # the same pose correction
+    torch.testing.assert_close(sent[:, 9:], base[:, 9:])  # the base's gripper, untouched
+    with pytest.raises(ValueError, match="6 per step"):
+        pose.step(base, r)
+
+
+def test_dropped_observation_columns_leave_the_agent_and_the_critic_state():
+    from my_project.residual import critic_state, observation_keep, residual_observation
+
+    normalizer = a_normalizer()
+    width = 4  # a_normalizer's observation
+    obs = torch.randn(4, width)
+    keep = observation_keep(width, [[1, 3], [width - 1, width]])
+    assert keep.tolist() == [0] + list(range(3, width - 1))
+    base = torch.randn(4, 10)
+    agent, base_n = residual_observation(normalizer, obs, base, True, True, keep)
+    whole, _ = residual_observation(normalizer, obs, base, True, True)
+    torch.testing.assert_close(agent, torch.cat((whole[:, :width][:, keep], base_n), dim=-1))
+    critic = critic_state(normalizer, obs, base, keep=keep)
+    torch.testing.assert_close(critic, torch.cat((critic_state(normalizer, obs, base)[:, :width][:, keep], base_n), dim=-1))
+    assert observation_keep(width, []) is None
+    with pytest.raises(ValueError, match="runs past"):
+        observation_keep(width, [[0, width + 1]])

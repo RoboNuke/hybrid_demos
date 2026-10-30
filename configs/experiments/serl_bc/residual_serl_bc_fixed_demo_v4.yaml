@@ -1,0 +1,26 @@
+# SERL_BC fixed_demo v4: fixed_demo v3 with the dense reward 10x stronger -- every potential term's weight x10
+# (insert: 0.1 per mm of the tip off the hole's axis and per deg of tilt; screw: 1.0 per mm above seated, 0.5 per
+# deg of tilt), so the shaping outweighs the 0/1 phase success (the demos' insert attempt: ~43 of shaping, screw
+# ~13). Its own demos (their rewards carry the same shaping).
+#   python scripts/make_phase_demos.py --config configs/experiments/serl_bc/residual_serl_bc_fixed_demo_v4.yaml
+#   python scripts/train.py --config configs/experiments/serl_bc/residual_serl_bc_fixed_demo_v4.yaml --headless
+base: residual_serl_bc_fixed_demo_v3.yaml
+
+wandb:
+  group: serl_bc_fixed_demo_v4
+
+sac:
+  demo_transitions: data/serl_bc_fixed_demo_v4/demos_{route}.pt
+  potential_terms:
+    - route: insert
+      channel: eval_state/phase/tip_mm
+      weight: 0.1
+    - route: insert
+      channel: eval_state/phase/tilt_deg
+      weight: 0.1
+    - route: screw
+      channel: eval_state/phase/height_mm
+      weight: 1.0
+    - route: screw
+      channel: eval_state/phase/tilt_deg
+      weight: 0.5

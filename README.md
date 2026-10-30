@@ -284,6 +284,39 @@ python scripts/make_demo_transitions.py --config configs/experiments/resip_repli
 python scripts/train.py --config configs/experiments/resip_replica/residual_resip_replica.yaml --headless
 ```
 
+`configs/experiments/parts_pd/` is PARTS (Su et al., arXiv:2609.21788) on 1 env: one residual per phase
+listed in `sac.route_labels` (`insert`, `screw`), each its own SAC with its own replay memory, optimizers and
+local reward (the package's `RoutedSAC`), a fixed std (`model.actor.fixed_std`), no entropy term, and the demos
+written into each phase's replay memory as ordinary rows (`sac.demo_storage: memory`). The residual acts every
+env step (`residual.steps_per_chunk: 1`). Its demos come per phase from `scripts/make_phase_demos.py`
+(`my_project/phase_demos.py`, CPU only, no sim): each recorded demo step is labelled with its phase offline
+(Robonuke_Furniture_Bench `assembly/phases.phases_from_states`), the base is run as the env runs it (a plan
+every `action_horizon` frames), and the target-frame residual that reproduces the demo action is stored with
+its phase's local reward, one file per phase (`sac.demo_transitions` with `{route}`):
+
+```bash
+python scripts/make_phase_demos.py --config configs/experiments/parts_pd/residual_parts_pd.yaml
+python scripts/train.py --config configs/experiments/parts_pd/residual_parts_pd.yaml --headless
+```
+
+`residual_parts_pd_v2.yaml` moves it closer to the paper: no-progress resets (leg 4 moving at most 0.5 mm / 1 deg per
+step) in Insert (30 steps) and Screw (120) with
+the stalled transitions held and only the first kept as the failure (`furniture.stall_steps_*`, `sac.hold_*`),
+critics on `Q(s, r)` (`residual.critic_action: residual`), reference dropout on the actor's base-action columns,
+updates and retraining on each residual's own phase steps (`sac.route_clock`), noise held at most 5 steps, and
+retraining every 10k phase steps. `configs/eval/residual_watch_furniture.yaml` turns the no-progress reset off, so
+evals run every episode to its end.
+
+`residual_parts_pd_v4.yaml` is v3 with an absolute residual of fixed size (`residual.target_axes: base`, r = 1 is 2 cm
+and 6 deg about the robot-base axes), the actor observing the base chunk in absolute form, critics on `Q(s, a_base, r)`
+(`critic_state: residual`), the base's warm start off, no demos, and PARTS' terms averaged over the action dims
+(`sac.parts_term_reduction: mean`).
+
+Every residual run also publishes an episode-bookkeeping check: `episode/isaac_steps` (the env's own episode length,
+Robonuke_Furniture_Bench), `episode/agent_steps` (the agent steps the residual wrapper gave that episode) and
+`episode/count_offset` = isaac - `steps_per_chunk` x agent steps, which must stay within +-(`steps_per_chunk` - 1): an
+episode that ends mid-chunk hands the rest of that chunk to the next one; anything larger is a bookkeeping bug.
+
 To watch or record a checkpoint: `scripts/debug.py --run <entity>/<project>/<run>` (live viewer), or
 `scripts/eval.py --run <entity>/<project>/<run> --eval_config configs/eval/one_leg_phases.yaml --headless`
 (the mp4s, summary and trace under the run's `videos/one_leg_phases_<timestamp>/`, beside its
@@ -478,9 +511,13 @@ python scripts/publish_stochastic_eval.py <residual run dir>
 | `residual.observe_base_action` | bool | `true` | append `normalize(a_base)` (with `steps_per_chunk: k`, the chunk's `k` base actions normalized, step-major; and, with `accumulate`, the offset) to the **agent's** observation; `false`: the agent sees the observation alone (Policy Decorator's `actor_input: obs`). The critic state always holds the base action(s), so `critic_action: full` works either way. Part of the demo file's fingerprint |
 | `residual.critic_state` | str | `residual` | what the SAC critics observe. `residual`: the residual's critic state (`critic_state`: the env's, or the normalized base observation, then the base action(s) normalized). `observation`: no critic state, the critics see the agent's own observation (Policy Decorator's critic); `critic_action: full` rebuilds the executed action from the base action(s) the wrapper publishes every agent step as `infos["residual_base"]` / `["next_residual_base"]`, stored per transition as the transform's `side_inputs` and never a critic input. Furniture envs only; not with `action_frame: ee` or `sac.demo_transitions`. Eval and debug register the critic-action builder too, so the critics load at their width |
 | `residual.ee_relative_actions` | bool | `false` | Policy Decorator's command form (`my_project/residual_target.py` `EERelative`) for the base action the agent observes (`observe_base_action`) and the executed action the critics take (`critic_action: full`): each of the chunk's absolute targets against the EE pose of the chunk's observation, in the EE's frame, `[R_ee^T (p - p_ee) / ee_relative_pos_unit, log(R_ee^T R) / ee_relative_rot_unit, normalize(gripper)]`, 7 per step (ManiSkill2 `pd_ee_delta_pose`, `frame: ee`), so both are the same `k x 7` form. The critic state stays the observation without the base action (a critic group is created for it). Needs `action_frame: target` and `critic_state: observation` |
+| `residual.target_axes` | str | `target` | `action_frame: target`: the axes the correction is expressed in. `target`: the base target's own frame. `base`: the robot-base frame the absolute targets are in (`p_base + ee_pos_scale r_pos`, `Exp(ee_rot_scale r_rot) R_base`), so r = 1 is a fixed absolute correction whatever the target's orientation. Not with `ee_relative_actions` |
+| `residual.base_warm_start` | bool \| null | `null` | override the base run's `model.actor.warm_start`; `false` plans every chunk from pure noise (null keeps the run's) |
 | `residual.ee_relative_pos_unit` | float | `0.1` | m per unit of the EE-relative position (ManiSkill2 `pd_ee_delta_pose`: 0.1) |
 | `residual.ee_relative_rot_unit` | float | `0.1` | rad per unit of the EE-relative rotation vector (ManiSkill2 `pd_ee_delta_pose`: 0.1) |
 | `residual.active_from_phase` | str \| null | `null` | one_leg's task phase (`furniture.track_phases`: `corner`, `grasp`, `insert`, `screw`) from which the residual acts: an agent step whose observation is in an earlier phase (or at an episode-end code) runs the base alone, the agent's action zeroed, train and eval alike; `infos["residual_active"]` (1 / 0 per env) reports it (`sac.executed_action_mask: residual_active` stores the executed zeros; `sac.store_labels` keeps only the phases it acts in out of the memory's other phases). `insert`: only once the leg is grasped. Null: every step |
+| `residual.observation_drop` | list | `[]` | columns of the base's observation the residual never sees, `[start, stop)` pairs: removed from the agent's observation and the critic state (an env without its own critic group), never from the base's input; the demo builder drops the same. one_leg -FBAbs-ResiP (63): `[25, 52]` legs 1-3, `[61, 63]` the front obstacle. Empty: the whole observation |
+| `residual.residual_gripper` | bool | `true` | `action_frame: target`: the residual corrects the gripper too (`r_grip`, 7 per step). `false`: the pose alone (6 per step), the gripper is the base's |
 
 **The critic is asymmetric.** Forge gives the env a critic state (`task.cfg.state_order`: true
 peg and hole poses, joint positions, gains, ...), so SAC's critics train on that 65-d state

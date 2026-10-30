@@ -1,0 +1,51 @@
+# SERL_BC v7 without the action L2 penalty, with dense potential-based shaping, and the residual acting every env
+# step (residual.steps_per_chunk 1, was 4). Both v6 and v7 showed the critics cannot learn a correction's direction
+# from the 0/1 per-attempt reward alone; the shaping adds gamma Phi(s') - Phi(s) every step, Phi = -(weighted distance
+# to the phase's goal), measured from the object poses (as a real robot would, with the hole's true location):
+#   insert: the leg tip's distance off the hole's axis (phase/tip_mm) and the leg's tilt from vertical (tilt_deg)
+#   screw: the leg's height above seated (height_mm) and its tilt; never its turn
+# Weights: 1 mm = 1 deg at insert (the hole's tolerance is 13 mm / 16 deg), 0.01 per unit: the demos' insert starts
+# ~330 mm / 90 deg off, so an attempt is worth ~4 in shaping, a 2 cm correction 0.2. Screw covers 8 mm / 9 deg in
+# ~330 steps, so its weights are 10x / 5x: ~0.8 + 0.45 over an attempt.
+# Per env step now: discount 0.999 (was 0.996 per 4-step chunk), the run 1M env steps, checkpoints every 10k, a point
+# every 1000; the critic and actor updates per env step are v7's (2 critic steps and 1 actor step every 4th env
+# step: update_every 4 with v7's gradient_steps 2, policy_delay 2), so is the data before learning (512 chunks = 2048 steps); n_step
+# stays 3 (now 3 env steps; was 3 chunks); the target entropy is SERL's -|A| / 2 with |A| = 7.
+# The demos are this setup's own (one step per row, the same shaping):
+#   python scripts/make_phase_demos.py --config configs/experiments/serl_bc/residual_serl_bc_v8.yaml
+#   python scripts/train.py --config configs/experiments/serl_bc/residual_serl_bc_v8.yaml --headless
+base: residual_serl_bc_v7.yaml
+
+wandb:
+  group: serl_bc_v8
+
+trainer:
+  total_timesteps: 1000000
+  checkpoint_interval: 10000
+  write_interval: 1000
+
+residual:
+  steps_per_chunk: 1
+
+sac:
+  action_l2_weight: 0.0
+  potential_terms:
+    - route: insert
+      channel: eval_state/phase/tip_mm
+      weight: 0.01
+    - route: insert
+      channel: eval_state/phase/tilt_deg
+      weight: 0.01
+    - route: screw
+      channel: eval_state/phase/height_mm
+      weight: 0.1
+    - route: screw
+      channel: eval_state/phase/tilt_deg
+      weight: 0.05
+  demo_transitions: data/serl_bc_v8/demos_{route}.pt
+  demo_sampling_end: 1000000
+  discount_factor: 0.999
+  n_step: 3
+  learning_starts_rows: 2048
+  update_every: 4
+  target_entropy: -3.5

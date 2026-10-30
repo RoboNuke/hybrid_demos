@@ -14,3 +14,8 @@ task:
   cfg:
     scene:
       num_envs: 100
+    # evals run every episode to its end: no no-progress reset (a training-only shortcut), so a stall the policy
+    # could recover from counts as it would on the full task
+    furniture:
+      stall_steps_insert: 0
+      stall_steps_screw: 0

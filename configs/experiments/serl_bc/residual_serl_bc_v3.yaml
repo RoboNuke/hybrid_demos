@@ -1,0 +1,18 @@
+# SERL_BC v2 with RLPD's symmetric sampling and no BC terms: inside the demo window every batch is half demo
+# transitions (each phase's own, data/parts_pd_v5) and half online, and the critics AND the actor train on that one
+# batch (sac.demo_batch_shared); PARTS' clone / anchor terms off and the actor's Q term unscaled (plain SAC).
+# The demos are no longer memory rows: they are drawn into every batch for the whole run.
+#   python scripts/train.py --config configs/experiments/serl_bc/residual_serl_bc_v3.yaml --headless
+base: residual_serl_bc_v2.yaml
+
+wandb:
+  group: serl_bc_v3
+
+sac:
+  demo_storage: sample
+  # the whole run (trainer.total_timesteps)
+  demo_sampling_end: 250000
+  demo_batch_shared: true
+  success_clone_weight: 0.0
+  failure_anchor_weight: 0.0
+  actor_q_scale: null

@@ -68,7 +68,7 @@ class ChunkEnv(gym.Env):
     sim step, metric ``m = t``; ``end_at[env] = t`` ends that env's episode at its ``t``-th step
     (terminated) and resets it, as Isaac Lab does."""
 
-    def __init__(self, end_at=None, critic=True):
+    def __init__(self, end_at=None, critic=True, moving=None):
         spaces = {"policy": gym.spaces.Box(-1, 1, (OBS,))}
         if critic:
             spaces["critic"] = gym.spaces.Box(-1, 1, (3,))
@@ -79,6 +79,9 @@ class ChunkEnv(gym.Env):
         self.episode_length_buf = torch.zeros(N, dtype=torch.long)
         self.end_at = end_at or {}
         self.critic = critic
+        #: with ``moving`` (a set of (env, global step)), an eval_state: phase/id = the step's t before any reset, and
+        #: phase/still = 1 except at the listed steps
+        self.moving = moving
         self.observation_manager = SimpleNamespace(compute=self._compute)
         self.cfg = SimpleNamespace()
         self.sent, self.steps = [], 0
@@ -106,6 +109,11 @@ class ChunkEnv(gym.Env):
             "metrics_to_log": {"m": t.to(torch.float32)},
             "episode_metrics_to_log": {"e": torch.full((N,), float(self.steps))},
         }
+        if self.moving is not None:
+            infos["eval_state"] = {
+                "phase/id": t.to(torch.float32),
+                "phase/still": torch.tensor([0.0 if (i, self.steps) in self.moving else 1.0 for i in range(N)]),
+            }
         return self.observation_manager.compute(update_history=True), reward, terminated, torch.zeros(N, dtype=torch.bool), infos
 
 
@@ -175,6 +183,21 @@ def test_an_env_whose_episode_ends_mid_chunk_runs_the_rest_on_the_base_and_lines
     assert policy.calls == 3 and env.base.index.tolist() == [1, 1]
     assert obs["policy"][:, [OBS, OBS + ACT]].tolist() == [[200.0, 201.0], [200.0, 201.0]]
     assert obs["policy"][0, 0].item() == 1.0  # env 0's observation: its new episode, one step in
+
+
+def test_a_chunk_passes_on_the_closing_sub_steps_state_and_is_still_only_if_every_own_sub_step_was(monkeypatch):
+    """An env whose episode ends mid-chunk keeps the eval_state of the sub-step it closed on (its phase label, its
+    stall flags), not its next episode's; phase/still is 1 only if every sub-step of the chunk's own episode was."""
+    # env 0 ends at its 3rd step (sub-step 0 of the second chunk) and its next episode's first step moves; env 1
+    # moves at global step 3 (sub-step 0 of the second chunk)
+    env, _ = make(monkeypatch, ChunkEnv(end_at={0: 3}, moving={(0, 4), (1, 3)}), steps_per_chunk=2)
+    env.reset()
+    _, _, _, _, infos = env.step(residual([[0.0, 0.0], [0.0, 0.0]]))
+    assert infos["eval_state"]["phase/still"].tolist() == [1.0, 1.0]
+    _, _, terminated, _, infos = env.step(residual([[0.0, 0.0], [0.0, 0.0]]))
+    assert terminated.tolist() == [True, False]
+    assert infos["eval_state"]["phase/id"].tolist() == [3.0, 4.0]  # env 0: its closing step's, not the new episode's 1
+    assert infos["eval_state"]["phase/still"].tolist() == [1.0, 0.0]  # env 0's moving step is its next episode's
 
 
 def test_the_action_width_is_checked_and_k_1_is_the_plain_step(monkeypatch):
@@ -428,3 +451,25 @@ def test_active_from_phase_needs_the_phase_channel(monkeypatch):
 def test_active_from_phase_is_validated():
     with pytest.raises(ValueError, match="active_from_phase"):
         ResidualCfg(active_from_phase="lift").validate(None)
+
+
+def test_the_episode_count_check_matches_the_envs_own_clock(monkeypatch):
+    """episode/agent_steps counts the wrapper's agent steps per episode; with the env's own clock
+    (episode/isaac_steps) episode/count_offset = isaac - k x agent steps, within +-(k - 1) for a mid-chunk end."""
+
+    class ClockEnv(ChunkEnv):
+        def step(self, action):
+            before = self.episode_length_buf.clone() + 1
+            out = list(super().step(action))
+            out[4]["episode_metrics_to_log"]["episode/isaac_steps"] = before.to(torch.float32)
+            return tuple(out)
+
+    env, _ = make(monkeypatch, ClockEnv(end_at={0: 3}), steps_per_chunk=2)
+    env.reset()
+    env.step(residual([[0.0, 0.0], [0.0, 0.0]]))
+    _, _, terminated, _, infos = env.step(residual([[0.0, 0.0], [0.0, 0.0]]))
+    assert terminated.tolist() == [True, False]
+    metrics = infos["episode_metrics_to_log"]
+    # env 0 ended at its 3rd sim step (sub-step 0 of the 2nd chunk): 2 agent steps, Isaac's 3 -> offset 3 - 4 = -1
+    assert metrics["episode/agent_steps"][0].item() == 2.0 and metrics["episode/count_offset"][0].item() == -1.0
+    assert env.agent_steps.tolist() == [0, 2]  # env 0 counts its next episode from 0

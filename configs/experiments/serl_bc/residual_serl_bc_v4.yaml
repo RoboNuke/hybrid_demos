@@ -1,0 +1,15 @@
+# SERL_BC v3 (symmetric 50/50 demo sampling, one batch for the critics and the actor) with PARTS' clone and anchor
+# terms back on at 10 (per-dim means) and the actor's Q term TD3+BC-scaled (2.5 / mean|Q|) again: without them v3's
+# insert actor ran to ~19 mm within 2.5k chunks and its critic diverged (Q 0.9 -> 14.6 against a local reward of at
+# most 1). The demo rows in the shared batch stay out of the clone / anchor terms (they have no attempt of their own);
+# the actor's Q term reads them.
+#   python scripts/train.py --config configs/experiments/serl_bc/residual_serl_bc_v4.yaml --headless
+base: residual_serl_bc_v3.yaml
+
+wandb:
+  group: serl_bc_v4
+
+sac:
+  success_clone_weight: 10.0
+  failure_anchor_weight: 10.0
+  actor_q_scale: 2.5

@@ -1,0 +1,30 @@
+# residual_parts_pd_v3.yaml (4-step chunks, 3-chunk returns, per-phase residuals, no-progress resets, no retraining) with:
+# * an absolute residual of fixed physical size: r added to the base's absolute target in the robot-base frame,
+#   r = 1 is 2 cm and 6 deg (about the base frame's axes) and 0.1 of the gripper's half range, whatever the target;
+#   the actor observes the raw observation and the base chunk in its absolute form (normalized), not EE-relative
+# * critics on the observation and the base chunk, with the residual r as their action: Q(s, a_base, r)
+# * the base planning every chunk from pure noise (its warm start off)
+# * no demos anywhere (no replay rows, no sampling)
+# * PARTS' clone / anchor terms averaged over the action dims (TD3+BC's balance against the 2.5 / mean|Q| term)
+# * no reference dropout
+#   python scripts/train.py --config configs/experiments/parts_pd/residual_parts_pd_v4.yaml --headless
+base: residual_parts_pd_v3.yaml
+
+wandb:
+  group: parts_pd_v4
+
+residual:
+  target_axes: base
+  ee_pos_scale: 0.02
+  ee_rot_scale_deg: 6.0
+  ee_relative_actions: false
+  critic_state: residual
+  critic_action: residual
+  base_warm_start: false
+
+sac:
+  demo_transitions: null
+  demo_storage: sample
+  parts_term_reduction: mean
+  reference_dropout: 0.0
+  reference_columns: 0

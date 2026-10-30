@@ -344,6 +344,13 @@ class ResidualCfg:
     #: same form, the agent's ``k x 7`` and the critics' ``k x 7``; the critic state stays the observation
     #: without the base action (Policy Decorator's critic input). False: the normalized absolute form
     ee_relative_actions: bool = False
+    #: action_frame: target: the axes the correction is expressed in. "target": the base target's own frame (r_pos
+    #: along its axes, Exp(r_rot) about them). "base": the robot-base frame the absolute targets are in (p_base +
+    #: ee_pos_scale r_pos, Exp(ee_rot_scale r_rot) R_base): r = 1 is a fixed absolute correction (ee_pos_scale m,
+    #: ee_rot_scale_deg deg) whatever the target's orientation. Not with ee_relative_actions
+    target_axes: str = "target"
+    #: override the base run's ``model.actor.warm_start`` (null keeps it): false plans every chunk from pure noise
+    base_warm_start: Optional[bool] = None
     ee_relative_pos_unit: float = 0.1
     ee_relative_rot_unit: float = 0.1
     #: one_leg's task phase (``furniture.track_phases``: corner, grasp, insert, screw) from which the residual acts:
@@ -352,6 +359,14 @@ class ResidualCfg:
     #: ``sac.executed_action_mask: residual_active`` so the memory stores the executed zeros, or ``sac.store_labels`` to
     #: store only the phases it acts in). "insert": only after the leg is grasped. Train and eval alike. None: every step
     active_from_phase: Optional[str] = None
+    #: columns of the base's observation the residual never sees, as ``[start, stop)`` pairs: removed from the agent's
+    #: observation and from the critic state (an env without a critic group of its own), never from the base's input.
+    #: one_leg -FBAbs-ResiP (63): ``[25, 52]`` legs 1-3 (parts 1-3 of ``parts 5 x 9`` at column 16), ``[61, 63]`` the
+    #: front obstacle. Empty: the whole observation
+    observation_drop: List[List[int]] = field(default_factory=list)
+    #: action_frame: target: the residual corrects the gripper too (``r_grip``, the 7th per-step dim). False: the
+    #: residual is the pose alone (6 per step) and the gripper is the base's
+    residual_gripper: bool = True
 
     DEMO_ACTIONS_BEYOND_SCALE = ("store", "drop")
     CRITIC_ACTIONS = ("residual", "full")
@@ -385,6 +400,15 @@ class ResidualCfg:
                     f"residual.ee_relative_pos_unit and ee_relative_rot_unit must be > 0, got "
                     f"{self.ee_relative_pos_unit}, {self.ee_relative_rot_unit}"
                 )
+        for pair in self.observation_drop:
+            if len(pair) != 2 or not 0 <= int(pair[0]) < int(pair[1]):
+                raise ValueError(f"residual.observation_drop entries are [start, stop) column pairs, got {list(pair)}")
+        if not self.residual_gripper and self.action_frame != "target":
+            raise ValueError("residual.residual_gripper: false drops r_grip from the target-frame residual: set action_frame: target")
+        if self.target_axes not in ("target", "base"):
+            raise ValueError(f"residual.target_axes must be 'target' or 'base', got {self.target_axes!r}")
+        if self.target_axes != "target" and (self.action_frame != "target" or self.ee_relative_actions):
+            raise ValueError("residual.target_axes: base is action_frame: target's absolute variant, without ee_relative_actions")
         if self.critic_state == "observation" and self.action_frame == "ee":
             raise NotImplementedError(
                 "residual.critic_state: observation with action_frame: ee: the EE-frame critic action reads the EE "
@@ -433,8 +457,11 @@ class ResidualCfg:
             if family_of(cfg.task_name) == FORGE:
                 raise NotImplementedError("residual.critic_state: observation: a Forge env has a critic state of its own")
             sac = getattr(cfg, "sac", None)
-            if sac is not None and sac.demo_transitions:
-                raise ValueError("residual.critic_state: observation has no demo transitions: the conversion writes the residual's critic state")
+            # per-phase demos (sac.route_labels, scripts/make_phase_demos.py) are written in this form; the per-step
+            # conversion (scripts/make_demo_transitions.py) writes the residual's critic state
+            if sac is not None and sac.demo_transitions and not getattr(sac, "route_labels", None):
+                raise ValueError("residual.critic_state: observation has no demo transitions outside sac.route_labels: "
+                                 "scripts/make_demo_transitions.py writes the residual's critic state (per phase: scripts/make_phase_demos.py)")
         remote = self.base_project is not None or self.base_run_name is not None
         if bool(self.base_run) == remote:
             raise ValueError(
