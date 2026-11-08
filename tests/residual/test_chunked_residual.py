@@ -1,5 +1,5 @@
 """``residual.steps_per_chunk`` (the chunk-level residual), the base overrides and the observation
-flags (``normalize_observation`` / ``observe_base_action``), on CPU fakes: a scripted base whose chunk
+flags (``observe_base_action``), on CPU fakes: a scripted base whose chunk
 values say which chunk and step each action came from, and a manager-style env that records what it
 was sent and ends an episode when told to."""
 
@@ -238,9 +238,8 @@ def test_the_wrapper_runs_the_base_as_overridden(monkeypatch):
 
 
 def test_the_chunk_observes_the_bases_next_k_actions_and_full_gives_the_critics_what_the_env_got(monkeypatch):
-    """At the boundary the base-action block is the next k base actions (normalized, step-major); the
-    full critic action rebuilt from that observation and r is exactly the normalized actions the env
-    received over the k sub-steps."""
+    """At the boundary the base-action block is the next k base actions (raw, step-major); the full critic
+    action rebuilt from that observation and r is exactly the actions the env received over the k sub-steps."""
     policy = ScriptedPolicy()
     policy.normalizer = a_normalizer()
     monkeypatch.setattr(residual_mod, "load_base_policy", lambda *a, **k: policy)
@@ -255,7 +254,7 @@ def test_the_chunk_observes_the_bases_next_k_actions_and_full_gives_the_critics_
     assert torch.equal(obs["critic"][:, 3:], obs["policy"][:, OBS:])  # the env's critic state, then the base chunk
     for chunk in range(3):  # across a base re-plan (action_horizon 4, k 2: chunk 2 is a new base chunk)
         block = obs["policy"][:, OBS:].reshape(N, 2, ACT)
-        assert torch.allclose(normalizer.denormalize(block[:, 0], "action"), env.base_action)  # row 0: this step's base action
+        assert torch.allclose(block[:, 0], env.base_action)  # row 0: this step's base action
         r = torch.rand(N, 2 * ACT) * 2 - 1
         critic_action = transform(obs["critic"], r)  # the learner hands the transform the critic state
         assert critic_action.shape == r.shape
@@ -263,12 +262,15 @@ def test_the_chunk_observes_the_bases_next_k_actions_and_full_gives_the_critics_
         sent = env.unwrapped.sent[-2:]
         for j in range(2):
             got = critic_action[:, j * ACT : (j + 1) * ACT]
-            assert torch.allclose(got, normalizer.normalize(sent[j], "action"), atol=1e-5), (chunk, j)
-            assert torch.allclose(normalizer.denormalize(block[:, j], "action") + 0.5 * r[:, j * ACT : (j + 1) * ACT], sent[j], atol=1e-5)
-    # the observation holds the next two base actions, normalized: chunk 0 (0..3) ran in agent steps 1-2, chunk 1
-    # (planned at sim step 4) gave 100, 101 to agent step 3, so its 102, 103 come next (the base denormalizes them
-    # for the env; normalized again they read as the network planned them)
-    assert torch.allclose(obs["policy"][:, OBS:].reshape(N, 2, ACT)[:, :, 0], torch.tensor([[102.0, 103.0]] * N), atol=1e-3)
+            assert torch.allclose(got, sent[j], atol=1e-5), (chunk, j)
+            assert torch.allclose(block[:, j] + 0.5 * r[:, j * ACT : (j + 1) * ACT], sent[j], atol=1e-5)
+    # the observation holds the next two base actions: chunk 0 (0..3) ran in agent steps 1-2, chunk 1 (planned at sim
+    # step 4) gave 100, 101 to agent step 3, so its 102, 103 come next
+    # (the scripted network plans 102, 103 in the base's normalized units; the observation holds them raw)
+    half0 = float((normalizer.action_max[0] - normalizer.action_min[0]) / 2)
+    mid0 = float((normalizer.action_max[0] + normalizer.action_min[0]) / 2)
+    expected = torch.tensor([[102.0 * half0 + mid0, 103.0 * half0 + mid0]] * N)
+    assert torch.allclose(obs["policy"][:, OBS:].reshape(N, 2, ACT)[:, :, 0], expected, atol=1e-3)
 
 
 def test_the_bases_block_is_the_k_aligned_group_of_the_action_just_handed_out():
@@ -299,20 +301,20 @@ def test_the_chunk_config_is_validated():
         ResidualCfg(steps_per_chunk=2, critic_action="full", action_frame="ee").validate(None)
     # the critics read the base action from their own state: full is fine whatever the agent observes
     ResidualCfg(critic_action="full", observe_base_action=False).validate(None)
-    ResidualCfg(steps_per_chunk=4, base_action_horizon=4, base_inference_steps=4, observe_base_action=False, normalize_observation=False).validate(None)
+    ResidualCfg(steps_per_chunk=4, base_action_horizon=4, base_inference_steps=4, observe_base_action=False).validate(None)
     hybrid = SimpleNamespace(hybrid=SimpleNamespace(enabled=True))
     with pytest.raises(NotImplementedError, match="hybrid"):
         ResidualCfg(enabled=True, base_run="r", steps_per_chunk=2).validate(hybrid)
 
 
 def test_critic_action_full_works_whatever_the_agent_observes_and_is_refused_on_a_chunked_ee_one(monkeypatch):
-    """The critic's input does not depend on the agent's observation: a wrapper whose agent sees neither the
-    base action nor a normalized observation still gives the critics the executed chunk."""
+    """The critic's input does not depend on the agent's observation: a wrapper whose agent does not see the base action
+    still gives the critics the executed chunk."""
     policy = ScriptedPolicy()
     policy.normalizer = a_normalizer()
     monkeypatch.setattr(residual_mod, "load_base_policy", lambda *a, **k: policy)
     rc = ResidualCfg(enabled=True, base_run="r", base_checkpoint="c", action_scale=[0.5] * ACT, steps_per_chunk=2,
-                     critic_action="full", observe_base_action=False, normalize_observation=False)
+                     critic_action="full", observe_base_action=False)
     cfg = SimpleNamespace(task_name=TASK, residual=rc, hybrid=SimpleNamespace(enabled=False, extra_dims=0))
     env = ResidualPolicyWrapper(ChunkEnv(), cfg)
     transform = residual_mod.residual_critic_action(cfg, env)
@@ -322,7 +324,7 @@ def test_critic_action_full_works_whatever_the_agent_observes_and_is_refused_on_
     critic_action = transform(obs["critic"], r)
     env.step(r)
     for j, sent in enumerate(env.unwrapped.sent[-2:]):
-        assert torch.allclose(critic_action[:, j * ACT : (j + 1) * ACT], policy.normalizer.normalize(sent, "action"), atol=1e-5)
+        assert torch.allclose(critic_action[:, j * ACT : (j + 1) * ACT], sent, atol=1e-5)
     stub = ResidualPolicyWrapper.__new__(ResidualPolicyWrapper)
     stub.ee, stub.steps_per_chunk = object(), 2
     with pytest.raises(NotImplementedError, match="action_frame: ee and residual.steps_per_chunk 2"):
@@ -356,16 +358,11 @@ def a_normalizer(seed=0):
 
 
 def test_residual_observation_flags():
-    normalizer = a_normalizer()
     obs, base = torch.randn(4, OBS), torch.randn(4, ACT)
-    full, extra = residual_observation(normalizer, obs, base)
-    assert torch.allclose(full[:, :OBS], normalizer.normalize(obs, "obs", widen=True)) and torch.equal(extra, full[:, OBS:])
-    raw, extra = residual_observation(normalizer, obs, base, normalize_obs=False)
-    assert torch.equal(raw[:, :OBS], obs) and torch.equal(extra, normalizer.normalize(base, "action"))
-    alone, extra = residual_observation(normalizer, obs, base, observe_base_action=False)
-    assert torch.equal(alone, full[:, :OBS]) and extra.shape == (4, 0)
-    plain, extra = residual_observation(normalizer, obs, base, normalize_obs=False, observe_base_action=False)
-    assert torch.equal(plain, obs) and extra.shape == (4, 0)
+    full, extra = residual_observation(obs, base)
+    assert torch.equal(full, torch.cat((obs, base), dim=-1)) and torch.equal(extra, base)  # raw
+    alone, extra = residual_observation(obs, base, observe_base_action=False)
+    assert torch.equal(alone, obs) and extra.shape == (4, 0)
 
 
 def test_the_wrapper_can_leave_the_base_action_out_and_the_observation_raw(monkeypatch):
@@ -376,19 +373,17 @@ def test_the_wrapper_can_leave_the_base_action_out_and_the_observation_raw(monke
     assert env.base_action_slice is None and env.observation_space["policy"].shape == (N, OBS)
     _, _, _, _, infos = env.step(torch.ones(N, ACT))
     assert env.unwrapped.sent[-1][:, 0].tolist() == [0.5, 0.5]  # the base action is still executed
-    # the identity normalizer makes normalize_observation moot here: check the flag through the real one
+    # raw: the observation and the base action as they are, whatever the base's own normalizer is
     policy = ScriptedPolicy()
     policy.normalizer = a_normalizer()
     monkeypatch.setattr(residual_mod, "load_base_policy", lambda *a, **k: policy)
-    for normalize in (True, False):
-        rc = ResidualCfg(enabled=True, base_run="r", base_checkpoint="c", action_scale=[0.5] * ACT, normalize_observation=normalize)
-        cfg = SimpleNamespace(task_name=TASK, residual=rc, hybrid=SimpleNamespace(enabled=False, extra_dims=0))
-        wrapped = ResidualPolicyWrapper(ChunkEnv(), cfg)
-        obs, _ = wrapped.reset()
-        raw = torch.tensor([[0.0, 1.0, 2.0, 3.0, 4.0]]).expand(N, -1)
-        expected = policy.normalizer.normalize(raw, "obs", widen=True) if normalize else raw
-        assert torch.allclose(obs["policy"][:, :OBS], expected)
-        assert torch.allclose(obs["policy"][:, OBS:], policy.normalizer.normalize(wrapped.base_action, "action"))
+    rc = ResidualCfg(enabled=True, base_run="r", base_checkpoint="c", action_scale=[0.5] * ACT)
+    cfg = SimpleNamespace(task_name=TASK, residual=rc, hybrid=SimpleNamespace(enabled=False, extra_dims=0))
+    wrapped = ResidualPolicyWrapper(ChunkEnv(), cfg)
+    obs, _ = wrapped.reset()
+    raw = torch.tensor([[0.0, 1.0, 2.0, 3.0, 4.0]]).expand(N, -1)
+    assert torch.allclose(obs["policy"][:, :OBS], raw)
+    assert torch.allclose(obs["policy"][:, OBS:], wrapped.base_action)
 
 
 def test_the_ee_critic_action_reads_the_critic_state_whatever_the_agent_observes(monkeypatch):
@@ -403,7 +398,7 @@ def test_the_ee_critic_action_reads_the_critic_state_whatever_the_agent_observes
     policy.normalizer.fit("obs", torch.cat([torch.randn(20, 61), FakePoseEnv().obs]))
     policy.normalizer.fit("action", torch.randn(20, 10))
     monkeypatch.setattr(residual_mod, "load_base_policy", lambda *a, **k: policy.eval())
-    rc = ResidualCfg(enabled=True, base_run="r", base_checkpoint="c", action_frame="ee", critic_action="full", normalize_observation=False)
+    rc = ResidualCfg(enabled=True, base_run="r", base_checkpoint="c", action_frame="ee", critic_action="full")
     cfg = SimpleNamespace(task_name="Isaac-Furniture-OneLeg-FBAbs-ResiP-v0", residual=rc, hybrid=SimpleNamespace(enabled=False))
     env = ResidualPolicyWrapper(FakePoseEnv(), cfg)
     obs, _ = env.reset()

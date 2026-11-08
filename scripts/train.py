@@ -15,7 +15,10 @@ def setup() -> None:
     import my_project.losses  # noqa: F401  -- @register_loss
     from my_project.obs_terms import install_obs_terms
 
-    install_obs_terms()  # extra obs_order terms (hole_estimate), before any env is made
+    from robonuke_rl_core.config import STANDALONE, active_simulator
+
+    if active_simulator() != STANDALONE:  # Isaac Lab's Factory terms; a standalone task (MuJoCo) has none
+        install_obs_terms()  # extra obs_order terms (hole_estimate), before any env is made
 
     from robonuke_rl_core.config import register_section
 
@@ -45,6 +48,12 @@ def setup() -> None:
     from my_project.residual import residual_critic_action
 
     register_critic_action(residual_critic_action)  # residual.critic_action: full
+
+    from robonuke_rl_core.learners.sac import register_demo_loader
+
+    from my_project.demo_loader import residual_demo_loader
+
+    register_demo_loader(residual_demo_loader)  # raw demo episodes -> the residual's transitions, at load
 
     from robonuke_rl_core.evaluation import register_eval_policy
 

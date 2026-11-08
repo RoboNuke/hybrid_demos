@@ -12,3 +12,13 @@ gym.register(
     disable_env_checker=True,
     kwargs={"env_cfg_entry_point": f"{__name__}.forge_demo:ForgeDemoTaskCfg"},
 )
+
+#: ResFiT's robosuite tasks, low-dim (my_project/tasks/robosuite_tasks.py): MuJoCo, task.simulator: standalone
+for _task, _cfg in (("Can", "RobosuiteCanCfg"), ("Square", "RobosuiteSquareCfg"), ("BoxCleanup", "RobosuiteBoxCleanupCfg"),
+                    ("CanSort", "RobosuiteCanSortCfg"), ("Coffee", "RobosuiteCoffeeCfg")):
+    gym.register(
+        id=f"Robosuite-{_task}-LowDim-v0",
+        entry_point=f"{__name__}.robosuite_tasks:RobosuiteTaskEnv",
+        disable_env_checker=True,
+        kwargs={"env_cfg_entry_point": f"{__name__}.robosuite_tasks:{_cfg}"},
+    )

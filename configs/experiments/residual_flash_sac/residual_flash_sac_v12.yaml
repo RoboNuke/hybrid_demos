@@ -1,0 +1,52 @@
+# residual_flash_sac v12: v11 (the mean head at gain 0.01; no noise repetition; 50-step returns and Polyak 0.05; data
+# only for 700 steps, the critics from 700, the actor from 2100) with a learned std and the entropy term back as the
+# foundation has it: the std head starts every state at exp(-1) = 0.36788 (v11's fixed std, so the data before the actor
+# starts is v11's) inside FlashSAC's [-10, 2] log-std bound, both heads out of weight normalization; alpha is learned
+# from 0.01 toward the sigma-0.15 target and is in the critic's target (z - alpha log pi). In v11 the critics learned
+# (cross-entropy 4.2 -> 1.4, Q positive and varying across states) but the actor still drove the residual's mean to
+# saturation; with an informed critic the entropy term should have a counterweight this time.
+#   python scripts/train.py --config configs/experiments/residual_flash_sac/residual_flash_sac_v12.yaml --headless
+base: _foundation.yaml
+
+wandb:
+  group: residual_flash_sac_v12
+
+task:
+  cfg:
+    scene:
+      num_envs: 1024
+
+# resip_ppo_replica's run length and checkpoint interval (published every 1000 steps, the default, as that run)
+trainer:
+  learner: sac
+  total_timesteps: 100100
+  checkpoint_interval: 3500
+
+residual:
+  enabled: true
+
+# FlashSAC's network (models/flashsac.py; its Table 9 sizes): BatchNorm inverted-residual blocks, an actor of 2
+# blocks of 128 with a tanh-squashed Gaussian, critics of 2 blocks of 256; the actor's mean head started for a
+# residual, its std learned from exp(-1)
+model:
+  architecture: flashsac
+  actor:
+    hidden_size: 128
+    num_blocks: 2
+    mean_init_scale: 0.01
+    # learned, starting at resip_ppo_replica's exp(-1)
+    init_std: 0.36788
+  critic:
+    hidden_size: 256
+    num_blocks: 2
+
+# the foundation's entropy term (alpha learned from 0.01, in the critic's target); the rest as v11
+sac:
+  # data only for 700 steps; the critics from step 700, the actor from step 2100
+  learning_starts: 700
+  policy_learning_starts: 2100
+  # a fresh noise draw every step (the foundation: FlashSAC's noise repetition)
+  noise_repeat: false
+  # the reward carried back 50 steps per backup; the target critics 5x faster
+  n_step: 50
+  polyak: 0.05

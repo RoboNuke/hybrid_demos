@@ -2,7 +2,8 @@
 # 10 Hz, differential IK into joint PD, absolute EE targets with rot6d, the 63-wide observation in the
 # robot-base frame) with the task's own defaults, except what physic_aligned_evalHappy_a0 trained with:
 # 1000-step episodes, FurnitureBench's meshes with the top's SDF at 1024, the position gripper (600 N/m
-# capped at 13 N, 0.2 m/s) with the robot's self-collisions on, and Isaac Lab's own IK Jacobian.
+# capped at 13 N, 0.2 m/s) with the robot's self-collisions on. The arm's IK is the env's only one, the TCP
+# Jacobian (physic_aligned_evalHappy_a0 and its demos used Isaac Lab's own, since removed from the env).
 base: hpc.yaml
 
 task:
@@ -15,7 +16,6 @@ task:
       gripper_mode: position
       robot_self_collisions: true
       gripper_velocity_limit: 0.2
-      ik_jacobian: isaaclab
       # one_leg's task phases (the video overlay's criteria), always tracked on this task: every finished
       # episode logs phase/passed_<corner|grasp|insert|success> (their means: the share of rollouts that got past
       # each stage), and the phase rewards (task.cfg.rewards.<corner|grasp|insert>_done, off by default) read it

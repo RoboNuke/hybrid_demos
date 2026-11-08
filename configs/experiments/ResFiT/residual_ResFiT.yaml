@@ -1,0 +1,35 @@
+# ResFiT's residual TD3 (the foundation) on one_leg, one env as ResFiT trains, one residual per phase (insert, screw).
+#   python scripts/make_phase_demos.py --config configs/experiments/ResFiT/residual_ResFiT.yaml --dataset data/physic_aligned_300
+#   python scripts/train.py --config configs/experiments/ResFiT/residual_ResFiT.yaml --headless
+# The checkpoints evaluated as they appear, in a separate process (100 envs, the run's own wandb group):
+#   python scripts/watch_residual_eval.py --run runs/hybrid_demo_furniture_residual/ResFiT_base/ResFiT_base_a0 \
+#     --eval_config configs/eval/residual_watch_furniture.yaml
+base: _foundation.yaml
+
+wandb:
+  group: ResFiT_base
+
+task:
+  cfg:
+    scene:
+      num_envs: 1
+
+trainer:
+  learner: ddpg
+  total_timesteps: 300000
+  checkpoint_interval: 10000
+  # publish every 1000 env steps; episode/success the mean of the last 10 episodes, each phase's success rate
+  # (phase/passed_*, counted only for the episodes that reached the phase) the mean of the last 10 that reached it
+  write_interval: 1000
+  success_window: 10
+  windowed_metrics:
+    - phase/passed_*
+
+residual:
+  enabled: true
+
+# no uniform warm-up actions: every phase acts from the first step as its actor (zero at the start, so the base) plus
+# the exploration noise N(0, 0.025). ResFiT's +-0.2 of the base's normalized range was 26 mm and 11 deg per insert
+# step, twice the trained actor's largest correction. The critic-only warm-up (ddpg.critic_warmup_updates) stays
+ddpg:
+  random_action_scale: 0.0

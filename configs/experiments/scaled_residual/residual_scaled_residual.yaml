@@ -1,0 +1,22 @@
+# one residual per phase (insert, screw) on the 50-demo base, multiplying the base's EE-relative target
+# (residual.action_frame: multiply, _foundation.yaml); otherwise residual_ResFiT_phase_v7.yaml's.
+#   python scripts/make_phase_demos.py --config configs/experiments/scaled_residual/residual_scaled_residual.yaml --dataset data/physic_aligned_tcp_300
+#   python scripts/train.py --config configs/experiments/scaled_residual/residual_scaled_residual.yaml --headless
+#   python scripts/watch_residual_eval.py --headless --run runs/hybrid_demo_furniture_residual/scaled_residual/scaled_residual_a0 \
+#     --eval_config configs/eval/residual_watch_furniture.yaml
+base: _foundation.yaml
+
+wandb:
+  group: scaled_residual
+
+task:
+  cfg:
+    scene:
+      num_envs: 1
+
+trainer:
+  learner: ddpg
+  total_timesteps: 750000
+
+residual:
+  enabled: true

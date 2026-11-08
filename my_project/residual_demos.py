@@ -15,10 +15,10 @@ frame's next state was never recorded):
   demo's first frame), run on the recorded observations: every demo in one batch.
 * **states** / **next_states**: the residual wrapper's critic state
   (:func:`~my_project.residual.critic_state`): the recorded critic state (``observation.critic``)
-  or, for an env without a critic group (FurnitureBench), the base's observation normalized (widened),
-  then the normalized base action, the EE offset (``accumulate``) and the history, whatever
-  ``residual.normalize_observation`` / ``observe_base_action`` make of the agent's observation. At
-  their defaults (and no critic group) ``states`` equals ``observations``. The file records the
+  or, for an env without a critic group (FurnitureBench), the base's observation, then the base action,
+  the EE offset (``accumulate``) and the history, all raw (the learner's ``state_preprocessor`` normalizes
+  them), whatever ``residual.observe_base_action`` makes of the agent's observation. At its default (and no
+  critic group) ``states`` equals ``observations``. The file records the
   layout (``meta["critic_state_format"]``, :data:`CRITIC_STATE_FORMAT`); an older one is refused.
 * **actions**: the residual that reproduces the demo, ``(a_demo - a_base) / scale``, exactly:
   never clipped (a clipped action did not produce the stored next state). Where it lies beyond
@@ -196,12 +196,19 @@ def check_demo_transitions(cfg: Any) -> None:
     its ``task.cfg`` is the live env's, holding what the env derived at ``gym.make`` (the gripper's
     and the IK's action terms), which the fingerprint -- taken from the config before ``gym.make`` --
     never holds. Training never starts from a run."""
-    path = getattr(getattr(cfg, "sac", None), "demo_transitions", None)
-    if not path or cfg.trainer.learner != "sac" or not Path(path).is_file() or cfg.source_run is not None:
+    from my_project.cfg import Q_LEARNERS, q_section
+
+    path = getattr(q_section(cfg), "demo_transitions", None)
+    if not path or cfg.trainer.learner not in Q_LEARNERS or not Path(path).is_file() or cfg.source_run is not None:
         return
     import torch
 
-    meta = torch.load(path, map_location="cpu", weights_only=False).get("meta", {})
+    data = torch.load(path, map_location="cpu", weights_only=False)
+    from my_project.raw_demos import RAW_FORMAT
+
+    if isinstance(data, dict) and data.get("format") == RAW_FORMAT:
+        return  # raw demo episodes: the demo loader checks their own fingerprint when the learner loads them
+    meta = data.get("meta", {})
     made = meta.get("fingerprint")
     if made is None:
         raise ValueError(f"sac.demo_transitions ({path}) has no meta.fingerprint; regenerate it with scripts/make_demo_transitions.py")
@@ -745,11 +752,9 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
         # the demos whose base starts a new chunk this step, as the env wrapper reads it (residual.accumulate)
         new_chunk = fresh | (base.index >= policy.action_horizon) if ee is not None and ee.accumulate else None
         a_base = base.actions(obs, fresh)
-        policy_part, _ = residual_observation(
-            policy.normalizer, obs, a_base, rc.normalize_observation, rc.observe_base_action
-        )
-        # the critic state, as the env wrapper builds it whatever the agent observes (residual.critic_state)
-        state_part = critic_state(policy.normalizer, obs, a_base, critic)
+        policy_part, _ = residual_observation(obs, a_base, rc.observe_base_action)
+        # the critic state, as the env wrapper builds it whatever the agent observes (residual.critic_state), raw
+        state_part = critic_state(obs, a_base, critic)
         if ee is not None:
             R_ee = ee_rotation(obs)
             if ee.accumulate:  # the offset before this step: zero when the base re-plans

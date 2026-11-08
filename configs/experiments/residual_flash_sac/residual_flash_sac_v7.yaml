@@ -1,0 +1,45 @@
+# residual_flash_sac v7: v3 (the actor's mean head at orthogonal gain 0.01, out of weight normalization; a constant std
+# for every state and dim, no std head) with the std at resip_ppo_replica's exp(-1) = 0.36788 and no entropy term
+# anywhere: the temperature fixed at 0, not learned (with a fixed std it would only pull the mean toward 0 through the
+# tanh correction), and none in the critic's target (r + gamma Q(s', a'), not FlashSAC's z - alpha log pi).
+# In v3 the target entropy (sigma 0.15) was out of reach of a fixed std of 0.15 and alpha grew to ~800.
+#   python scripts/train.py --config configs/experiments/residual_flash_sac/residual_flash_sac_v7.yaml --headless
+base: _foundation.yaml
+
+wandb:
+  group: residual_flash_sac_v7
+
+task:
+  cfg:
+    scene:
+      num_envs: 1024
+
+# resip_ppo_replica's run length and checkpoint interval (published every 1000 steps, the default, as that run)
+trainer:
+  learner: sac
+  total_timesteps: 100100
+  checkpoint_interval: 3500
+
+residual:
+  enabled: true
+
+# FlashSAC's network (models/flashsac.py; its Table 9 sizes): BatchNorm inverted-residual blocks, an actor of 2
+# blocks of 128 with a tanh-squashed Gaussian, critics of 2 blocks of 256; the actor's mean head started for a
+# residual, its std fixed
+model:
+  architecture: flashsac
+  actor:
+    hidden_size: 128
+    num_blocks: 2
+    mean_init_scale: 0.01
+    # resip_ppo_replica's exp(-1)
+    fixed_std: 0.36788
+  critic:
+    hidden_size: 256
+    num_blocks: 2
+
+# alpha fixed at 0 (the actor maximizes Q alone), and kept out of the critic's target
+sac:
+  learn_entropy: false
+  initial_entropy_value: 0.0
+  backup_entropy: false

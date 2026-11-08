@@ -1,0 +1,21 @@
+base: _foundation.yaml
+wandb:
+  group: scaled_residual_v5
+task:
+  cfg:
+    scene:
+      num_envs: 1
+trainer:
+  learner: ddpg
+  total_timesteps: 750000
+residual:
+  enabled: true
+  multiply_reference: increment
+  multiply_warmup_std: 0.5
+  multiply_exploration_std: 0.075
+ddpg:
+  random_action_scale: 0.7692307692307692
+  exploration_std: 0.11538461538461538
+  # the target smoothing noise (std = exploration_std) clipped at 6 of its std
+  target_noise_clip: 0.6923076923076922
+  demo_transitions: data/scaled_residual_v3/raw_demos.pt

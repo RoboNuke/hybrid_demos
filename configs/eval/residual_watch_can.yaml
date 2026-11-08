@@ -1,0 +1,11 @@
+# scripts/watch_residual_eval.py for a robosuite Can residual: ResFiT's eval, 50 episodes, deterministic (the actor's
+# mean), one round of 50 envs
+base: ../base/hpc.yaml
+
+eval:
+  num_rollouts: 50
+
+task:
+  cfg:
+    scene:
+      num_envs: 50

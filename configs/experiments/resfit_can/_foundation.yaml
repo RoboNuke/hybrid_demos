@@ -1,0 +1,109 @@
+# ResFiT on robomimic Can (the leading _ keeps launch_train from submitting this file on its own): what every training of
+# the group shares. The point is a diagnostic: Can is a task the ResFiT recipe is known to work on (Ankile et al. 2025,
+# arXiv:2509.19301; their code github.com/amazon-far/residual-offpolicy-rl, commit 66262b0, ResidualTD3CanConfig), so
+# our pipeline (our diffusion base, our residual wrapper, the package's ddpg) running their recipe here tells whether
+# the one_leg failures are ours or the task's.
+#
+# Their Can settings, as their code resolves them (the dataclass defaults; there is no Can paper-run script, and the
+# README's algo.stddev_max/min overrides never reach the schedule string the trainer reads, so every paper run explored
+# at 0.05): n-step 3, gamma 0.99, exploration N(0, 0.05) constant, actor 0.1 tanh, actor lr 1e-6, critic lr 1e-4, AdamW
+# weight decay 0.01 (PyTorch's default), gradients clipped at 1, tau 0.005, 10 critics (the target's min over a random 2,
+# the actor on their mean), loss (mean_k |Q_k - y|)^2, 4 critic updates per env step and the actor on every 4th, 10k
+# env steps of the base plus uniform +-0.2 residuals before learning, then 10k critic-only updates, batch 256 half from
+# the demos, a 200k online buffer, 300k env steps, timeouts treated as terminal (no bootstrap), one env.
+#
+# Not theirs (the diagnostic keeps our side):
+#  * the observation is low-dim (the robot state 9, then the object state 14: the can's pose, which theirs saw through
+#    two 84x84 cameras), min-max normalized as the base's (theirs standardized, std floored at 0.1);
+#  * the base is our diffusion policy trained on the same 300 MH demos (theirs a LeRobot ACT, chunk 20);
+#  * the residual: r scales by 1.1 x the base's half range per dim (residual.action_scale_fraction), their action
+#    normalization's x(1 + action_scale) widening, so 0.1 r is the same move as theirs;
+#  * the critic warm-up's target-policy noise is the exploration std (theirs 0 during the warm-up);
+#  * a demo's reward is 1 on its first successful step, which ends it (theirs on robomimic's last 5-6 done frames).
+base: ../../base/robosuite_can.yaml
+
+experiment:
+  seed: 42
+
+wandb:
+  entity: hur
+
+bc:
+  dataset: data/robomimic_can_mh_300
+  obs_key: observation.state
+  action_key: action
+  num_demos: 300
+  test_split: 0.05
+  batch_size: 1024
+  steps_per_epoch: 1000
+  lr: 1.0e-4
+  weight_decay: 1.0e-6
+  lr_schedule: cosine
+  warmup_steps: 2000
+  max_grad_norm: 0.0
+  eval_every: 5
+  sample_every: 100
+  rollout_every: 5
+  rollout_loss_threshold: 1000.0
+  rollout_progress: false
+  max_hours: null
+  save_only_best_ckpt: true
+  normalization: per_dim
+  early_stop_patience: .inf
+  early_stop_smooth: 0.9
+  show_waypoints: false
+  action_metric_groups: null
+
+eval:
+  num_rollouts: 50
+  deterministic: true
+  save_state: false
+  record: false
+
+residual:
+  base_warm_start: false
+  steps_per_chunk: 1
+  # ResFiT's form: the executed action is the base's plus 1.1 x half range x r per dim, gripper included
+  action_frame: absolute
+  action_scale: null
+  action_scale_fraction: 1.1
+  normalize_observation: true
+  observe_base_action: true
+  # the actor observes the observation and the base action; the critics the observation and the executed action
+  critic_state: observation
+  critic_action: full
+
+ddpg:
+  discount_factor: 0.99
+  n_step: 3
+  batch_size: 256
+  polyak: 0.005
+  actor_lr: 1.0e-6
+  critic_lr: 1.0e-4
+  weight_decay: 0.01
+  grad_norm_clip: 1.0
+  num_critics: 10
+  critic_subset: 2
+  actor_q_reduction: mean
+  critic_loss: mean_abs_squared
+  gradient_steps: 4
+  update_every: 1
+  policy_delay: 4
+  learning_starts_rows: 10000
+  random_action_scale: 0.2
+  critic_warmup_updates: 10000
+  actor_action_scale: 0.1
+  exploration_std: 0.05
+  target_actor: true
+  target_policy_noise: true
+  target_noise_clip: 0.3
+  action_clip: 1.0
+  # timeouts end the target as a termination does (theirs: done = terminated | truncated)
+  bootstrap_time_limits: false
+  normalize_observations: false
+  route_labels: []
+  route_clock: false
+  cuda_graph: true
+
+memory:
+  memory_size: 200000

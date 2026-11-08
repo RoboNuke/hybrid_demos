@@ -1,0 +1,79 @@
+# ResFiT's residual TD3 (the foundation) on the obs-fix_true-jacobian base trained on 50 demos
+# (configs/experiments/obs-fix_true-jacobian/bc_obs-fix_true-jacobian_50demos.yaml, 100k updates, its best-rollout
+# checkpoint), with every fix so far:
+#  * the env's only IK is the TCP Jacobian, and the demos were collected with it;
+#  * the residual's inputs read the per-kind observation floors (residual.observation_floors, in the foundation);
+#  * residual_ResFiT_2cm.yaml's action space: r = 1 is 2 cm along / 6 deg about each robot-base axis, the actor
+#    spanning r's whole [-1, 1], exploration N(0, 0.05) of r, no uniform warm-up actions;
+#  * no gripper in the residual: r is the pose alone, 6 per step (residual.residual_gripper: false), the gripper the
+#    base's;
+#  * the stall reset (30 insert / 150 screw steps), in the foundation at the time (since turned off there).
+# Changed from residual_ResFiT_obsfix_50demos.yaml, and nothing else: (1) potential-based shaping per phase
+# (ddpg.potential_terms, serl_bc v8's weights: over a demo's attempt it pays ~9x (insert) / ~5x (screw) the success
+# reward's discounted value, 0.02 / 0.006 per step at the median), with the per-phase demos shaped the same way;
+# (2) each phase's replay memory saved beside every checkpoint (ddpg.save_memory_with_checkpoints), for diagnostics.
+# The per-phase demos are this base's, from all 300 TCP-IK demos.
+#   python scripts/make_phase_demos.py --config configs/experiments/ResFiT/residual_ResFiT_obsfix_50demos_potential.yaml --dataset data/physic_aligned_tcp_300
+#   python scripts/train.py --config configs/experiments/ResFiT/residual_ResFiT_obsfix_50demos_potential.yaml --headless
+#   python scripts/watch_residual_eval.py --run runs/hybrid_demo_furniture_residual/ResFiT_obsfix_50demos_potential/ResFiT_obsfix_50demos_potential_a0 \
+#     --eval_config configs/eval/residual_watch_furniture.yaml
+base: _foundation.yaml
+
+wandb:
+  group: ResFiT_obsfix_50demos_potential
+
+task:
+  cfg:
+    scene:
+      num_envs: 1
+
+trainer:
+  learner: ddpg
+  total_timesteps: 300000
+  checkpoint_interval: 10000
+  # publish every 1000 env steps; episode/success the mean of the last 10 episodes, each phase's success rate
+  # (phase/passed_*, counted only for the episodes that reached the phase) the mean of the last 10 that reached it
+  write_interval: 1000
+  success_window: 10
+  windowed_metrics:
+    - phase/passed_*
+
+residual:
+  enabled: true
+  # the 50-demo obs-fix_true-jacobian base, as a local run directory (its resolved config one level up)
+  base_run: runs/hybrid_demo_furniture/obs-fix_true-jacobian_50demos/obs-fix_true-jacobian_50demos_a0
+  base_project: null
+  base_run_name: null
+  # r = 1: 2 cm, 6 deg, in the robot-base frame
+  target_scale_from_base: false
+  ee_pos_scale: 0.02
+  ee_rot_scale_deg: 6.0
+  # the pose alone (6 per step): the gripper stays the base's
+  residual_gripper: false
+
+ddpg:
+  # the actor's output spans r's whole [-1, 1]
+  actor_action_scale: 1.0
+  # exploration N(0, 0.05) in r: 1 mm and 0.3 deg per axis
+  exploration_std: 0.05
+  # no uniform warm-up actions
+  random_action_scale: 0.0
+  # this base's own demo residuals, their rewards shaped as the online ones
+  demo_transitions: data/ResFiT_obsfix_50demos_potential/demos_{route}.pt
+  # potential-based shaping, gamma Phi(s') - Phi(s), Phi = -sum weight * measure (serl_bc v8's weights): insert on the
+  # leg tip's distance from the hole axis (mm) and its tilt (deg); screw on its height above seated (mm) and tilt (deg)
+  potential_terms:
+    - route: insert
+      channel: eval_state/phase/tip_mm
+      weight: 0.01
+    - route: insert
+      channel: eval_state/phase/tilt_deg
+      weight: 0.01
+    - route: screw
+      channel: eval_state/phase/height_mm
+      weight: 0.1
+    - route: screw
+      channel: eval_state/phase/tilt_deg
+      weight: 0.05
+  # each phase's replay memory beside every numbered checkpoint (memory_<step>.pt), for diagnostics
+  save_memory_with_checkpoints: true

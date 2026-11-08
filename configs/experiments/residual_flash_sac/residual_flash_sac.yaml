@@ -1,0 +1,36 @@
+# residual_flash_sac: the foundation as it is -- FlashSAC's defaults on resip_ppo_replica's problem (_foundation.yaml
+# says what each setting is) with FlashSAC's own network, and resip_ppo_replica's env count, run length and
+# checkpoint interval. One
+# residual for the whole episode, the env's own (assembly) reward, no demos, no stall reset, success the mean over
+# every episode since the last publish. No eval watcher.
+#   python scripts/train.py --config configs/experiments/residual_flash_sac/residual_flash_sac.yaml --headless
+base: _foundation.yaml
+
+wandb:
+  group: residual_flash_sac
+
+task:
+  cfg:
+    scene:
+      num_envs: 1024
+
+# resip_ppo_replica's run length and checkpoint interval (published every 1000 steps, the default, as that run)
+trainer:
+  learner: sac
+  total_timesteps: 100100
+  checkpoint_interval: 3500
+
+residual:
+  enabled: true
+
+# FlashSAC's network (models/flashsac.py; its Table 9 sizes): BatchNorm inverted-residual blocks, an actor of 2
+# blocks of 128 with a tanh-squashed Gaussian whose log std its tanh bound keeps in (-10, 2) (FlashSAC's own; no other
+# cap), critics of 2 blocks of 256
+model:
+  architecture: flashsac
+  actor:
+    hidden_size: 128
+    num_blocks: 2
+  critic:
+    hidden_size: 256
+    num_blocks: 2

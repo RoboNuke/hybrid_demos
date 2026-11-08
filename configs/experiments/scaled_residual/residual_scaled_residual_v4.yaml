@@ -1,0 +1,19 @@
+base: _foundation.yaml
+wandb:
+  group: scaled_residual_v4
+task:
+  cfg:
+    scene:
+      num_envs: 1
+trainer:
+  learner: ddpg
+  total_timesteps: 750000
+residual:
+  enabled: true
+  multiply_reference: increment
+  multiply_warmup_std: 0.3
+  multiply_exploration_std: 0.2
+ddpg:
+  random_action_scale: 0.46153846153846156
+  exploration_std: 0.3076923076923077
+  demo_transitions: data/scaled_residual_v3/raw_demos.pt

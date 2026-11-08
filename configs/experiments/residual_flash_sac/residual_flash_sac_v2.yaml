@@ -1,0 +1,40 @@
+# residual_flash_sac v2: the foundation with FlashSAC's network, its actor started as a residual should be -- near
+# zero and quiet -- instead of FlashSAC's from-scratch init. With FlashSAC's init (v1) the mean head's unit-norm rows
+# and the wide std made the residual a ~13 mm / 4 deg random correction from step 0 (pre-tanh std ~0.9): success fell
+# from the base's ~50% to ~0.5% and the critics learned only the entropy bonus. Here the mean head starts at
+# orthogonal gain 0.01 (resip_ppo_replica's output init) and every state's std at 0.15 (FlashSAC's entropy-target
+# sigma); both heads stay out of weight normalization (models/flashsac.py: skip_weight_norm), so the first update does
+# not set their rows back to unit length. Everything else as v1.
+#   python scripts/train.py --config configs/experiments/residual_flash_sac/residual_flash_sac_v2.yaml --headless
+base: _foundation.yaml
+
+wandb:
+  group: residual_flash_sac_v2
+
+task:
+  cfg:
+    scene:
+      num_envs: 1024
+
+# resip_ppo_replica's run length and checkpoint interval (published every 1000 steps, the default, as that run)
+trainer:
+  learner: sac
+  total_timesteps: 100100
+  checkpoint_interval: 3500
+
+residual:
+  enabled: true
+
+# FlashSAC's network (models/flashsac.py; its Table 9 sizes): BatchNorm inverted-residual blocks, an actor of 2
+# blocks of 128 with a tanh-squashed Gaussian whose log std its tanh bound keeps in (-10, 2), critics of 2 blocks of
+# 256; the actor's heads started for a residual
+model:
+  architecture: flashsac
+  actor:
+    hidden_size: 128
+    num_blocks: 2
+    mean_init_scale: 0.01
+    init_std: 0.15
+  critic:
+    hidden_size: 256
+    num_blocks: 2

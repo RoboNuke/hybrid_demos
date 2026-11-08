@@ -18,7 +18,10 @@ def setup() -> None:
     import my_project.losses  # noqa: F401  -- @register_loss
     from my_project.obs_terms import install_obs_terms
 
-    install_obs_terms()  # extra obs_order terms (hole_estimate), before any env is made
+    from robonuke_rl_core.config import STANDALONE, active_simulator
+
+    if active_simulator() != STANDALONE:  # Isaac Lab's Factory terms; a standalone task (MuJoCo) has none
+        install_obs_terms()  # extra obs_order terms (hole_estimate), before any env is made
 
     from robonuke_rl_core.config import register_section
 

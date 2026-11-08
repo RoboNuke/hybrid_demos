@@ -50,11 +50,11 @@ def test_widen_reads_old_stats_as_the_rule_fits_them_and_the_bases_own_path_is_u
     assert float(old.normalize(x, "obs")[0, 1]) > 100  # the base reads its stats as trained: noise stretched
 
 
-def test_the_agent_observation_widens_narrow_columns_and_the_base_action_keeps_the_bases_stats():
-    # obs column 1 and action dim 1 both narrow (5e-7, 5e-5)
-    n = old_stats([0.0, 0.6815], [1.0, 0.6815005], [-0.1, 0.2], [0.1, 0.20005])
+def test_the_residuals_agent_observation_is_raw():
+    # the residual no longer scales its inputs (the learner's state_preprocessor does): the observation and the base
+    # action go out as they are
     obs, a_base = torch.tensor([[0.25, 0.6816]]), torch.tensor([[0.05, 0.2]])
-    agent, base_n = residual_observation(n, obs, a_base)
-    assert float(agent[0, 0]) == pytest.approx(-0.5) and abs(float(agent[0, 1])) < 1e-3
-    # the base action exactly as the base's stats give it: critic_action_gain is built from them
-    assert torch.equal(base_n, n.normalize(a_base, "action")) and torch.equal(agent[:, 2:], base_n)
+    agent, base = residual_observation(obs, a_base)
+    assert torch.equal(agent, torch.cat((obs, a_base), dim=-1)) and torch.equal(base, a_base)
+
+

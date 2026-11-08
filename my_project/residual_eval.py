@@ -104,7 +104,12 @@ def main(argv=None, setup=None) -> int:
     AppLauncher.add_app_launcher_args(parser)
     args, overrides = parser.parse_known_args(argv)
     args.headless = True
-    app_launcher = AppLauncher(args)
+    from robonuke_rl_core.config import simulator_of, start_simulator
+    from robonuke_rl_core.evaluation import resolved_config_path
+
+    # Isaac Sim starts only for a task it simulates (the run's task.simulator)
+    run_config = argparse.Namespace(config=None, from_run=str(resolved_config_path(Path(args.run).expanduser())))
+    start_simulator(args, simulator_of(run_config, overrides))
     try:
         return _watch(args, overrides, setup)
     except KeyboardInterrupt:
@@ -159,13 +164,15 @@ def _round_bar(total: int, label: str):
     return tqdm(total=total, desc=f"[watch] {label}", unit="step", dynamic_ncols=True, leave=False)
 
 
-def evaluate(env: Any, policy: Any, seed: int, label: str = "eval") -> Dict[str, Any]:
+def evaluate(env: Any, policy: Any, seed: int, label: str = "eval", episodes: int | None = None) -> Dict[str, Any]:
     """One round on every env: success, engagement, mean and max force per episode
     (FurnitureBench: :func:`evaluate_furniture`). ``label`` names the round's progress bar."""
     import torch
 
     if hasattr(env.unwrapped, "termination_manager"):
         return evaluate_furniture(env, policy, seed, label)
+    if getattr(type(env.unwrapped.cfg), "SIMULATOR", "isaac") == "standalone":
+        return evaluate_episodes(env, policy, seed, label, episodes)
 
     from robonuke_rl_core.evaluation import env_states, force_env_reset
 
@@ -237,6 +244,87 @@ def evaluate(env: Any, policy: Any, seed: int, label: str = "eval") -> Dict[str,
         "force_means": force_mean.cpu().tolist(),
         "episodes": n,
     }
+
+
+def evaluate_episodes(env: Any, policy: Any, seed: int, label: str = "eval", episodes: int | None = None) -> Dict[str, Any]:
+    """Rounds on every env of a standalone task (``task.simulator: standalone``, e.g. robosuite Can) until ``episodes``
+    (``eval.num_rollouts``; None: one round) have run, round ``k`` reset under ``seed + k``: each env's first episode
+    of a round, its success the env's ``episode_metrics_to_log["episode/success"]`` on the step it ends, its length,
+    and the residual's mean correction (``residual_mm/all``, ``residual_deg/all``). The furniture round's keys, so the
+    watcher prints and logs it the same way (no part can leave its bounds here: ``out_of_bounds_rate`` 0). A task
+    whose envs are heavy (GR1: ~0.4 GB each) evaluates 50 episodes on a few envs this way."""
+    n = int(env.unwrapped.num_envs)
+    rounds = max(1, -(-int(episodes) // n)) if episodes else 1
+    results = [_episodes_round(env, policy, seed + k, label if rounds == 1 else f"{label} {k + 1}/{rounds}")
+               for k in range(rounds)]
+    # each round's per-episode outcomes, for the pooled rate; not a result of its own
+    per_round = [r.pop("successes") for r in results]
+    if rounds == 1:
+        return results[0]
+    lengths = [v for r in results for v in r["lengths"]][: int(episodes)]
+    successes = [v for r in per_round for v in r][: int(episodes)]
+    out = {"success_rate": sum(successes) / len(successes), "out_of_bounds_rate": 0.0,
+           "length_mean": sum(lengths) / len(lengths), "lengths": lengths, "episodes": len(lengths)}
+    for key in {k for r in results for k in r if k.startswith("residual_")}:
+        values = [r[key] for r in results if key in r]
+        out[key] = sum(values) / len(values)
+    return out
+
+
+def _episodes_round(env: Any, policy: Any, seed: int, label: str) -> Dict[str, Any]:
+    """One round of :func:`evaluate_episodes`: every env's first episode, reset under ``seed``."""
+    import torch
+
+    from robonuke_rl_core.envs.build import reseed_env
+    from robonuke_rl_core.evaluation import env_states, force_env_reset
+
+    u = env.unwrapped
+    n = int(u.num_envs)
+    residual = _residual_or_none(env)
+    reseed_env(env, seed)
+    observations, states = force_env_reset(env)
+    if hasattr(policy, "reset"):
+        policy.reset()
+    alive = torch.ones(n, dtype=torch.bool, device=u.device)
+    success = torch.zeros(n, dtype=torch.bool, device=u.device)
+    length = torch.zeros(n, dtype=torch.long, device=u.device)
+    steps = _agent_steps(int(u.max_episode_length), residual.steps_per_chunk if residual is not None else 1)
+    bar = _round_bar(steps, label)
+    correction: Dict[str, List[float]] = {}
+    for _ in range(steps):
+        with torch.no_grad():
+            actions = policy(observations, states)
+        observations, _, terminated, truncated, infos = env.step(actions)
+        states = env_states(env)
+        ending = alive & (terminated.reshape(-1).bool() | truncated.reshape(-1).bool())
+        if isinstance(infos, dict):
+            metrics = infos.get("metrics_to_log") or {}
+            for key, unit in (("residual/position_mm", "mm"), ("residual/rot_deg", "deg")):
+                value = metrics.get(key)
+                if value is not None and bool(alive.any()):
+                    correction.setdefault(f"residual_{unit}/all", []).extend(
+                        torch.as_tensor(value, device=u.device).reshape(-1)[alive].tolist())
+            ended_success = (infos.get("episode_metrics_to_log") or {}).get("episode/success")
+            if ended_success is not None:
+                success |= ending & (torch.as_tensor(ended_success, device=u.device).reshape(-1) > 0.5)
+        length += alive.long() * (residual.counted.to(length.device) if residual is not None else 1)
+        alive &= ~ending
+        bar.set_postfix(running=int(alive.sum()), success=int(success.sum()), refresh=False)
+        bar.update(1)
+        if not alive.any():
+            break
+    bar.close()
+    result = {
+        "success_rate": float(success.float().mean()),
+        "out_of_bounds_rate": 0.0,
+        "length_mean": float(length.float().mean()),
+        "lengths": length.cpu().tolist(),
+        "successes": success.float().cpu().tolist(),
+        "episodes": n,
+    }
+    for key, values in sorted(correction.items()):
+        result[key] = sum(values) / len(values)
+    return result
 
 
 def evaluate_furniture(env: Any, policy: Any, seed: int, label: str = "eval") -> Dict[str, Any]:
@@ -364,7 +452,9 @@ def _watch(args, overrides, setup) -> int:
     )
     if not cfg.residual.enabled:
         raise ValueError(f"{run_dir} is not a residual run (residual.enabled is false)")
-    routes = list(getattr(cfg.sac, "route_labels", None) or []) if cfg.trainer.learner == "sac" else []
+    from my_project.cfg import Q_LEARNERS, q_section
+
+    routes = list(getattr(q_section(cfg), "route_labels", None) or []) if cfg.trainer.learner in Q_LEARNERS else []
     if routes:
         # a routed SAC (one residual per phase): each phase writes its own checkpoints of the same names; the first
         # phase's folder lists them, and every phase's file of a name is loaded together
@@ -453,7 +543,7 @@ def _evaluate_all(env, cfg, ckpt_dir, done, record, seed, args, run) -> int:
         # the base alone: a residual of exactly zero, no checkpoint needed
         width = int(env.action_space.shape[-1])
         zero = lambda observations, states: torch.zeros((observations.shape[0], width), device=observations.device)
-        record(0, "base only", evaluate(env, zero, seed, "base only"))
+        record(0, "base only", evaluate(env, zero, seed, "base only", int(cfg.eval.num_rollouts)))
         done.add(0)
 
     policy = learner = None
@@ -485,7 +575,7 @@ def _evaluate_all(env, cfg, ckpt_dir, done, record, seed, args, run) -> int:
         for step, path in pending:
             learner.load_agent(path, slot=0, with_optimizer=False)
             learner.enable_training_mode(False)
-            record(step, path.name, evaluate(env, policy, seed, path.name))
+            record(step, path.name, evaluate(env, policy, seed, path.name, int(cfg.eval.num_rollouts)))
             done.add(step)
             if step >= total - 1:
                 print("[watch] reached the run's last checkpoint", flush=True)

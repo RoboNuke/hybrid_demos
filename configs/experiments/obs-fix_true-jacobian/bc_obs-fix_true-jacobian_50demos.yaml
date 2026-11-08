@@ -1,0 +1,28 @@
+# The obs-fix_true-jacobian base on 50 of the 300 TCP-IK demos (bc.num_demos), the current base's demo count, to compare
+# with bc_obs-fix_true-jacobian.yaml (all 300). Its own wandb group, so its run directory and checkpoints
+# (runs/hybrid_demo_furniture/obs-fix_true-jacobian_50demos/...) are separate. 100k updates (100 epochs), then it ends.
+#   python scripts/train_bc.py --config configs/experiments/obs-fix_true-jacobian/bc_obs-fix_true-jacobian_50demos.yaml --headless
+base: _foundation.yaml
+
+wandb:
+  project: hybrid_demo_furniture
+  group: obs-fix_true-jacobian_50demos
+
+task:
+  cfg:
+    scene:
+      # one round of eval.num_rollouts rollouts
+      num_envs: 512
+
+trainer:
+  learner: diffusion_bc
+  # 100k gradient steps
+  total_timesteps: 100000
+  write_interval: 150
+  checkpoint_interval: 50000
+
+hpc:
+  train_script: scripts/train_bc.py
+
+bc:
+  num_demos: 50

@@ -1,0 +1,14 @@
+# robomimic Can (robosuite 1.5.1 PickPlaceCan, one Panda) as ResFiT's Can env builds it (my_project/tasks/robosuite_can.py):
+# the default Panda OSC_POSE controller (delta pose, inputs in [-1, 1]), 20 Hz, 200-step episodes, sparse reward 1 when
+# the can is in its bin, the episode ended there; low-dim observation (robot state 9, then the 14-wide object state).
+# Everything here is the task's defaults: the file names the task, whatever bases on it gets these physics.
+base: hpc.yaml
+
+task:
+  name: Robosuite-Can-LowDim-v0
+  # MuJoCo simulates it: the entry points never start Isaac Sim
+  simulator: standalone
+
+wrappers:
+  task_metrics:
+    enabled: false

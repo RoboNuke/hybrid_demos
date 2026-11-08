@@ -1,0 +1,23 @@
+# The new base: the current base's diffusion BC run (the foundation) on the 300 TCP-IK demos.
+#   python scripts/train_bc.py --config configs/experiments/obs-fix_true-jacobian/bc_obs-fix_true-jacobian.yaml --headless
+base: _foundation.yaml
+
+wandb:
+  project: hybrid_demo_furniture
+  group: obs-fix_true-jacobian
+
+task:
+  cfg:
+    scene:
+      # one round of eval.num_rollouts rollouts
+      num_envs: 512
+
+trainer:
+  learner: diffusion_bc
+  # gradient steps
+  total_timesteps: 5000000
+  write_interval: 150
+  checkpoint_interval: 50000
+
+hpc:
+  train_script: scripts/train_bc.py

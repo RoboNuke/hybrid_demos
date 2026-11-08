@@ -1,0 +1,13 @@
+# robomimic Square (robosuite 1.5.1 NutAssemblySquare, one Panda): OSC_POSE delta, 20 Hz, 300-step episodes; low-dim
+# observation (robot state 9, then robosuite's 14-wide object-state). As ResFiT's code builds it (my_project/tasks/robosuite_tasks.py); sparse reward, the episode ended on
+# success. Everything here is the task's defaults.
+base: hpc.yaml
+
+task:
+  name: Robosuite-Square-LowDim-v0
+  # MuJoCo simulates it: the entry points never start Isaac Sim
+  simulator: standalone
+
+wrappers:
+  task_metrics:
+    enabled: false

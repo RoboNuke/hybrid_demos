@@ -1,0 +1,83 @@
+# residual_ResFiT_single_v2.yaml (one residual over the whole task, the 50-demo base, the residual's demos from all 300,
+# actor reach 0.1) with ResFiT's normalization of the residual's observation inputs, and nothing else changed:
+# residual.observation_normalization: standardize ((x - mean) / max(std, 0.1) over the base's demo dataset) replacing
+# the foundation's per-kind min-max floors. On robosuite Coffee this was the difference between 0.00 at 20-40k (min-max
+# inputs: the mug pose's 0.1 mm demo half ranges gave gains up to 17,600) and 0.84-1.00 by 150-260k.
+#   python scripts/make_phase_demos.py --config configs/experiments/ResFiT/residual_ResFiT_single_v3.yaml --dataset data/physic_aligned_tcp_300
+#   python scripts/train.py --config configs/experiments/ResFiT/residual_ResFiT_single_v3.yaml --headless
+#   python scripts/watch_residual_eval.py --headless --run runs/hybrid_demo_furniture_residual/ResFiT_single_v3/ResFiT_single_v3_a0 \
+#     --eval_config configs/eval/residual_watch_furniture.yaml
+base: _foundation.yaml
+
+wandb:
+  group: ResFiT_single_v3
+
+task:
+  cfg:
+    scene:
+      num_envs: 1
+    # the env's phase rewards: 1 on the step the episode gets past each of corner, grasp and insert (once per
+    # episode); assembling pays 1 (rewards.assembled, its default)
+    rewards:
+      corner_done:
+        weight: 1.0
+      grasp_done:
+        weight: 1.0
+      insert_done:
+        weight: 1.0
+
+trainer:
+  learner: ddpg
+  total_timesteps: 300000
+  checkpoint_interval: 10000
+  # publish every 1000 env steps; episode/success the mean of the last 10 episodes, each phase's success rate
+  # (phase/passed_*, counted only for the episodes that reached the phase) the mean of the last 10 that reached it
+  write_interval: 1000
+  success_window: 10
+  windowed_metrics:
+    - phase/passed_*
+
+residual:
+  enabled: true
+  # ResFiT's StateStandardizer for the residual's observation inputs, (x - mean) / max(std, 0.1) over the base's demos,
+  # in place of the foundation's per-kind min-max floors (all off here); the base keeps its own stats
+  observation_normalization: standardize
+  observation_std_floor: 0.1
+  observation_floors:
+    pos: null
+    rot6d: null
+    lin_vel: null
+    ang_vel: null
+    finger_width: null
+  # the 50-demo obs-fix_true-jacobian base, as a local run directory (its resolved config one level up)
+  base_run: runs/hybrid_demo_furniture/obs-fix_true-jacobian_50demos/obs-fix_true-jacobian_50demos_a0
+  base_project: null
+  base_run_name: null
+  # r = 1: the demos' 99th-percentile per-step move from the EE to its target, per axis, in the robot-base frame
+  target_scale_from_base: false
+  target_pos_scale:
+    - 0.019
+    - 0.015
+    - 0.021
+  target_rot_scale_deg:
+    - 8.9
+    - 10.9
+    - 21.7
+  # a delta-pose residual: r adds to an offset on the base's targets, reset when the base replans
+  target_accumulate: true
+  # the pose alone (6 per step): the gripper stays the base's
+  residual_gripper: false
+
+ddpg:
+  # the actor's reach +-0.1 r (ResFiT's default; residual_ResFiT_single.yaml's 0.2), exploration N(0, 0.025) r, and
+  # until the residual has its 10k rows (learning_starts_rows) the base plus uniform +-0.2 r, those rows kept in the buffer
+  actor_action_scale: 0.1
+  exploration_std: 0.025
+  random_action_scale: 0.2
+  # one residual for the whole task: no routing (the foundation's route_labels), every env step its own
+  route_labels: []
+  route_clock: false
+  # this base's demo residuals in this action meaning, one file of every demo frame, rewarded as the env is
+  demo_transitions: data/ResFiT_single_v3/demos.pt
+  # the replay memory beside every numbered checkpoint (memory_<step>.pt), for diagnostics
+  save_memory_with_checkpoints: true

@@ -1,0 +1,49 @@
+# ResFiT's residual TD3 (the foundation) with the action space of our earlier residuals (serl_bc, parts_pd v4): r = 1 is
+# a fixed absolute correction in the robot-base frame -- 2 cm along each axis (residual.ee_pos_scale), 6 deg about
+# each axis (Euler roll-pitch-yaw, residual.ee_rot_scale_deg) and 0.1 of the base's gripper half range
+# (action_scale_fraction) -- whatever the base's range per axis, and the actor's output spans the whole [-1, 1]
+# (ddpg.actor_action_scale 1). In residual_ResFiT r was in the base's normalized units, its reach 0.1 of the base's
+# half range per axis (16 / 14 / 10 mm, 5.7 deg). The exploration std is 0.05 of r: 1 mm and 0.3 deg.
+# Everything else is residual_ResFiT's: one residual per phase, no uniform warm-up actions, the foundation's stall reset at the time (since turned off).
+#   python scripts/make_phase_demos.py --config configs/experiments/ResFiT/residual_ResFiT_2cm.yaml --dataset data/physic_aligned_300
+#   python scripts/train.py --config configs/experiments/ResFiT/residual_ResFiT_2cm.yaml --headless
+#   python scripts/watch_residual_eval.py --run runs/hybrid_demo_furniture_residual/ResFiT_2cm/ResFiT_2cm_a0 \
+#     --eval_config configs/eval/residual_watch_furniture.yaml
+base: _foundation.yaml
+
+wandb:
+  group: ResFiT_2cm
+
+task:
+  cfg:
+    scene:
+      num_envs: 1
+
+trainer:
+  learner: ddpg
+  total_timesteps: 300000
+  checkpoint_interval: 10000
+  # publish every 1000 env steps; episode/success the mean of the last 10 episodes, each phase's success rate
+  # (phase/passed_*, counted only for the episodes that reached the phase) the mean of the last 10 that reached it
+  write_interval: 1000
+  success_window: 10
+  windowed_metrics:
+    - phase/passed_*
+
+# r = 1: 2 cm, 6 deg, 0.1 of the gripper's half range, in the robot-base frame
+residual:
+  enabled: true
+  target_scale_from_base: false
+  ee_pos_scale: 0.02
+  ee_rot_scale_deg: 6.0
+  action_scale_fraction: 0.1
+
+ddpg:
+  # the actor's output spans r's whole [-1, 1]
+  actor_action_scale: 1.0
+  # exploration N(0, 0.05) in r: 1 mm and 0.3 deg per axis (the foundation's 0.025 of r would be 0.5 mm here)
+  exploration_std: 0.05
+  # no uniform warm-up actions (as residual_ResFiT)
+  random_action_scale: 0.0
+  # this action space's own demo residuals
+  demo_transitions: data/ResFiT_2cm/demos_{route}.pt

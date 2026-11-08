@@ -215,13 +215,12 @@ def test_a_furniture_file_from_before_the_states_were_the_agents_observations_is
 
 
 def test_the_observation_flags_are_in_the_fingerprint(tmp_path):
-    """A file made with the agent's observation normalized and the base action in it is not one for
-    a run that sees the raw observation or no base action (and the other way round)."""
+    """A file made with the base action in the agent's observation is not one for a run that sees none (and the other
+    way round)."""
     path = tmp_path / "demos.pt"
-    flags = {"residual.normalize_observation": True, "residual.observe_base_action": True}
-    assert residual_demos.demo_fingerprint(fake_cfg(path, **flags))["residual"] == {**residual_demos.demo_fingerprint(fake_cfg(path))["residual"], "normalize_observation": True, "observe_base_action": True}
+    flags = {"residual.observe_base_action": True}
+    assert residual_demos.demo_fingerprint(fake_cfg(path, **flags))["residual"] == {**residual_demos.demo_fingerprint(fake_cfg(path))["residual"], "observe_base_action": True}
     torch.save({"transitions": {}, "meta": {**NARROW, "fingerprint": residual_demos.demo_fingerprint(fake_cfg(path))}}, path)
     residual_demos.check_demo_transitions(fake_cfg(path, **flags))  # the defaults: what the file was made with
-    for field in ("normalize_observation", "observe_base_action"):
-        with pytest.raises(ValueError, match=field):
-            residual_demos.check_demo_transitions(fake_cfg(path, **{f"residual.{field}": False}))
+    with pytest.raises(ValueError, match="observe_base_action"):
+        residual_demos.check_demo_transitions(fake_cfg(path, **{"residual.observe_base_action": False}))

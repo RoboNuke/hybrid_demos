@@ -305,19 +305,19 @@ def _convert_furniture(monkeypatch, rewards, assembled_from=None, normalizer=Non
 
 def test_without_a_critic_group_the_states_are_the_agents_observations(monkeypatch, furniture_layout):
     """The env's critic state is the agent's observation there: the file's states must be the same
-    normalized columns, not the raw recorded observation (the bug this guards against)."""
+    columns, raw (the learner's state_preprocessor normalizes both alike)."""
     out, _ = _convert_furniture(monkeypatch, furniture_rewards_cfg(), normalizer=DoublingNormalizer())
-    assert out["observations"][:3, 0].tolist() == [0.0, 2.0, 4.0]  # normalized: 2 x the recorded frame
+    assert out["observations"][:3, 0].tolist() == [0.0, 1.0, 2.0]  # raw: the recorded frame, no normalizer applied
     assert torch.equal(out["states"], out["observations"]) and torch.equal(out["next_states"], out["next_observations"])
     assert out["states"].shape == (6, 49 + 8)
 
 
 def test_the_demo_critic_state_does_not_depend_on_what_the_agent_observes(monkeypatch, furniture_layout):
-    """residual.normalize_observation / observe_base_action shape the agent's observation only: the file's
-    states (the critic state) are the normalized observation and the base action whatever they say."""
+    """residual.observe_base_action shapes the agent's observation only: the file's states (the critic state) are the
+    observation and the base action whatever it says."""
     ref, _ = _convert_furniture(monkeypatch, furniture_rewards_cfg(), normalizer=DoublingNormalizer())
     out, _ = _convert_furniture(monkeypatch, furniture_rewards_cfg(), normalizer=DoublingNormalizer(),
-                                normalize_observation=False, observe_base_action=False)
+                                observe_base_action=False)
     assert torch.equal(out["states"], ref["states"]) and torch.equal(out["next_states"], ref["next_states"])
     assert out["observations"].shape == (6, 49) and out["observations"][:3, 0].tolist() == [0.0, 1.0, 2.0]  # raw, no base action
 
@@ -504,3 +504,39 @@ def test_the_resip_fbabs_layout_appends_the_obstacle(furniture_layout):
     assert sum(w for _, w in families.obs_layout("Isaac-Furniture-OneLeg-FBAbs-v0", SimpleNamespace())) == 61
     assert families.observes_obstacle("Isaac-Furniture-OneLeg-FBAbs-ResiP-v0")
     assert not families.observes_obstacle("Isaac-Furniture-OneLeg-FBAbs-v0")
+
+
+def test_the_accumulating_target_residual_offsets_persist_until_the_base_replans(monkeypatch):
+    """residual.target_accumulate: a constant r adds up step after step on the base's targets, the offset is observed
+    (agent and critics, 6 more columns) and carried in the side input, and it starts over when the base replans."""
+    from my_project import residual as residual_mod
+    from my_project.models.cfg import DiffusionUnetActorCfg
+    from my_project.models.diffusion_policy import DiffusionPolicy
+
+    torch.manual_seed(0)
+    actor = DiffusionUnetActorCfg(horizon=8, n_obs_steps=2, action_horizon=4, down_dims=[16, 32], diffusion_step_embed_dim=16,
+                                  n_groups=4, inference_steps=2, num_diffusion_iters=10, warm_start=False)
+    policy = DiffusionPolicy(actor, 61, 10)
+    policy.normalizer.fit("obs", torch.randn(20, 61))
+    policy.normalizer.fit("action", torch.randn(20, 10))
+    monkeypatch.setattr(residual_mod, "load_base_policy", lambda *a, **k: policy.eval())
+    cfg = SimpleNamespace(
+        task_name="Isaac-Furniture-OneLeg-FBAbs-ResiP-v0",
+        residual=ResidualCfg(base_run="r", base_checkpoint="c", action_frame="target", target_axes="base", target_rotation="euler",
+                             residual_gripper=False, critic_state="observation", critic_action="full", target_accumulate=True,
+                             target_pos_scale=[0.02, 0.02, 0.02], target_rot_scale_deg=[6.0, 6.0, 6.0]),
+        hybrid=SimpleNamespace(extra_dims=0, enabled=False),
+    )
+    env = residual_mod.ResidualPolicyWrapper(FakeAbsEnv(), cfg)
+    obs, _ = env.reset()
+    assert obs["policy"].shape == (2, 61 + 10 + 6) and obs["critic"].shape == (2, 61 + 6)
+    assert env.side.shape == (2, 16) and torch.all(obs["policy"][:, -6:] == 0)
+    r = torch.zeros(2, 6)
+    r[:, 0] = 1.0  # +2 cm along x every step
+    offsets = []
+    for _ in range(6):
+        base = env.base_action.clone()
+        env.step(r)
+        offsets.append(float((env.env.sent[0, 0] - base[0, 0]) * 1000))
+    # steps 1-4 add up within the base's 4-step chunk; the replan at step 5 starts the offset over
+    assert offsets == pytest.approx([20.0, 40.0, 60.0, 80.0, 20.0, 40.0], abs=1e-3)

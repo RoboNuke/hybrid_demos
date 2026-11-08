@@ -1,0 +1,98 @@
+# ResFiT on square (the leading _ keeps launch_train from submitting this file on its own): what every training of
+# the group shares. Same diagnostic as resfit_can (its _foundation.yaml lists every way ours differs from theirs): their
+# recipe on a task it works on, through our pipeline.
+#
+# Their settings for this task, as their code resolves them: ResidualTD3SquareConfig, paper run shell/paper_runs/square/1_square_residual_rl.sh (the defaults). Every paper run explored at
+# N(0, 0.05) whatever the README's algo.stddev_max/min said (those overrides never reach the schedule string the trainer
+# reads). The rest is ResFiT's default: actor lr as below, critic lr 1e-4, AdamW weight decay 0.01, gradients clipped at
+# 1, tau 0.005, 10 critics (the target's min over a random 2, the actor on their mean), loss (mean_k |Q_k - y|)^2, 4
+# critic updates per env step and the actor on every 4th, 10k env steps of the base plus uniform +-0.2 residuals, then
+# 10k critic-only updates, batch 256 half from the demos, timeouts terminal, one env per agent.
+base: ../../base/robosuite_square.yaml
+
+experiment:
+  seed: 42
+
+wandb:
+  entity: hur
+
+bc:
+  dataset: data/robomimic_square_mh_300
+  obs_key: observation.state
+  action_key: action
+  num_demos: 300
+  test_split: 0.05
+  batch_size: 1024
+  steps_per_epoch: 1000
+  lr: 1.0e-4
+  weight_decay: 1.0e-6
+  lr_schedule: cosine
+  warmup_steps: 2000
+  max_grad_norm: 0.0
+  eval_every: 5
+  sample_every: 100
+  rollout_every: 5
+  rollout_loss_threshold: 1000.0
+  rollout_progress: false
+  max_hours: null
+  save_only_best_ckpt: true
+  normalization: per_dim
+  early_stop_patience: .inf
+  early_stop_smooth: 0.9
+  show_waypoints: false
+  action_metric_groups: null
+
+eval:
+  num_rollouts: 50
+  deterministic: true
+  save_state: false
+  record: false
+
+residual:
+  base_warm_start: false
+  steps_per_chunk: 1
+  # ResFiT's form: the executed action is the base's plus 1.1 x half range x r per dim (their action normalization's
+  # x(1 + action_scale) widening), every dim
+  action_frame: absolute
+  action_scale: null
+  action_scale_fraction: 1.1
+  normalize_observation: true
+  observe_base_action: true
+  # the actor observes the observation and the base action; the critics the observation and the executed action
+  critic_state: observation
+  critic_action: full
+
+ddpg:
+  discount_factor: 0.99
+  n_step: 3
+  batch_size: 256
+  polyak: 0.005
+  actor_lr: 1.0e-6
+  critic_lr: 1.0e-4
+  weight_decay: 0.01
+  grad_norm_clip: 1.0
+  num_critics: 10
+  critic_subset: 2
+  actor_q_reduction: mean
+  critic_loss: mean_abs_squared
+  gradient_steps: 4
+  update_every: 1
+  policy_delay: 4
+  learning_starts_rows: 10000
+  random_action_scale: 0.2
+  critic_warmup_updates: 10000
+  actor_action_scale: 0.1
+  exploration_std: 0.05
+  target_actor: true
+  target_policy_noise: true
+  target_noise_clip: 0.3
+  action_clip: 1.0
+  # timeouts end the target as a termination does (theirs: done = terminated | truncated)
+  bootstrap_time_limits: false
+  normalize_observations: false
+  route_labels: []
+  route_clock: false
+  cuda_graph: true
+
+memory:
+  memory_size: 200000

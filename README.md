@@ -288,15 +288,47 @@ python scripts/train.py --config configs/experiments/resip_replica/residual_resi
 listed in `sac.route_labels` (`insert`, `screw`), each its own SAC with its own replay memory, optimizers and
 local reward (the package's `RoutedSAC`), a fixed std (`model.actor.fixed_std`), no entropy term, and the demos
 written into each phase's replay memory as ordinary rows (`sac.demo_storage: memory`). The residual acts every
-env step (`residual.steps_per_chunk: 1`). Its demos come per phase from `scripts/make_phase_demos.py`
-(`my_project/phase_demos.py`, CPU only, no sim): each recorded demo step is labelled with its phase offline
-(Robonuke_Furniture_Bench `assembly/phases.phases_from_states`), the base is run as the env runs it (a plan
-every `action_horizon` frames), and the target-frame residual that reproduces the demo action is stored with
-its phase's local reward, one file per phase (`sac.demo_transitions` with `{route}`):
+env step (`residual.steps_per_chunk: 1`). Its demos are built per phase when the learner loads them (see the raw demo episodes below):
 
 ```bash
-python scripts/make_phase_demos.py --config configs/experiments/parts_pd/residual_parts_pd.yaml
 python scripts/train.py --config configs/experiments/parts_pd/residual_parts_pd.yaml --headless
+```
+
+**Raw demo episodes** (`scripts/make_raw_demos.py`, `my_project/raw_demos.py`, CPU only, no sim) hold only what is
+general about the demos: per recorded episode, frames `0..success_frame`, the raw env observations, the absolute
+targets the env executed (DART's perturbed commands) and the frozen base's action at each frame (a cold plan every
+`action_horizon` frames, as the env runs it; the base is stochastic, so its sample is stored). Its `meta.fingerprint`
+is the base run and checkpoint, the base's planning settings and the task; a run with another refuses the file.
+Everything the residual's settings shape is applied when the learner loads the file, with the env's own code
+(`my_project/demo_loader.py`, the package's `register_demo_loader`): each frame's phase by the env tracker's own checks
+(Robonuke_Furniture_Bench `assembly/phases`: `phase_checks` / `phase_step`, the run's `furniture.phase_*`), the wrapper's
+per-step inputs (`MultiplyResidual.step_inputs`) and `r` (the demo's motion over the base's), and the route's local
+rewards. So changing the observation, the action map or the normalization never needs a rebuild. Built for
+`action_frame: multiply` with `route_labels`:
+
+```bash
+python scripts/make_raw_demos.py --config configs/experiments/scaled_residual/residual_scaled_residual_v3.yaml \
+    --dataset data/physic_aligned_tcp_300 --out data/scaled_residual_v3/raw_demos.pt
+```
+
+`configs/experiments/ResFiT/` is ResFiT (Ankile et al. 2025, arXiv:2509.19301), with its official code's
+learning settings (`_foundation.yaml`), on the package's `ddpg` learner. The actor is a deterministic residual,
+`0.1 tanh(mu)`, with fixed noise 0.05. There are 10 critics: the target takes the min over a random 2, and the actor
+trains on their mean. The learner uses TD3's target smoothing, 3-step returns, 4 critic updates per env step with the
+actor on the 4th, a 10k-update critic warm-up and uniform warm-up actions. Half of every batch comes from the demos,
+and the actor trains on that same batch. As in `parts_pd`, there is one residual per phase (`ddpg.route_labels`:
+`insert`, `screw`). Each residual counts its learning start and warm-up in its own phase's steps
+(`ddpg.route_clock`). The insert phase is passed after 5 held steps (`furniture.phase_hold_steps: 5`).
+
+The residual is 7-dof: position 3, Euler roll-pitch-yaw 3 (`residual.target_rotation: euler`) and the gripper. It is
+in the base's normalized units (`residual.target_scale_from_base`, `action_scale_fraction: 1`) and is added in the
+robot-base frame. The sent position and gripper are clamped to the base's range widened 10%
+(`residual.executed_clip: 1.1`). The critics see the observation and the executed action
+(`residual.critic_state: observation`, `critic_action: full`). The unused legs and the fixed obstacle are dropped
+from the observation. The foundation's header lists where it is not ResFiT's.
+
+```bash
+python scripts/train.py --config configs/experiments/ResFiT/residual_ResFiT.yaml --headless
 ```
 
 `residual_parts_pd_v2.yaml` moves it closer to the paper: no-progress resets (leg 4 moving at most 0.5 mm / 1 deg per
@@ -358,6 +390,80 @@ aws s3 sync --no-sign-request s3://iai-robust-rearrangement/data/processed/diffi
 python scripts/import_resip_zarr.py --zarr ~/resip_data/one_leg_teleop_low/<name>.zarr --out data/furniture_one_leg_resip_teleop
 ```
 
+## ResFiT's robosuite tasks (resfit_can, resfit_square, resfit_boxcleanup, resfit_cansort, resfit_coffee)
+
+ResFiT's residual TD3 recipe on the tasks it is known to work on, run through this project's pipeline, to tell whether
+the one_leg failures are ours or the task's. `my_project/tasks/robosuite_tasks.py` builds each task as ResFiT's code
+does (robosuite 1.5.1, their robots, controllers and horizons), low-dim, behind an Isaac Lab Direct env's surface (the
+package and the project wrappers take it unchanged):
+
+| task id | robosuite env | robots | horizon | observation | action |
+|---|---|---|---|---|---|
+| `Robosuite-Can-LowDim-v0` | `PickPlaceCan` | Panda | 200 | robot 9, `object` 14 | OSC_POSE delta 6, gripper 1 |
+| `Robosuite-Square-LowDim-v0` | `NutAssemblySquare` | Panda | 300 | robot 9, `object` 14 | OSC_POSE delta 6, gripper 1 |
+| `Robosuite-BoxCleanup-LowDim-v0` | `TwoArmBoxCleanup` | PandaDexRH, PandaDexLH | 300 | robots 38, `object_joints` 14 | per arm OSC_POSE 6, hand 6 |
+| `Robosuite-CanSort-LowDim-v0` | `TwoArmCanSortRandom` | GR1FixedLowerBody | 400 | hands 36, `object_joints` 21 | Mink whole-body IK, absolute: right pose 6, left pose 6, fingers 12 |
+| `Robosuite-Coffee-LowDim-v0` | `TwoArmCoffee` | GR1FixedLowerBody | 400 | hands 36, `object_joints` 15 | Mink whole-body IK, absolute: right pose 6, left pose 6, fingers 12 |
+
+The robot state is ResFiT's (its eef pose and gripper joints); `object` is robosuite's `object-state` (robomimic's
+low-dim key), `object_joints` the position of every joint that is not the robot's (the DexMimicGen tasks publish no
+object observable). Their base configs set `task.simulator: standalone`, so `train.py`, `train_bc.py`,
+`make_robosuite_demos.py` and `watch_residual_eval.py` never start Isaac Sim (their `setup()` skips
+`install_obs_terms`, Factory's terms). Needs robosuite and dexmimicgen at ResFiT's commits and mujoco 3.3.2:
+
+    git clone https://github.com/ARISE-Initiative/robosuite ~/deps/robosuite
+    git -C ~/deps/robosuite checkout 77a4751233c29456a5381209e30dd0dbf39a6557
+    pip install --no-deps -e ~/deps/robosuite && pip install mujoco==3.3.2 mink==0.0.7 PyOpenGL glfw etils
+    git clone https://github.com/NVlabs/dexmimicgen.git ~/deps/dexmimicgen
+    git -C ~/deps/dexmimicgen checkout e606f36a38b1d4ba8f56d06d6c0cd059b20ebbaf
+    pip install --no-deps -e ~/deps/dexmimicgen
+
+`--no-deps` keeps robosuite's `opencv-python` off the env (Isaac Lab's `opencv-python-headless` provides `cv2`) and
+dexmimicgen's pins (numpy 1.23, h5py 3.12) from downgrading it.
+
+Demos: robomimic's low-dim files (Can, Square) import directly; DexMimicGen's generated files
+(huggingface.co/datasets/MimicGen/dexmimicgen_datasets, `generated/<task>.hdf5`) import with `--replay`, which sets every
+recorded MuJoCo state in the task's env and reads the observation and success there:
+
+    python scripts/import_robomimic.py --hdf5 data/robomimic_can_mh/low_dim_v15.hdf5 --out data/robomimic_can_mh_300
+    python scripts/import_robomimic.py --hdf5 data/robomimic_square_mh/low_dim_v15.hdf5 --out data/robomimic_square_mh_300 \
+        --task_name Robosuite-Square-LowDim-v0
+    python scripts/import_robomimic.py --hdf5 data/dexmimicgen/two_arm_coffee.hdf5 --out data/dexmg_coffee_1000 \
+        --task_name Robosuite-Coffee-LowDim-v0 --replay --max_demos 1000
+
+Then per task (`<t>` one of can, square, boxcleanup, cansort, coffee): the base, its demo transitions, the residual
+(`residual_resfit_<t>.yaml`: 3 agents in one process; Can's 3-agent one is `residual_resfit_can_x3.yaml`) and one watcher
+per agent:
+
+    python scripts/train_bc.py --config configs/experiments/resfit_<t>/bc_resfit_<t>.yaml --headless
+    python scripts/make_robosuite_demos.py --config configs/experiments/resfit_<t>/residual_resfit_<t>.yaml
+    python scripts/train.py --config configs/experiments/resfit_<t>/residual_resfit_<t>.yaml --headless
+    python scripts/watch_residual_eval.py --headless --run runs/resfit_validation_residual/resfit_<t>/resfit_<t>_a<i> \
+        --eval_config configs/eval/residual_watch_can.yaml
+
+Each group's `_foundation.yaml` lists ResFiT's settings for the task (`resfit_can`'s also every place ours differs).
+`scripts/make_robosuite_demos.py` (`my_project/robosuite_demos.py`) writes the residual's demo transitions for
+`residual.action_frame: absolute`, `critic_state: observation`, `critic_action: full`: each demo frame up to its first
+success, the base action as the env wrapper's `ChunkedBase` produces it along the demo, `r = (a_demo - a_base) / scale`.
+
+### Fields of `task.cfg` for the `Robosuite-*-LowDim-v0` tasks
+
+| field | default (Can) | meaning |
+|---|---|---|
+| `seed` | 42 | NumPy's global seed at construction (robosuite 1.5.1's placement samplers draw from it) |
+| `scene.num_envs` | 1 | robosuite envs, stepped one after another on the CPU |
+| `env_name` | `PickPlaceCan` | the robosuite env (`robosuite.make`'s `env_name`) |
+| `robots` | `[Panda]` | its robots (ResFiT's `ENV_ROBOTS`); the first one's default composite controller, a composite IK's input frame set to `world` |
+| `import_module` | `""` | a module imported before making it (`dexmimicgen` registers the DexMimicGen envs) |
+| `horizon` | 200 | steps per episode (ResFiT's horizon for the task): truncated after it |
+| `control_freq` | 20 | control steps per second |
+| `lite_physics` | true | robosuite's `lite_physics` (ResFiT leaves robosuite's default) |
+| `obs_keys` | `[robot0_eef_pos, robot0_eef_quat, robot0_gripper_qpos, object]` | the observation's terms in order (`object`, `object_joints`: above) |
+| `terminate_on_success` | true | end the episode on the step the task succeeds (ResFiT's `terminated = reward == 1`) |
+| `observation_space` | 23 | the observation's width; the env checks it against `obs_keys` |
+| `action_space` | 7 | the controller's input width; the env checks it against robosuite's |
+| `state_space` | 0 | no critic state of its own |
+
 ## The forge-v1 nut-demo importer's fields
 
 `scripts/import_forge_v1.py` (`my_project/demos/forge_v1.py`) replays the
@@ -396,10 +502,9 @@ and one without it is refused. Its action `r` (4, in [-1, 1]) is sent as
 correction's size per agent. The base's architecture comes from its BC run's resolved config,
 its weights and normalizer from the checkpoint, and the env's widths are checked against it.
 `residual.base_action_horizon` and `residual.base_inference_steps` override the base run's executed
-horizon and DDIM steps (null: the run's own); `residual.normalize_observation: false` gives the agent
-(and the critic) the raw observation instead of the base-normalized, widened one, and
-`residual.observe_base_action: false` leaves `normalize(a_base)` out of both (Policy Decorator's
-`actor_input: obs`). Both flags are part of a demo file's fingerprint.
+horizon and DDIM steps (null: the run's own). The residual's inputs go out raw -- the learner's
+`state_preprocessor` normalizes them -- and `residual.observe_base_action: false` leaves `a_base` out of the
+agent's observation (Policy Decorator's `actor_input: obs`), part of a demo file's fingerprint.
 
 **Chunk-level residual (Policy Decorator).** `residual.steps_per_chunk: k` > 1 makes the agent act
 once every `k` env steps with a `(k x A)`-wide action, step-major (row `j` is sub-step `j`'s residual;
@@ -436,9 +541,9 @@ offsets after the first are not determined by the chunk's observation; the absol
 
 **The critic state is the residual's own.** The wrapper always publishes a critic observation group
 (it creates one for an env that has none, such as FurnitureBench): the env's critic state or the
-base's normalized observation, then the base action(s) normalized (the chunk's `k` with
-`steps_per_chunk: k`), then the EE offset (`accumulate`) and the history. It does not change with
-`residual.normalize_observation` / `observe_base_action`, which shape only what the actor sees, and
+base's observation, then the base action(s) (the chunk's `k` with `steps_per_chunk: k`), then the EE offset
+(`accumulate`) and the history, all raw. It does not change with `residual.observe_base_action`, which shapes only
+what the actor sees, and
 the learner hands it to the critic-action transform, so the critics always see what was executed.
 
 ```yaml
@@ -447,7 +552,6 @@ residual:
   steps_per_chunk: 4
   base_action_horizon: 4
   base_inference_steps: 4
-  normalize_observation: false
   observe_base_action: false
   critic_action: full
 ```
@@ -500,24 +604,38 @@ python scripts/publish_stochastic_eval.py <residual run dir>
 | `residual.action_scale_fraction` | float | `0.1` | with `action_scale: null`, the correction bound as a fraction of the base's normalized action range: `fraction * (max - min) / 2` of its training actions per dim (robust-rearrangement's `action_scale: 0.1`; Policy Decorator's alpha, 0.1–0.3 typical) |
 | `residual.demo_actions_beyond_scale` | str | `store` | demo transitions (`scripts/make_demo_transitions.py`) whose residual action `(a_demo - a_base) / scale` is beyond the policy's [-1, 1] in any dim: `store` them exactly (the critic takes the action as an input) or `drop` them. Never clipped. Part of the demo file's fingerprint |
 | `residual.critic_action` | str | `residual` | what SAC's critics take as the action: `residual`, the agent's `r` in [-1, 1] (the base action reaches them through their critic state), or `full`, the executed pose action normalized as the base's, `normalize(a_base) + scale / half_range * r` = `normalize(a_base + scale * r)` (`my_project/residual.py` `residual_critic_action`, registered in `scripts/train.py`'s `setup()`), built from the critic state, never from the agent's observation. With `steps_per_chunk: k`, the chunk's `k` executed actions, `normalize(a_base_j) + gain * r_j` per row, step-major (`k x A`; not with `action_frame: ee`). A demo transition's is then exactly `normalize(a_demo)`, however far beyond the residual's reach. The actor still outputs `r`. SAC only |
-| `residual.action_frame` | str | `absolute` | what the agent's action is (`my_project/residual_ee.py`). `absolute`: `scale * r` added to every dim of the base action (the fields above). `ee` (furniture FBAbs tasks; no `hybrid`, no `residual.action_scale`): `r = [r_pos 3, r_rot 3]` (6; the gripper is the base's), a correction of the base's target in the end-effector's frame -- `ee_pos_scale * R_ee r_pos` along the EE's axes (`R_ee` the observation's), a rotation `Exp(ee_rot_scale_deg * r_rot)` about the target's own axes -- re-sent every step. The env still gets the 10-d absolute target; the agent is announced a 6-d action in [-1, 1]. `critic_action: full` gives the critics the executed correction -- the offset after the step, in the EE frame over its reach, 6 like `r`; with `normalize(a_base)` in their input it fixes the target sent -- rebuilt from the observation with the same map, and `scripts/make_demo_transitions.py` stores the `r` that reproduces each demo action `target` (furniture FBAbs tasks, `my_project/residual_target.py`): Policy Decorator's meaning of r (ManiSkill2 `pd_ee_delta_pose` with `res_scale` 0.1), `r = [r_pos 3, r_rot 3, r_grip 1]` per step: `p_base + R_base (ee_pos_scale r_pos)`, `R_base Exp(ee_rot_scale r_rot)` (the base target's own axes), the gripper `+ scale_grip r_grip` (the absolute frame's gripper scale); `critic_action: full` rebuilds the chunk's executed targets (`k x 10` wide: the critics are built at that width) |
+| `residual.action_frame` | str | `absolute` | what the agent's action is (`my_project/residual_ee.py`). `absolute`: `scale * r` added to every dim of the base action (the fields above). `ee` (furniture FBAbs tasks; no `hybrid`, no `residual.action_scale`): `r = [r_pos 3, r_rot 3]` (6; the gripper is the base's), a correction of the base's target in the end-effector's frame -- `ee_pos_scale * R_ee r_pos` along the EE's axes (`R_ee` the observation's), a rotation `Exp(ee_rot_scale_deg * r_rot)` about the target's own axes -- re-sent every step. The env still gets the 10-d absolute target; the agent is announced a 6-d action in [-1, 1]. `critic_action: full` gives the critics the executed correction -- the offset after the step, in the EE frame over its reach, 6 like `r`; with `normalize(a_base)` in their input it fixes the target sent -- rebuilt from the observation with the same map, and `scripts/make_demo_transitions.py` stores the `r` that reproduces each demo action `target` (furniture FBAbs tasks, `my_project/residual_target.py`): Policy Decorator's meaning of r (ManiSkill2 `pd_ee_delta_pose` with `res_scale` 0.1), `r = [r_pos 3, r_rot 3, r_grip 1]` per step: `p_base + R_base (ee_pos_scale r_pos)`, `R_base Exp(ee_rot_scale r_rot)` (the base target's own axes), the gripper `+ scale_grip r_grip` (the absolute frame's gripper scale); `critic_action: full` rebuilds the chunk's executed targets (`k x 10` wide: the critics are built at that width). `multiply` (one_leg FBAbs ResiP, `my_project/residual_multiply.py`): the base's motion multiplied per pose dim by `m = multiply_min + (r + 1) / 2 (multiply_max - multiply_min)` (the gripper the base's), what it multiplies set by `multiply_reference`; the agent observes the observation relative to the EE (the EE's own pose kept in the robot-base frame until `observation_drop` removes it, its velocities in its frame, each part `[R_ee^T (p - p_ee), rot6d(R_ee^T R)]`), then the base's motion and gripper (7) and, `increment`, the current target relative to the EE (6); the critics observe the observation part alone and take the resulting target relative to the EE and the gripper (7). Everything raw (m, rad): the learner's `state_preprocessor` normalizes it. Needs `critic_state: observation`, `critic_action: full`, `observe_base_action`, the obstacle's columns dropped, no `phase_scales`, `trainer.learner: ddpg` with `actor_action_scale: 1`, `action_clip: 1`, `random_action_mode: actor_gaussian`, `model.actor.output_init_scale: 0` and `output_bias: atanh` of the `r` whose `m` is 1 (the config check names the values). Its demos are raw episodes (`scripts/make_raw_demos.py`), converted at load |
 | `residual.ee_pos_scale` | float | `0.01` | m per unit `r_pos` per step (`action_frame: ee` / `target`; Policy Decorator: 0.01) |
 | `residual.ee_rot_scale_deg` | float | `5.0` | deg per unit `r_rot` per step (`action_frame: ee` / `target`; Policy Decorator: 0.01 rad = 0.573) |
 | `residual.accumulate` | bool | `false` | `action_frame: ee`: each step's correction adds to an offset that goes back to zero whenever the base starts a new chunk (every `model.actor.action_horizon` steps, and at an episode's start), instead of being re-sent every step; the offset before the step (`R_ee^T o` and `log(O)`, each over its largest reach in one chunk) is appended to the agent's observation and the critic's state after `normalize(a_base)` |
 | `residual.steps_per_chunk` | int | `1` | env steps per agent action (Policy Decorator's residual chunk). `1`: the agent acts every env step. `k > 1`: once every `k` env steps with a `(k x A)`-wide action in [-1, 1], step-major; the wrapper runs the `k` env steps (each the base's own next action plus its row), sums the rewards, ORs the dones, returns the last observation; `residual/*` metrics are per-sub-step means. The base's executed `action_horizon` must be a multiple of `k`, so the observed base action is the chunk's `k` actions (step-major) and `critic_action: full` is the chunk's `k` executed actions. No `hybrid`, no demo transitions. See "Chunk-level residual" above |
 | `residual.base_action_horizon` | int \| null | `null` | override the base's executed `model.actor.action_horizon` (Policy Decorator: 4); `null`: the base run's own. At most the base's `horizon`; with `steps_per_chunk` a multiple of it. Also applied by `scripts/make_demo_transitions.py` |
 | `residual.base_inference_steps` | int \| null | `null` | override the base's DDIM `model.actor.inference_steps` (Policy Decorator: 4); `null`: the base run's own. At most the base's `num_diffusion_iters` |
-| `residual.normalize_observation` | bool | `true` | the **agent** gets the base's observation normalized with the base's normalizer, its near-constant columns widened; `false`: the raw observation as the env produces it (Policy Decorator's). The base action part, when observed, stays `normalize(a_base)`. The critic state is not affected (`residual.critic_state`: always normalized). Part of the demo file's fingerprint |
-| `residual.observe_base_action` | bool | `true` | append `normalize(a_base)` (with `steps_per_chunk: k`, the chunk's `k` base actions normalized, step-major; and, with `accumulate`, the offset) to the **agent's** observation; `false`: the agent sees the observation alone (Policy Decorator's `actor_input: obs`). The critic state always holds the base action(s), so `critic_action: full` works either way. Part of the demo file's fingerprint |
-| `residual.critic_state` | str | `residual` | what the SAC critics observe. `residual`: the residual's critic state (`critic_state`: the env's, or the normalized base observation, then the base action(s) normalized). `observation`: no critic state, the critics see the agent's own observation (Policy Decorator's critic); `critic_action: full` rebuilds the executed action from the base action(s) the wrapper publishes every agent step as `infos["residual_base"]` / `["next_residual_base"]`, stored per transition as the transform's `side_inputs` and never a critic input. Furniture envs only; not with `action_frame: ee` or `sac.demo_transitions`. Eval and debug register the critic-action builder too, so the critics load at their width |
-| `residual.ee_relative_actions` | bool | `false` | Policy Decorator's command form (`my_project/residual_target.py` `EERelative`) for the base action the agent observes (`observe_base_action`) and the executed action the critics take (`critic_action: full`): each of the chunk's absolute targets against the EE pose of the chunk's observation, in the EE's frame, `[R_ee^T (p - p_ee) / ee_relative_pos_unit, log(R_ee^T R) / ee_relative_rot_unit, normalize(gripper)]`, 7 per step (ManiSkill2 `pd_ee_delta_pose`, `frame: ee`), so both are the same `k x 7` form. The critic state stays the observation without the base action (a critic group is created for it). Needs `action_frame: target` and `critic_state: observation` |
+| `residual.observe_base_action` | bool | `true` | append the base action (with `steps_per_chunk: k`, the chunk's `k` base actions, step-major; and, with `accumulate`, the offset), raw, to the **agent's** observation; `false`: the agent sees the observation alone (Policy Decorator's `actor_input: obs`). The critic state always holds the base action(s), so `critic_action: full` works either way. Part of the demo file's fingerprint. The residual never scales its inputs: the learner's `state_preprocessor` does |
+| `residual.critic_state` | str | `residual` | what the Q critics (sac, ddpg) observe. `residual`: the residual's critic state (`critic_state`: the env's, or the base observation, then the base action(s), raw). `observation`: no critic state, the critics see the agent's own observation (Policy Decorator's critic); `critic_action: full` rebuilds the executed action from the base action(s) the wrapper publishes every agent step as `infos["residual_base"]` / `["next_residual_base"]`, stored per transition as the transform's `side_inputs` and never a critic input. Furniture envs only; not with `action_frame: ee` or per-step `sac.demo_transitions` (the per-phase demos of `scripts/make_phase_demos.py` are written in this form). Eval and debug register the critic-action builder too, so the critics load at their width |
+| `residual.ee_relative_actions` | bool | `false` | Policy Decorator's command form (`my_project/residual_target.py` `EERelative`) for the base action the agent observes (`observe_base_action`) and the executed action the critics take (`critic_action: full`): each of the chunk's absolute targets against the EE pose of the chunk's observation, in the EE's frame, `[R_ee^T (p - p_ee), log(R_ee^T R), gripper]` (m, rad, raw), 7 per step (ManiSkill2 `pd_ee_delta_pose`, `frame: ee`), so both are the same `k x 7` form. The critic state stays the observation without the base action (a critic group is created for it). Needs `action_frame: target` and `critic_state: observation` |
 | `residual.target_axes` | str | `target` | `action_frame: target`: the axes the correction is expressed in. `target`: the base target's own frame. `base`: the robot-base frame the absolute targets are in (`p_base + ee_pos_scale r_pos`, `Exp(ee_rot_scale r_rot) R_base`), so r = 1 is a fixed absolute correction whatever the target's orientation. Not with `ee_relative_actions` |
 | `residual.base_warm_start` | bool \| null | `null` | override the base run's `model.actor.warm_start`; `false` plans every chunk from pure noise (null keeps the run's) |
-| `residual.ee_relative_pos_unit` | float | `0.1` | m per unit of the EE-relative position (ManiSkill2 `pd_ee_delta_pose`: 0.1) |
-| `residual.ee_relative_rot_unit` | float | `0.1` | rad per unit of the EE-relative rotation vector (ManiSkill2 `pd_ee_delta_pose`: 0.1) |
 | `residual.active_from_phase` | str \| null | `null` | one_leg's task phase (`furniture.track_phases`: `corner`, `grasp`, `insert`, `screw`) from which the residual acts: an agent step whose observation is in an earlier phase (or at an episode-end code) runs the base alone, the agent's action zeroed, train and eval alike; `infos["residual_active"]` (1 / 0 per env) reports it (`sac.executed_action_mask: residual_active` stores the executed zeros; `sac.store_labels` keeps only the phases it acts in out of the memory's other phases). `insert`: only once the leg is grasped. Null: every step |
 | `residual.observation_drop` | list | `[]` | columns of the base's observation the residual never sees, `[start, stop)` pairs: removed from the agent's observation and the critic state (an env without its own critic group), never from the base's input; the demo builder drops the same. one_leg -FBAbs-ResiP (63): `[25, 52]` legs 1-3, `[61, 63]` the front obstacle. Empty: the whole observation |
 | `residual.residual_gripper` | bool | `true` | `action_frame: target`: the residual corrects the gripper too (`r_grip`, 7 per step). `false`: the pose alone (6 per step), the gripper is the base's |
+| `residual.target_rotation` | str | `rotvec` | `action_frame: target`: what `r_rot` is. `rotvec`: an axis-angle, `Exp(ee_rot_scale r_rot)`. `euler`: roll, pitch, yaw, `Rz(yaw) Ry(pitch) Rx(roll)` of `ee_rot_scale_deg r_rot` (`residual_target.euler_rpy`), composed as `target_axes` says |
+| `residual.target_scale_from_base` | bool | `false` | `action_frame: target`: the position's scale per axis is the absolute frame's (`action_scale`, or `action_scale_fraction` of the base's half range per axis) instead of `ee_pos_scale`. With fraction 1, `r_pos` is in the base's normalized action units (ResFiT's residual). The gripper's scale is the absolute frame's either way |
+| `residual.ee_grip_scale` | float or null | `null` | `action_frame: target`: the gripper command per unit `r_grip`, in the env's gripper units (FurnitureBench's gripper is ±1; the action term closes or opens on the sign, with hysteresis), as `ee_pos_scale` / `ee_rot_scale_deg` are for the pose. Null: the absolute frame's scale (`action_scale`, or `action_scale_fraction` of the base's gripper half range) |
+| `residual.action_half_range_floor` | float or null | `null` | `action_frame: absolute` with `action_scale: null`: the residual's per-dim scale is `action_scale_fraction x max(half range, floor)`, the half range the base's demo dataset's own (ResFiT's ActionScaler floor, `min_action_range / 2` = 0.05). Null: the base normalizer's half range, 1 for a dim constant in the demos (Coffee's idle fingers: 1.2 rad per unit r instead of ResFiT's 0.06). Robosuite and furniture tasks |
+| `residual.phase_scales` | bool | `false` | every routed phase (the learner's `route_labels`) its own action scale, read from `phase_stats`. The env wrapper reads each env's phase from the env's phase tracker while it builds the observation and applies that phase's scale; a phase without a residual gets no correction. The critics' scale from r to the executed action rides in their side input, per transition. Needs `action_frame: absolute`, `critic_state: observation`, `critic_action: full`, `steps_per_chunk: 1`, no `executed_clip`; furniture tasks |
+| `residual.phase_stats` | str or null | `null` | `phase_scales`' file: each routed phase's action scale |
+| `residual.action_scale_source` | `half_range` or `median_correction` | `half_range` | `phase_scales`: what one unit of r is per action dim. `half_range`: ResFiT's `action_scale_fraction x max(the phase's demo half range, action_half_range_floor or 0.05)`. `median_correction`: the phase's median demo correction `\|a_demo - a_base\|` (the base run along the demos), so r is in multiples of a typical correction on every dim, and the r knobs (`ddpg.actor_action_scale`, `exploration_std`, `random_action_scale`, `action_clip`, `target_noise_clip`) mean the same on every dim and phase |
+| `residual.scale_zero_below` | float | `1e-6` | `action_scale_source: median_correction`: a dim whose median correction is at most this gets scale 0, no correction (one the demos never correct, e.g. the gripper) |
+| `residual.target_accumulate` | bool | `false` | `action_frame: target`, `target_axes: base`: the residual is a per-step increment of an offset the base's targets carry (`TargetResidual.accumulate`: position added, rotation composed in the robot-base frame), as a delta-pose command's perturbation persists; the offset goes back to zero whenever the base replans (each new chunk, every `action_horizon` steps, and at an episode start). The offset, over a chunk of full-reach steps, joins the agent's observation, the critics' observation (6 columns each) and the critics' side input. `steps_per_chunk: 1` and `critic_state: observation` only; the per-phase demos are built to match (`phase_demos.accumulated_residuals`). False: the residual offsets the base's target for its own step only |
+| `residual.target_pos_scale` | list or null | `null` | `action_frame: target`: m per unit `r_pos`, one per axis (x, y, z), in place of `ee_pos_scale` (not with `target_scale_from_base`) |
+| `residual.target_rot_scale_deg` | list or null | `null` | `action_frame: target`: deg per unit `r_rot`, one per axis (roll, pitch, yaw with `target_rotation: euler`), in place of `ee_rot_scale_deg` |
+| `residual.multiply_min` | float | `-0.05` | `action_frame: multiply`: the multiplier at `r = -1` (below 1) |
+| `residual.multiply_max` | float | `1.25` | `action_frame: multiply`: the multiplier at `r = 1` (above 1); the actor starts at `m = 1` |
+| `residual.multiply_reference` | str | `ee` | `action_frame: multiply`: what `m` multiplies. `ee`: the base's target relative to the EE, in the EE's frame, sent from the EE. `increment`: the base's planned step in the robot-base frame, `d_t = base_t (-) base_{t-1}`, chained onto the current target, `sent_t = ref_t (+) m * d_t`, `ref_t` the last sent target -- and the EE at a chunk's first step (`d = base_0 (-) ee`): `m = 1` is the base's trajectory, `m = 0` holds the current target, and a held step never grows the next. The agent observes the current target relative to the EE (6: zeros at a chunk start) |
+| `residual.multiply_warmup_std` | float | `0.05` | `action_frame: multiply`: the warm-up's std in multiplier units (0.05: the base's step +-5%); `ddpg.random_action_scale` must be it over `(multiply_max - multiply_min) / 2` |
+| `residual.multiply_exploration_std` | float | `0.025` | `action_frame: multiply`: the online exploration's std in multiplier units; `ddpg.exploration_std` must be it over `(multiply_max - multiply_min) / 2` |
+| `residual.executed_clip` | float or null | `null` | `action_frame: target`: clamp the sent position and gripper to the base's normalized `[-executed_clip, executed_clip]` (ResFiT clamps the combined action to its normalizer's range widened 10%, which is 1.1 here). The critics' executed action is rebuilt the same way. The rotation is never clamped. `action_frame: absolute`: clamp every sent dim to `center ± executed_clip ×` the residual scale's half range (`action_half_range_floor`'s floored one when set), ResFiT's clamp of the combined action to its widened range with `executed_clip` = `action_scale_fraction`; the critics take the unclamped action. Null: no clamp |
 
 **The critic is asymmetric.** Forge gives the env a critic state (`task.cfg.state_order`: true
 peg and hole poses, joint positions, gains, ...), so SAC's critics train on that 65-d state
@@ -534,10 +652,10 @@ recorded):
 * observations: `residual_observation` of the recorded policy observation and the base's own
   action (the frozen base run on the recorded observations, its chunk clock starting at the
   demo's first frame, `residual.base_action_horizon` / `base_inference_steps` applied, the
-  `normalize_observation` / `observe_base_action` flags honoured), plus the `HistoryBuffer` when
+  `observe_base_action` flag honoured, raw), plus the `HistoryBuffer` when
   `history.enabled` — the same code the env wrappers run; critic states: the residual wrapper's
   critic state (`residual.critic_state`): the recorded critic state or, for an env without a critic
-  group (FurnitureBench), the base's observation normalized (widened), then the normalized base
+  group (FurnitureBench), the base's observation, then the base
   action, the EE offset and the history, whatever the agent observes (at the flags' defaults that
   equals `observations` column for column). The file records the layout (`meta.critic_state_format`
   3) and an older file is refused at env build;

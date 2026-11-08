@@ -91,9 +91,10 @@ def test_skip_base_leaves_out_the_base_alone_round(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
     calls = []
-    monkeypatch.setattr(residual_eval, "evaluate", lambda env, policy, seed, label: calls.append(label) or {"success_rate": 0.0})
+    monkeypatch.setattr(residual_eval, "evaluate",
+                        lambda env, policy, seed, label, episodes=None: calls.append(label) or {"success_rate": 0.0})
     env = SimpleNamespace(action_space=SimpleNamespace(shape=(1, 28)))
-    cfg = SimpleNamespace(trainer=SimpleNamespace(total_timesteps=10))
+    cfg = SimpleNamespace(trainer=SimpleNamespace(total_timesteps=10), eval=SimpleNamespace(num_rollouts=4))
     recorded = []
     record = lambda step, label, result: recorded.append(step)  # noqa: E731
     for skip, expected in ((True, []), (False, [0])):

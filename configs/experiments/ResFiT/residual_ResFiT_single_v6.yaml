@@ -1,0 +1,90 @@
+# residual_ResFiT_single_v5.yaml matched to Coffee v2 (resfit_coffee/residual_resfit_coffee_v2.yaml) except the action
+# scale, with that scale reset from the demos' corrections, and nothing else changed:
+#  1. ddpg.bootstrap_time_limits: false (timeouts terminal, ResFiT's and Coffee's; v5 bootstrapped through them);
+#  2. residual.executed_clip: null (Coffee v2 ran without the clamp; v5 clamped at 1.1);
+#  3. residual.action_scale_fraction: 1.04 = 1 + actor_action_scale, coupled as ResFiT and Coffee couple it (v5: 1.1);
+#  4. the action scale set from the demos' corrections: ddpg.actor_action_scale 0.04, exploration_std 0.0075,
+#     random_action_scale 0.0075 (v5: all 0.0025).
+#   python scripts/make_phase_demos.py --config configs/experiments/ResFiT/residual_ResFiT_single_v6.yaml --dataset data/physic_aligned_tcp_300
+#   python scripts/train.py --config configs/experiments/ResFiT/residual_ResFiT_single_v6.yaml --headless
+#   python scripts/watch_residual_eval.py --headless --run runs/hybrid_demo_furniture_residual/ResFiT_single_v6/ResFiT_single_v6_a0 \
+#     --eval_config configs/eval/residual_watch_furniture.yaml
+base: _foundation.yaml
+
+wandb:
+  group: ResFiT_single_v6
+
+task:
+  cfg:
+    scene:
+      num_envs: 1
+    # the env's phase rewards: 1 on the step the episode gets past each of corner, grasp and insert (once per
+    # episode); assembling pays 1 (rewards.assembled, its default)
+    rewards:
+      corner_done:
+        weight: 1.0
+      grasp_done:
+        weight: 1.0
+      insert_done:
+        weight: 1.0
+
+trainer:
+  learner: ddpg
+  total_timesteps: 300000
+  checkpoint_interval: 10000
+  # publish every 1000 env steps; episode/success the mean of the last 10 episodes, each phase's success rate
+  # (phase/passed_*, counted only for the episodes that reached the phase) the mean of the last 10 that reached it
+  write_interval: 1000
+  success_window: 10
+  windowed_metrics:
+    - phase/passed_*
+
+residual:
+  enabled: true
+  base_run: runs/hybrid_demo_furniture/obs-fix_true-jacobian_50demos/obs-fix_true-jacobian_50demos_a0
+  base_project: null
+  base_run_name: null
+  # ResFiT's action sizing as Coffee v2 ran it: the executed action is the base's plus scale x r per dim, scale =
+  # (1 + actor_action_scale) x max(the demos' half range, 0.05) (their ActionScaler: (1 + action_scale) x max(half range,
+  # min_action_range / 2)), every dim (position, rot6d, gripper), no accumulation, no clamp of the executed action
+  action_frame: absolute
+  action_scale: null
+  action_scale_fraction: 1.04
+  action_half_range_floor: 0.05
+  executed_clip: null
+  residual_gripper: true
+  # the foundation's target-frame fields back to their defaults (the absolute frame has none)
+  target_axes: target
+  target_rotation: rotvec
+  target_scale_from_base: false
+  target_pos_scale: null
+  target_rot_scale_deg: null
+  target_accumulate: false
+  # ResFiT's StateStandardizer for the residual's observation inputs (v3's), the foundation's min-max floors off
+  observation_normalization: standardize
+  observation_std_floor: 0.1
+  observation_floors:
+    pos: null
+    rot6d: null
+    lin_vel: null
+    ang_vel: null
+    finger_width: null
+
+ddpg:
+  # timeouts end the target as a termination does (ResFiT's done = terminated | truncated; Coffee v2's)
+  bootstrap_time_limits: false
+  # the actor's reach 0.04 r: about the demos' 90th-percentile correction in x, y and 75th in z (at most ~11 / 10 / 9 mm
+  # per step in x / y / z; v4's 0.1 let it drift 17-20 mm, v5's 0.0025 covered less than a typical correction).
+  # Exploration N(0, 0.0075) r: the median |noise| (0.67 std, ~1.4 mm in x, y) about the median x, y demo correction
+  # (1.2-1.4 mm), a quarter of z's (4.5 mm); reach : noise ~5 : 1 (Coffee's 4 : 1). The uniform warm-up actions the same
+  # 0.0075 r (Coffee's +-reach would be +-11 mm per step here)
+  actor_action_scale: 0.04
+  exploration_std: 0.0075
+  random_action_scale: 0.0075
+  # one residual for the whole task: no routing (the foundation's route_labels), every env step its own
+  route_labels: []
+  route_clock: false
+  # this base's demo residuals in this action meaning, one file of every demo frame, rewarded as the env is
+  demo_transitions: data/ResFiT_single_v6/demos.pt
+  # the replay memory beside every numbered checkpoint (memory_<step>.pt), for diagnostics
+  save_memory_with_checkpoints: true

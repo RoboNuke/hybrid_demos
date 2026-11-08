@@ -1,0 +1,13 @@
+# DexMimicGen CanSort (TwoArmCanSortRandom, GR1 with fixed lower body, whole-body Mink IK with absolute world targets):
+# 20 Hz, 400-step episodes; low-dim observation (both hands' state 36, then the scene's joint positions 21). As ResFiT's code builds it (my_project/tasks/robosuite_tasks.py); sparse reward, the episode ended on
+# success. Everything here is the task's defaults.
+base: hpc.yaml
+
+task:
+  name: Robosuite-CanSort-LowDim-v0
+  # MuJoCo simulates it: the entry points never start Isaac Sim
+  simulator: standalone
+
+wrappers:
+  task_metrics:
+    enabled: false

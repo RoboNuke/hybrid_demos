@@ -1,0 +1,32 @@
+# v2: residual_scaled_residual.yaml with the multiplier on the base's planned step instead of its EE-relative target
+# (residual.multiply_reference: increment, my_project/residual_multiply.py): within a base chunk the residual scales each
+# step of the base's trajectory, base_t (-) base_{t-1} in the robot-base frame, and chains it onto its own last sent
+# target (the chunk's first step from the EE); m = 1 is the base's trajectory, m = 0 holds the last command, and a held
+# step never grows the next one (the EE-relative target's lead grew with every held step: 6 -> 25 deg of twist). The
+# actor and the critics also see the current target: the last sent target relative to the EE and its offset from the
+# base's last target.
+#   python scripts/make_phase_demos.py --config configs/experiments/scaled_residual/residual_scaled_residual_v2.yaml --dataset data/physic_aligned_tcp_300
+#   python scripts/train.py --config configs/experiments/scaled_residual/residual_scaled_residual_v2.yaml --headless
+#   python scripts/watch_residual_eval.py --headless --run runs/hybrid_demo_furniture_residual/scaled_residual_v2/scaled_residual_v2_a0 \
+#     --eval_config configs/eval/residual_watch_furniture.yaml
+base: _foundation.yaml
+
+wandb:
+  group: scaled_residual_v2
+
+task:
+  cfg:
+    scene:
+      num_envs: 1
+
+trainer:
+  learner: ddpg
+  total_timesteps: 750000
+
+residual:
+  enabled: true
+  multiply_reference: increment
+  phase_stats: data/scaled_residual_v2/phase_stats.pt
+
+ddpg:
+  demo_transitions: data/scaled_residual_v2/demos_{route}.pt

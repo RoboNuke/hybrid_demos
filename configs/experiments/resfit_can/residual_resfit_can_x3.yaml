@@ -1,0 +1,60 @@
+# residual_resfit_can.yaml with 3 agents in one process (one env each, every agent its own networks, replay, schedule
+# and wandb run) and 200k env steps per agent; the base and its demos are residual_resfit_can.yaml's.
+#   (the demos: residual_resfit_can.yaml's, data/resfit_can/demos.pt)
+#   python scripts/train.py --config configs/experiments/resfit_can/residual_resfit_can_x3.yaml --headless
+#   python scripts/watch_residual_eval.py --headless --run runs/resfit_validation_residual/resfit_can_x3/resfit_can_x3_a<i> \
+#     --eval_config configs/eval/residual_watch_can.yaml
+base: _foundation.yaml
+
+experiment:
+  num_agents: 3
+
+wandb:
+  project: resfit_validation_residual
+  group: resfit_can_x3
+
+task:
+  cfg:
+    scene:
+      num_envs: 3
+
+trainer:
+  learner: ddpg
+  total_timesteps: 200000
+  checkpoint_interval: 10000
+  write_interval: 1000
+  success_window: 10
+
+residual:
+  enabled: true
+  base_run: runs/robomimic_can/bc_resfit_can/bc_resfit_can_a0
+  base_project: null
+  base_run_name: null
+
+ddpg:
+  # this base's demo residuals (scripts/make_robosuite_demos.py), half of every batch, the actor on the same batch
+  demo_transitions: data/resfit_can/demos.pt
+  demo_storage: sample
+  demo_sampling_start: 0
+  demo_sampling_end: 1000000000
+  demo_batch_shared: true
+  save_memory_with_checkpoints: false
+
+# 2 x 1024 ReLU MLPs with LayerNorm (ResFiT's actor and critic heads), PyTorch's default init, the actor's last layer
+# zero (r = 0 at the start)
+model:
+  architecture: mlp
+  actor:
+    hidden_size: 1024
+    num_layers: 2
+    activation: ReLU
+    layer_norm: true
+    init: default
+    output_init_scale: 0.0
+    squash: true
+  critic:
+    hidden_size: 1024
+    num_layers: 2
+    activation: ReLU
+    layer_norm: true
+    init: default

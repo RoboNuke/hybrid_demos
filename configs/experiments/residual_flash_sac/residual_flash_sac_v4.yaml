@@ -1,0 +1,41 @@
+# residual_flash_sac v4: v2 (the actor's mean head at orthogonal gain 0.01 and every state's std at 0.15, both heads out
+# of weight normalization) with the actor's log std bounded to [log 0.01, log 1.0] instead of FlashSAC's [-10, 2]: the
+# tanh map onto the bound is then ~2.4x flatter at std 0.15 (d log_std / d raw 2.23 vs 5.26), so each actor step moves
+# the std less, and the std can never exceed 1. In v2 the learned std climbed 0.15 -> ~0.85 within
+# ~1000 actor updates.
+#   python scripts/train.py --config configs/experiments/residual_flash_sac/residual_flash_sac_v4.yaml --headless
+base: _foundation.yaml
+
+wandb:
+  group: residual_flash_sac_v4
+
+task:
+  cfg:
+    scene:
+      num_envs: 1024
+
+# resip_ppo_replica's run length and checkpoint interval (published every 1000 steps, the default, as that run)
+trainer:
+  learner: sac
+  total_timesteps: 100100
+  checkpoint_interval: 3500
+
+residual:
+  enabled: true
+
+# FlashSAC's network (models/flashsac.py; its Table 9 sizes): BatchNorm inverted-residual blocks, an actor of 2
+# blocks of 128 with a tanh-squashed Gaussian whose log std a tanh bound keeps in a range, critics of 2 blocks of
+# 256; the actor's heads started for a residual, its log std bounded to [log 0.01, log 1.0]
+model:
+  architecture: flashsac
+  actor:
+    hidden_size: 128
+    num_blocks: 2
+    mean_init_scale: 0.01
+    init_std: 0.15
+    # log(0.01), log(1.0)
+    min_log_std: -4.605170185988091
+    max_log_std: 0.0
+  critic:
+    hidden_size: 256
+    num_blocks: 2

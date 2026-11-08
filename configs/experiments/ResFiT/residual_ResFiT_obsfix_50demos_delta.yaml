@@ -1,0 +1,80 @@
+# residual_ResFiT_obsfix_50demos_potential.yaml (potential shaping, memory saving) with ResFiT's residual meaning and
+# exploration, and nothing else changed:
+#  1. a delta-pose residual: each step's r adds to an offset the base's targets carry, which persists until the base
+#     replans (every 8 steps; residual.target_accumulate), as a delta command's perturbation does under ResFiT's
+#     open-loop base chunks -- instead of a one-step offset the base's next target pulls back;
+#  2. r in per-step delta units, as ResFiT normalizes its delta actions by the data's range: r = 1 is the demos' 99th
+#     percentile per-step move from the EE to its target (19 / 15 / 21 mm, 8.9 / 10.9 / 21.7 deg, per axis);
+#  3. ResFiT's exploration in those units: 10k rows per phase of the base plus uniform +-0.2 r (kept in the 300k buffer),
+#     then N(0, 0.025) around an actor of reach +-0.2 (ddpg.random_action_scale, exploration_std, actor_action_scale).
+#   python scripts/make_phase_demos.py --config configs/experiments/ResFiT/residual_ResFiT_obsfix_50demos_delta.yaml --dataset data/physic_aligned_tcp_300
+#   python scripts/train.py --config configs/experiments/ResFiT/residual_ResFiT_obsfix_50demos_delta.yaml --headless
+#   python scripts/watch_residual_eval.py --run runs/hybrid_demo_furniture_residual/ResFiT_obsfix_50demos_delta/ResFiT_obsfix_50demos_delta_a0 \
+#     --eval_config configs/eval/residual_watch_furniture.yaml
+base: _foundation.yaml
+
+wandb:
+  group: ResFiT_obsfix_50demos_delta
+
+task:
+  cfg:
+    scene:
+      num_envs: 1
+
+trainer:
+  learner: ddpg
+  total_timesteps: 300000
+  checkpoint_interval: 10000
+  # publish every 1000 env steps; episode/success the mean of the last 10 episodes, each phase's success rate
+  # (phase/passed_*, counted only for the episodes that reached the phase) the mean of the last 10 that reached it
+  write_interval: 1000
+  success_window: 10
+  windowed_metrics:
+    - phase/passed_*
+
+residual:
+  enabled: true
+  # the 50-demo obs-fix_true-jacobian base, as a local run directory (its resolved config one level up)
+  base_run: runs/hybrid_demo_furniture/obs-fix_true-jacobian_50demos/obs-fix_true-jacobian_50demos_a0
+  base_project: null
+  base_run_name: null
+  # r = 1: the demos' 99th-percentile per-step move from the EE to its target, per axis, in the robot-base frame
+  target_scale_from_base: false
+  target_pos_scale:
+    - 0.019
+    - 0.015
+    - 0.021
+  target_rot_scale_deg:
+    - 8.9
+    - 10.9
+    - 21.7
+  # a delta-pose residual: r adds to an offset on the base's targets, reset when the base replans
+  target_accumulate: true
+  # the pose alone (6 per step): the gripper stays the base's
+  residual_gripper: false
+
+ddpg:
+  # ResFiT's Coffee / CanSorting runs: the actor's reach +-0.2 r, exploration N(0, 0.025) r, and until each phase has
+  # its 10k rows (learning_starts_rows) the base plus uniform +-0.2 r, those rows kept in the buffer
+  actor_action_scale: 0.2
+  exploration_std: 0.025
+  random_action_scale: 0.2
+  # this base's own demo residuals in this action meaning, their rewards shaped as the online ones
+  demo_transitions: data/ResFiT_obsfix_50demos_delta/demos_{route}.pt
+  # potential-based shaping, gamma Phi(s') - Phi(s), Phi = -sum weight * measure (serl_bc v8's weights): insert on the
+  # leg tip's distance from the hole axis (mm) and its tilt (deg); screw on its height above seated (mm) and tilt (deg)
+  potential_terms:
+    - route: insert
+      channel: eval_state/phase/tip_mm
+      weight: 0.01
+    - route: insert
+      channel: eval_state/phase/tilt_deg
+      weight: 0.01
+    - route: screw
+      channel: eval_state/phase/height_mm
+      weight: 0.1
+    - route: screw
+      channel: eval_state/phase/tilt_deg
+      weight: 0.05
+  # each phase's replay memory beside every numbered checkpoint (memory_<step>.pt), for diagnostics
+  save_memory_with_checkpoints: true

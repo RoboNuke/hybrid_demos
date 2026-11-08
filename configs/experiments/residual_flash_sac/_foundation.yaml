@@ -1,0 +1,97 @@
+# residual_flash_sac (the leading _ keeps launch_train from submitting this file on its own): FlashSAC's defaults
+# (arXiv:2604.04539, Table 9, GPU simulators; where the table is silent, its official code,
+# github.com/Holiday-Robot/FlashSAC, configs/agent/flashSAC.yaml and flash_rl/agents/flashSAC/update.py) for a
+# residual on our frozen base, set up as the one run that worked (resip_ppo_replica): the base, the residual's size
+# and the agent's observation are its, and so are its discount (0.999) and its 70 s (700-step) episodes. The phases
+# are tracked (fb_one_leg.yaml: phase/* metrics) but never rewarded: the reward is the env's own, assembly. Every
+# launch config bases on this file directly and sets its learner (trainer), model, wandb group and env count, plus
+# anything else that differs. FlashSAC's network is the launch config's model (architecture: flashsac); its weight
+# normalization and cross-batch value prediction are set here. Not taken from FlashSAC: mixed precision (never); its
+# torch.compile -- our CUDA graphs instead (sac.cuda_graph).
+base: ../../base/fb_one_leg.yaml
+
+experiment:
+  seed: 42
+
+wandb:
+  entity: hur
+  project: hybrid_demo_furniture_residual
+
+# resip_ppo_replica's 70 s (700-step) episodes
+task:
+  cfg:
+    episode_length_s: 70.0
+
+# the residual as resip_ppo_replica's: on the base physic_aligned_evalHappy_a0, 0.1 of the base's normalized range
+# per action dim (gripper included), one agent action per env step; the agent observes the base's normalized
+# observation and normalized action
+residual:
+  base_project: hybrid_demo_furniture
+  base_run_name: physic_aligned_evalHappy_a0
+  action_scale: null
+  action_scale_fraction: 0.1
+  critic_action: residual
+  steps_per_chunk: 1
+  normalize_observation: true
+  observe_base_action: true
+
+# a 10M-transition replay buffer (the paper; the code's default is 1M)
+memory:
+  memory_size: 10000000
+
+sac:
+  # resip_ppo_replica's (FlashSAC's paper: 0.99 for IsaacLab)
+  discount_factor: 0.999
+  n_step: 1
+  batch_size: 2048
+  # UTD 2/1024: 2 gradient updates per 1024 new transitions (one step of 1024 envs); the actor every 2nd update
+  gradient_steps: 2
+  update_every: 1
+  policy_delay: 2
+  # learning starts after 10k transitions (the code), counted in vectorized steps: 10 at 1024 envs
+  learning_starts: 10
+  policy_learning_starts: 10
+  # 2 critics, categorical over 101 bins on [-5, 5]; the target from the lowest-Q critic's distribution, the actor on
+  # their min (the code); target momentum 0.01
+  num_critics: 2
+  critic_subset: 2
+  actor_q_reduction: min
+  polyak: 0.01
+  critic_distribution: categorical
+  critic_num_bins: 101
+  critic_min_value: -5.0
+  critic_max_value: 5.0
+  # the soft target, z - alpha log pi (the code); a time limit bootstraps (the code masks only terminated)
+  backup_entropy: true
+  bootstrap_time_limits: true
+  # temperature: starts at 0.01; target the entropy of a std-0.15 Gaussian per action dim; alpha (entropy - target)
+  learn_entropy: true
+  initial_entropy_value: 0.01
+  target_entropy_sigma: 0.15
+  entropy_loss_form: alpha
+  entropy_observations: current
+  # Adam, 3e-4 cosine-decayed to 1.5e-4; no weight decay, no gradient clipping (the code)
+  actor_lr: 3.0e-4
+  critic_lr: 3.0e-4
+  entropy_lr: 3.0e-4
+  lr_schedule: cosine
+  lr_end: 1.5e-4
+  weight_decay: 0.0
+  grad_norm_clip: 0.0
+  # rewards divided by max(sqrt(var G), max|G| / 5), G the running discounted return
+  adaptive_reward_scaling: true
+  adaptive_reward_g_max: 5.0
+  normalize_rewards: false
+  # noise repetition: one noise draw held for k ~ Zeta(2) steps, at most 16
+  noise_repeat: true
+  noise_repeat_zeta_s: 2.0
+  noise_repeat_max: 16
+  # no running observation normalizer (FlashSAC normalizes inside its network; the agent's observation is already the
+  # base's normalized one)
+  normalize_observations: false
+  # FlashSAC's network-side training: every Linear weight row projected back to unit length after each optimizer
+  # step, and [s, a] ++ [s', a'] in one call so the BatchNorm statistics are shared by the values and their targets
+  weight_normalization: true
+  cross_batch_value: true
+  # each kind of gradient step captured once and replayed as one launch
+  cuda_graph: true

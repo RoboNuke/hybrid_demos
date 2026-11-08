@@ -1,0 +1,71 @@
+# residual_resfit_coffee.yaml with ResFiT's normalization of the residual's inputs and scale, and nothing else changed
+# (the base, the demos, every learning setting the same):
+#  1. residual.observation_normalization: standardize (ResFiT's StateStandardizer, std floored at 0.1);
+#  2. residual.action_half_range_floor: 0.05 (ResFiT's ActionScaler min_action_range / 2).
+# residual_resfit_coffee.yaml (min-max inputs, a half range of 1 for the constant dims) fell to 0 success at 20k on all
+# three agents, every one pushing |r| 0.05-0.19 on every dim.
+#   python scripts/make_robosuite_demos.py --config configs/experiments/resfit_coffee/residual_resfit_coffee_v2.yaml
+#   python scripts/train.py --config configs/experiments/resfit_coffee/residual_resfit_coffee_v2.yaml --headless
+#   python scripts/watch_residual_eval.py --headless --run runs/resfit_validation_residual/resfit_coffee_v2/resfit_coffee_v2_a<i> \
+#     --eval_config configs/eval/residual_watch_robosuite_rounds.yaml --steps <step> --skip_base
+base: _foundation.yaml
+
+experiment:
+  num_agents: 3
+
+wandb:
+  project: resfit_validation_residual
+  group: resfit_coffee_v2
+
+task:
+  cfg:
+    scene:
+      num_envs: 3
+
+trainer:
+  learner: ddpg
+  total_timesteps: 500000
+  checkpoint_interval: 10000
+  write_interval: 1000
+  success_window: 10
+
+residual:
+  enabled: true
+  # ResFiT's StateStandardizer for the residual's observation inputs: (x - mean) / max(std, 0.1), the demos' mean and
+  # std, instead of the base's min-max (the mug pose's 0.1 mm demo half ranges gave it gains of 2,400-17,600 per unit)
+  observation_normalization: standardize
+  observation_std_floor: 0.1
+  # ResFiT's ActionScaler floor: a dim's half range is at least 0.05 in the residual's scale (the 6 finger dims the demos
+  # never move moved 1.2 rad per unit r; ResFiT's 0.06)
+  action_half_range_floor: 0.05
+  base_run: runs/resfit_validation/bc_resfit_coffee/bc_resfit_coffee_a0
+  base_project: null
+  base_run_name: null
+
+ddpg:
+  # this base's demo residuals (scripts/make_robosuite_demos.py), half of every batch, the actor on the same batch
+  demo_transitions: data/resfit_coffee_v2/demos.pt
+  demo_storage: sample
+  demo_sampling_start: 0
+  demo_sampling_end: 1000000000
+  demo_batch_shared: true
+  save_memory_with_checkpoints: false
+
+# 2 x 1024 ReLU MLPs with LayerNorm (ResFiT's actor and critic heads), PyTorch's default init, the actor's last layer
+# zero (r = 0 at the start)
+model:
+  architecture: mlp
+  actor:
+    hidden_size: 1024
+    num_layers: 2
+    activation: ReLU
+    layer_norm: true
+    init: default
+    output_init_scale: 0.0
+    squash: true
+  critic:
+    hidden_size: 1024
+    num_layers: 2
+    activation: ReLU
+    layer_norm: true
+    init: default

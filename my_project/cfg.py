@@ -7,6 +7,16 @@ every field documented in this repo's README)."""
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+#: the package's replay learners with Q critics (robonuke_rl_core train.py's ``q_learners``): each reads its own section
+Q_LEARNERS = ("sac", "ddpg")
+
+
+def q_section(cfg: Any) -> Any:
+    """The running Q learner's config section (``cfg.sac`` or ``cfg.ddpg``: demos, routes, discount), or
+    ``cfg.sac`` when the learner has none (its defaults: no demos, no routes)."""
+    learner = getattr(getattr(cfg, "trainer", None), "learner", "sac")
+    return getattr(cfg, learner if learner in Q_LEARNERS else "sac", None)
+
 
 @dataclass
 class DemoCfg:
@@ -297,6 +307,7 @@ class ResidualCfg:
     #: absolute frame's gripper scale). ManiSkill2's ``pd_ee_delta_pose`` with ``res_scale`` 0.1 is 0.01 m and
     #: 0.01 rad (0.573 deg) per unit, about the EE's axes (here the base target's, which the chunk's critic
     #: action can rebuild)
+    #: "multiply": see multiply_min / multiply_reference below
     action_frame: str = "absolute"
     #: m per unit ``r_pos`` per step (action_frame: ee / target)
     ee_pos_scale: float = 0.01
@@ -320,16 +331,12 @@ class ResidualCfg:
     #: override the base's DDIM ``model.actor.inference_steps`` (Policy Decorator's 4); null:
     #: the base run's own. At most its ``num_diffusion_iters``
     base_inference_steps: Optional[int] = None
-    #: the agent (and the critic state) gets the base's observation normalized with the base's
-    #: normalizer, its near-constant columns widened (``residual_observation``); false: the raw
-    #: observation, as the env produces it (Policy Decorator's). Part of the demo fingerprint
-    normalize_observation: bool = True
-    #: append ``normalize(a_base)`` to the agent's observation and the critic state; false: the
+    #: append the base action to the agent's observation and the critic state; false: the
     #: agent sees the observation alone (Policy Decorator's ``actor_input: obs``), which rules
     #: out ``critic_action: full`` (it reads the base action there). Part of the demo fingerprint
     observe_base_action: bool = True
     #: what the SAC critics observe. "residual": the residual's own critic state (``critic_state``: the env's,
-    #: or the normalized base observation, then the base action(s), normalized). "observation": the agent's
+    #: or the base observation, then the base action(s)). "observation": the agent's
     #: own observation, no critic state (Policy Decorator's critic); ``critic_action: full`` then reads the
     #: base action(s) from per-transition side inputs the critics never see (``infos["residual_base"]`` /
     #: ``["next_residual_base"]``, the learner's ``side_inputs``). Furniture envs (no critic group of their
@@ -338,11 +345,10 @@ class ResidualCfg:
     #: Policy Decorator's command form for the base action the agent observes and the executed action the
     #: critics take (``action_frame: target``, ``critic_state: observation``; ``my_project/residual_target.py``
     #: ``EERelative``): each of the chunk's absolute targets against the EE pose of the chunk's observation, in the
-    #: EE's frame -- ``[R_ee^T (p - p_ee) / ee_relative_pos_unit, log(R_ee^T R) / ee_relative_rot_unit,
-    #: normalize(gripper)]``, 7 per step (ManiSkill2's ``pd_ee_delta_pose``, ``frame: ee``: 0.1 m and 0.1 rad per
-    #: unit). The observed base action (``observe_base_action``) and the critics' ``full`` action are then the
-    #: same form, the agent's ``k x 7`` and the critics' ``k x 7``; the critic state stays the observation
-    #: without the base action (Policy Decorator's critic input). False: the normalized absolute form
+    #: EE's frame -- ``[R_ee^T (p - p_ee), log(R_ee^T R), gripper]``, 7 per step (m, rad, raw; ManiSkill2's
+    #: ``pd_ee_delta_pose``, ``frame: ee``). The observed base action (``observe_base_action``) and the critics' ``full``
+    #: action are then the same form, the agent's ``k x 7`` and the critics' ``k x 7``; the critic state stays the
+    #: observation without the base action (Policy Decorator's critic input). False: the absolute form
     ee_relative_actions: bool = False
     #: action_frame: target: the axes the correction is expressed in. "target": the base target's own frame (r_pos
     #: along its axes, Exp(r_rot) about them). "base": the robot-base frame the absolute targets are in (p_base +
@@ -351,8 +357,6 @@ class ResidualCfg:
     target_axes: str = "target"
     #: override the base run's ``model.actor.warm_start`` (null keeps it): false plans every chunk from pure noise
     base_warm_start: Optional[bool] = None
-    ee_relative_pos_unit: float = 0.1
-    ee_relative_rot_unit: float = 0.1
     #: one_leg's task phase (``furniture.track_phases``: corner, grasp, insert, screw) from which the residual acts:
     #: an agent step whose observation's phase is earlier (or an episode-end code) runs the base alone, the agent's
     #: action zeroed, and ``infos["residual_active"]`` (1 / 0 per env) says which steps used it (set
@@ -367,12 +371,144 @@ class ResidualCfg:
     #: action_frame: target: the residual corrects the gripper too (``r_grip``, the 7th per-step dim). False: the
     #: residual is the pose alone (6 per step) and the gripper is the base's
     residual_gripper: bool = True
+    #: action_frame: target: what ``r_rot`` is. "rotvec": an axis-angle, ``Exp(ee_rot_scale r_rot)``. "euler": roll,
+    #: pitch, yaw, ``Rz(yaw) Ry(pitch) Rx(roll)`` of ``ee_rot_scale_deg r_rot`` (``residual_target.euler_rpy``)
+    target_rotation: str = "rotvec"
+    #: action_frame: target: the position's scale per axis is the absolute frame's (``action_scale``, or
+    #: ``action_scale_fraction`` of the base's half range, per axis) instead of ``ee_pos_scale``: with fraction 1, r_pos
+    #: is in the base's normalized action units (ResFiT's residual). The gripper's is the absolute frame's either way
+    target_scale_from_base: bool = False
+    #: action_frame: target: clamp the sent position and gripper to the base's normalized ``[-executed_clip,
+    #: executed_clip]`` (ResFiT clamps the combined action to its normalizer's range, widened 10%: 1.1 here); the critics'
+    #: executed action is rebuilt the same way. Null: no clamp. The rotation is never clamped. action_frame: absolute:
+    #: clamp every sent dim to ``center +- executed_clip x`` the residual scale's half range (``action_half_range_floor``'s
+    #: floored one when set): ResFiT's clamp to ``mid +- (1 + action_scale) x max(half range, floor)`` with executed_clip
+    #: = action_scale_fraction; the critics take the unclamped action, as ResFiT stores it
+    executed_clip: Optional[float] = None
 
+    #: action_frame: target: the gripper command per unit ``r_grip`` (the env's own gripper units; FurnitureBench's
+    #: gripper is +-1, the sign closing / opening it through the action term's hysteresis), as ee_pos_scale and
+    #: ee_rot_scale_deg are for the pose. Null: the absolute frame's scale (action_scale, or action_scale_fraction of
+    #: the base's gripper half range)
+    ee_grip_scale: Optional[float] = None
+
+    #: action_frame: absolute: the smallest half range of an action dim in the residual's scale (``scale =
+    #: action_scale_fraction x max(half range, floor)``, the half range the base's demo dataset's own), ResFiT's
+    #: ActionScaler floor (min_action_range / 2 = 0.05). Null: the base normalizer's half range, which is 1 for a
+    #: dim constant in the demos (robosuite Coffee's idle fingers: 1.2 rad per unit r instead of ResFiT's 0.06).
+    #: Robosuite tasks only
+    action_half_range_floor: Optional[float] = None
+    #: per routed phase (``ddpg.route_labels``) its own action scale, read from ``phase_stats``; the env wrapper reads the
+    #: phase of every env's observation from the env's phase tracker and applies that phase's (a phase without a residual
+    #: gets no correction). The critics' scale from r to the executed action rides in their side input, per transition.
+    #: action_frame: absolute, critic_state: observation, critic_action: full, one step per chunk, furniture tasks
+    phase_scales: bool = False
+    #: phase_scales' file: every routed phase's action scale
+    phase_stats: Optional[str] = None
+    #: phase_scales: what one unit of r is per action dim. "half_range": ResFiT's ``action_scale_fraction x max(the
+    #: phase's demo half range, action_half_range_floor or 0.05)``; "median_correction": the phase's median demo
+    #: correction ``|a_demo - a_base|`` (the base run along the demos), so r is in multiples of a typical correction on
+    #: every dim; a dim whose median is at most ``scale_zero_below`` (one the demos never correct, e.g. the gripper) gets
+    #: scale 0, no correction
+    action_scale_source: str = "half_range"
+    #: action_scale_source: median_correction: a median correction at or below this gives the dim scale 0
+    scale_zero_below: float = 1e-6
+
+    #: action_frame: target, target_axes: base: the residual is a per-step increment of an offset the base's targets
+    #: carry (``TargetResidual.accumulate``), as a delta-pose command's perturbation persists: each step adds to the
+    #: offset, and the offset goes back to zero whenever the base replans (a new chunk, every ``action_horizon`` steps,
+    #: and at an episode start). The offset, scaled by a chunk of full-reach steps, joins the agent's observation and the
+    #: critics' (it is state), and the critics' side input (the executed target is rebuilt from it). False: the
+    #: residual offsets the base's target for its own step only (the base's next target pulls it back)
+    target_accumulate: bool = False
+    #: action_frame: target: m per unit r_pos, one per axis (x, y, z), in place of ee_pos_scale (and of
+    #: target_scale_from_base). Null: those
+    target_pos_scale: Optional[List[float]] = None
+    #: action_frame: target: deg per unit r_rot, one per axis (roll, pitch, yaw with target_rotation: euler), in place of
+    #: ee_rot_scale_deg. Null: that
+    target_rot_scale_deg: Optional[List[float]] = None
+    #: action_frame: multiply (``my_project/residual_multiply.py``): the base's motion multiplied per dim by ``m =
+    #: multiply_min + (r + 1) / 2 (multiply_max - multiply_min)`` (the gripper the base's): ``r = -1`` is ``multiply_min``,
+    #: ``r = 1`` ``multiply_max``, the actor starts at ``m = 1`` (the base's own). Its observation is relative to the EE
+    multiply_min: float = -0.05
+    multiply_max: float = 1.25
+    #: action_frame: multiply: what m multiplies. "ee": the base's target relative to the EE, in the EE's frame, sent from
+    #: the EE. "increment": the base's planned step in the robot-base frame, ``base_t (-) base_{t-1}``, chained onto the
+    #: current target, which is the EE at a chunk's first step (``d = base_0 (-) ee``): m = 1 is the base's trajectory,
+    #: m = 0 holds the current target, and a held step never grows the next; the agent also observes the current target
+    #: relative to the EE (6). The critics take the resulting target relative to the EE and the gripper (7)
+    multiply_reference: str = "ee"
+    #: action_frame: multiply: the warm-up's std (``ddpg.random_action_mode: actor_gaussian``) and the online
+    #: exploration's, both in multiplier units (0.05: the base's step +-5%); ``ddpg.random_action_scale`` and
+    #: ``ddpg.exploration_std`` are these over the multiplier per unit r, ``(multiply_max - multiply_min) / 2``
+    multiply_warmup_std: float = 0.05
+    multiply_exploration_std: float = 0.025
+
+    TARGET_ROTATIONS = ("rotvec", "euler")
     DEMO_ACTIONS_BEYOND_SCALE = ("store", "drop")
     CRITIC_ACTIONS = ("residual", "full")
-    ACTION_FRAMES = ("absolute", "ee", "target")
+    ACTION_FRAMES = ("absolute", "ee", "target", "multiply")
     CRITIC_STATES = ("residual", "observation")
     PHASES = ("corner", "grasp", "insert", "screw")
+
+    def _validate_multiply(self, cfg: Any) -> None:
+        """action_frame: multiply's setup: ResFiT's observation critic, the obstacle's columns dropped, and the learner and
+        the actor in the multiplier's units (the actor starts at m = 1; the warm-up and the exploration as
+        multiply_warmup_std / multiply_exploration_std say)."""
+        import math
+
+        if not self.multiply_min < 1.0 < self.multiply_max:
+            raise ValueError(f"residual.multiply_min ({self.multiply_min}) and multiply_max ({self.multiply_max}) must hold 1 inside")
+        if self.multiply_reference not in ("ee", "increment"):
+            raise ValueError(f"residual.multiply_reference must be 'ee' or 'increment', got {self.multiply_reference!r}")
+        if self.multiply_warmup_std < 0 or self.multiply_exploration_std < 0:
+            raise ValueError("residual.multiply_warmup_std and multiply_exploration_std must be >= 0")
+        self._validate_chain("multiply")
+        if cfg is None or not self.enabled:
+            return
+        self._validate_multiply_learner(cfg)
+
+    def _validate_chain(self, frame: str) -> None:
+        """action_frame: multiply's setup (the EE-relative observation, the observation critic, the per-phase routing)."""
+        needs = {"critic_state: observation": self.critic_state == "observation", "critic_action: full": self.critic_action == "full",
+                 "steps_per_chunk: 1": int(self.steps_per_chunk) == 1, "no phase_scales (no action scale)": not self.phase_scales,
+                 "observe_base_action": bool(self.observe_base_action),
+                 "no ee_relative_actions": not self.ee_relative_actions, "no executed_clip": self.executed_clip is None,
+                 "no active_from_phase (its zeroed r is not the base's action)": self.active_from_phase is None,
+                 "the obstacle's columns 61, 62 in observation_drop": {61, 62} <= {c for a, b in self.observation_drop for c in range(int(a), int(b))}}
+        missing = [k for k, ok in needs.items() if not ok]
+        if missing:
+            raise ValueError(f"residual.action_frame: {frame} needs {missing}")
+
+    def _validate_multiply_learner(self, cfg: Any) -> None:
+        """action_frame: multiply: the learner and the actor in the multiplier's units."""
+        import math
+
+        half = (self.multiply_max - self.multiply_min) / 2.0
+        neutral = (1.0 - self.multiply_min) / half - 1.0
+        sec, actor = q_section(cfg), cfg.model.actor
+        want = {
+            "trainer.learner": (cfg.trainer.learner, "ddpg"),
+            "ddpg.actor_action_scale": (float(sec.actor_action_scale), 1.0), "ddpg.action_clip": (sec.action_clip, 1.0),
+            "ddpg.random_action_mode": (sec.random_action_mode, "actor_gaussian"),
+            "ddpg.random_action_scale": (float(sec.random_action_scale), self.multiply_warmup_std / half),
+            "ddpg.exploration_std": (float(sec.exploration_std), self.multiply_exploration_std / half),
+            "ddpg.exploration_std_end": (sec.exploration_std_end, None),
+            "ddpg.warmup_episodes": (int(sec.warmup_episodes), 0),
+            "model.actor.output_init_scale": (float(actor.output_init_scale), 0.0),
+            "model.actor.output_bias": (actor.output_bias, math.atanh(neutral)),
+        }
+        off = {}
+        for name, (have, need) in want.items():
+            same = have == need if not isinstance(need, float) or have is None else abs(float(have) - need) <= 1e-6 * max(1.0, abs(need))
+            if not same:
+                off[name] = (have, need)
+        if off:
+            raise ValueError(
+                "residual.action_frame: multiply runs the actor in the multiplier's units (m = 1 at the start; r in [-1, 1] "
+                f"is [{self.multiply_min}, {self.multiply_max}], {half} per unit r); set these (have -> need): "
+                + ", ".join(f"{k}: {h!r} -> {n!r}" for k, (h, n) in off.items())
+            )
 
     def validate(self, cfg: Any) -> None:
         if self.critic_action not in self.CRITIC_ACTIONS:
@@ -395,16 +531,71 @@ class ResidualCfg:
                 raise NotImplementedError(
                     "residual.ee_relative_actions is built for action_frame: target with critic_state: observation"
                 )
-            if self.ee_relative_pos_unit <= 0 or self.ee_relative_rot_unit <= 0:
-                raise ValueError(
-                    f"residual.ee_relative_pos_unit and ee_relative_rot_unit must be > 0, got "
-                    f"{self.ee_relative_pos_unit}, {self.ee_relative_rot_unit}"
-                )
         for pair in self.observation_drop:
             if len(pair) != 2 or not 0 <= int(pair[0]) < int(pair[1]):
                 raise ValueError(f"residual.observation_drop entries are [start, stop) column pairs, got {list(pair)}")
         if not self.residual_gripper and self.action_frame != "target":
             raise ValueError("residual.residual_gripper: false drops r_grip from the target-frame residual: set action_frame: target")
+        if self.target_rotation not in self.TARGET_ROTATIONS:
+            raise ValueError(f"residual.target_rotation must be one of {self.TARGET_ROTATIONS}, got {self.target_rotation!r}")
+        target_only = {"target_rotation": self.target_rotation != "rotvec", "target_scale_from_base": self.target_scale_from_base,
+                       "ee_grip_scale": self.ee_grip_scale is not None, "target_accumulate": self.target_accumulate,
+                       "target_pos_scale": self.target_pos_scale is not None,
+                       "target_rot_scale_deg": self.target_rot_scale_deg is not None}
+        used = sorted(name for name, on in target_only.items() if on)
+        if used and (self.action_frame != "target" or self.ee_relative_actions):
+            raise ValueError(f"residual.{used} shape action_frame: target's residual: set action_frame: target, without ee_relative_actions")
+        if self.action_scale_source not in ("half_range", "median_correction"):
+            raise ValueError(f"residual.action_scale_source is half_range or median_correction, got {self.action_scale_source!r}")
+        if self.phase_scales:
+            if not self.phase_stats:
+                raise ValueError("residual.phase_scales reads and writes its per-phase stats at residual.phase_stats: set it")
+            needs = {"action_frame: absolute": self.action_frame == "absolute", "critic_state: observation": self.critic_state == "observation",
+                     "critic_action: full": self.critic_action == "full",
+                     "steps_per_chunk: 1": int(self.steps_per_chunk) == 1, "action_scale: null": self.action_scale is None,
+                     "no executed_clip": self.executed_clip is None}
+            missing = [k for k, ok in needs.items() if not ok]
+            if missing:
+                raise ValueError(f"residual.phase_scales needs {missing}")
+        elif self.action_scale_source != "half_range":
+            raise ValueError("residual.action_scale_source: median_correction is phase_scales' (per-phase) scale: set phase_scales")
+        if self.action_half_range_floor is not None:
+            if not float(self.action_half_range_floor) > 0:
+                raise ValueError(f"residual.action_half_range_floor must be > 0 or null, got {self.action_half_range_floor}")
+            if self.action_frame != "absolute" or self.action_scale is not None:
+                raise ValueError("residual.action_half_range_floor floors action_frame: absolute's half-range scale (action_scale: null)")
+        if self.enabled and cfg is not None and (self.phase_scales or self.action_half_range_floor is not None):
+            from my_project.families import FURNITURE, ROBOSUITE, family_of
+
+            family = family_of(cfg.task_name)
+            if self.phase_scales:
+                if family != FURNITURE:
+                    raise NotImplementedError("residual.phase_scales reads one_leg's phase tracker: furniture tasks only")
+                sec = q_section(cfg)
+                if not list(getattr(sec, "route_labels", []) or []):
+                    raise ValueError("residual.phase_scales scales each routed phase: set the learner's route_labels")
+            # robosuite and furniture tasks only (the floor acts on action_frame: absolute's scale only); Forge neither
+            if family not in (ROBOSUITE, FURNITURE):
+                raise NotImplementedError("residual.phase_scales / action_half_range_floor are for robosuite and furniture tasks")
+        for name in ("target_pos_scale", "target_rot_scale_deg"):
+            value = getattr(self, name)
+            if value is not None and (len(value) != 3 or min(float(v) for v in value) <= 0):
+                raise ValueError(f"residual.{name} is 3 positive values (one per axis), got {value}")
+        if self.target_pos_scale is not None and self.target_scale_from_base:
+            raise ValueError("residual.target_pos_scale and target_scale_from_base both set the position scale: pick one")
+        if self.target_accumulate:
+            if self.target_axes != "base":
+                raise ValueError("residual.target_accumulate adds up the correction in the robot-base frame: set target_axes: base")
+            if self.steps_per_chunk != 1 or self.critic_state != "observation":
+                raise NotImplementedError("residual.target_accumulate is built for steps_per_chunk: 1 and critic_state: observation")
+        if self.action_frame == "multiply":
+            self._validate_multiply(cfg)
+        if self.ee_grip_scale is not None and self.ee_grip_scale <= 0:
+            raise ValueError(f"residual.ee_grip_scale must be > 0 or null, got {self.ee_grip_scale}")
+        if self.executed_clip is not None and self.executed_clip <= 0:
+            raise ValueError(f"residual.executed_clip must be > 0 or null, got {self.executed_clip}")
+        if self.executed_clip is not None and (self.action_frame not in ("target", "absolute") or self.ee_relative_actions):
+            raise ValueError("residual.executed_clip clamps action_frame: target's or absolute's executed action (without ee_relative_actions)")
         if self.target_axes not in ("target", "base"):
             raise ValueError(f"residual.target_axes must be 'target' or 'base', got {self.target_axes!r}")
         if self.target_axes != "target" and (self.action_frame != "target" or self.ee_relative_actions):
@@ -442,7 +633,7 @@ class ResidualCfg:
                 f"residual.steps_per_chunk {self.steps_per_chunk} with hybrid.enabled is not supported: the chunk "
                 "action carries no per-step selection and force blocks"
             )
-        if self.action_frame in ("ee", "target"):
+        if self.action_frame in ("ee", "target", "multiply"):
             from my_project.families import is_abs
 
             if not is_abs(str(cfg.task_name)):
@@ -456,12 +647,23 @@ class ResidualCfg:
 
             if family_of(cfg.task_name) == FORGE:
                 raise NotImplementedError("residual.critic_state: observation: a Forge env has a critic state of its own")
-            sac = getattr(cfg, "sac", None)
-            # per-phase demos (sac.route_labels, scripts/make_phase_demos.py) are written in this form; the per-step
-            # conversion (scripts/make_demo_transitions.py) writes the residual's critic state
+            sac = q_section(cfg)
+            # an unrouted residual's demos must be in the observation form (meta form "observation"); refused is a file in
+            # another form (make_demo_transitions.py's residual critic state). Routed residuals load raw demo episodes
+            # (scripts/make_raw_demos.py), converted at load by my_project/demo_loader.py
             if sac is not None and sac.demo_transitions and not getattr(sac, "route_labels", None):
-                raise ValueError("residual.critic_state: observation has no demo transitions outside sac.route_labels: "
-                                 "scripts/make_demo_transitions.py writes the residual's critic state (per phase: scripts/make_phase_demos.py)")
+                from pathlib import Path
+
+                path = Path(str(sac.demo_transitions))
+                form = None
+                if path.is_file():
+                    import torch
+
+                    form = (torch.load(path, map_location="cpu", weights_only=False, mmap=True).get("meta") or {}).get("form")
+                if path.is_file() and form != "observation":
+                    raise ValueError(f"residual.critic_state: observation reads demos in the observation form; {path} is "
+                                     f"form {form!r} (scripts/make_demo_transitions.py writes the residual's critic state): "
+                                     "rebuild them in the observation form")
         remote = self.base_project is not None or self.base_run_name is not None
         if bool(self.base_run) == remote:
             raise ValueError(
@@ -481,9 +683,9 @@ class ResidualCfg:
             )
         if cfg.trainer.learner == BC_LEARNER:
             raise ValueError(f"residual.enabled trains a residual with sac / ppo, not {BC_LEARNER}")
-        if self.critic_action == "full" and cfg.trainer.learner != "sac":
+        if self.critic_action == "full" and cfg.trainer.learner not in Q_LEARNERS:
             raise ValueError(
-                f"residual.critic_action: full is the SAC critics' action input; {cfg.trainer.learner} has no Q critic"
+                f"residual.critic_action: full is the Q critics' action input ({Q_LEARNERS}); {cfg.trainer.learner} has no Q critic"
             )
         from my_project.families import FORGE, action_layout, family_of
 

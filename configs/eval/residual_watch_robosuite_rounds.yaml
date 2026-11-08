@@ -1,0 +1,12 @@
+# scripts/watch_residual_eval.py for a robosuite residual whose envs are heavy (GR1: ~0.4 GB each) or that runs one
+# watcher per agent: ResFiT's eval, 50 episodes, deterministic (the actor's mean), in rounds of 10 envs (each round
+# reset under its own seed)
+base: ../base/hpc.yaml
+
+eval:
+  num_rollouts: 50
+
+task:
+  cfg:
+    scene:
+      num_envs: 10

@@ -1,0 +1,49 @@
+# residual_flash_sac v10: v8 (the mean head at gain 0.01; a fixed std of exp(-1); no entropy term: alpha 0, not learned,
+# none in the critic's target; data only for 700 steps, the critics from 700, the actor from 2100) without FlashSAC's
+# noise repetition: a fresh noise draw every step, as the PPO replica. With the noise held for ~5 steps on average, v8
+# and v9 succeeded 5-9% before the actor started against the PPO replica's 12-16% at the same std.
+#   python scripts/train.py --config configs/experiments/residual_flash_sac/residual_flash_sac_v10.yaml --headless
+base: _foundation.yaml
+
+wandb:
+  group: residual_flash_sac_v10
+
+task:
+  cfg:
+    scene:
+      num_envs: 1024
+
+# resip_ppo_replica's run length and checkpoint interval (published every 1000 steps, the default, as that run)
+trainer:
+  learner: sac
+  total_timesteps: 100100
+  checkpoint_interval: 3500
+
+residual:
+  enabled: true
+
+# FlashSAC's network (models/flashsac.py; its Table 9 sizes): BatchNorm inverted-residual blocks, an actor of 2
+# blocks of 128 with a tanh-squashed Gaussian, critics of 2 blocks of 256; the actor's mean head started for a
+# residual, its std fixed
+model:
+  architecture: flashsac
+  actor:
+    hidden_size: 128
+    num_blocks: 2
+    mean_init_scale: 0.01
+    # resip_ppo_replica's exp(-1)
+    fixed_std: 0.36788
+  critic:
+    hidden_size: 256
+    num_blocks: 2
+
+# alpha fixed at 0 (the actor maximizes Q alone), and kept out of the critic's target
+sac:
+  learn_entropy: false
+  initial_entropy_value: 0.0
+  backup_entropy: false
+  # data only for 700 steps; the critics from step 700, the actor from step 2100
+  learning_starts: 700
+  policy_learning_starts: 2100
+  # a fresh noise draw every step (the foundation: FlashSAC's noise repetition)
+  noise_repeat: false

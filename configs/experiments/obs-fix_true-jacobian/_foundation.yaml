@@ -1,0 +1,68 @@
+# obs-fix_true-jacobian (the leading _ keeps launch_train from submitting this file on its own): the diffusion BC
+# recipe of the current base, physic_aligned_evalHappy_a0 (its run's resolved_config.yaml: every model and bc field
+# below is that run's value), on demos collected with the env's TCP-Jacobian IK and the expert standing the leg up on
+# the way to the hole (data/physic_aligned_tcp_300). The current base trained on 50 physic_aligned demos with Isaac
+# Lab's own IK Jacobian, since removed from the env; it stays as it is (wandb hybrid_demo_furniture /
+# physic_aligned_evalHappy_a0). The task and its physics are fb_one_leg.yaml's.
+base: ../../base/fb_one_leg.yaml
+
+experiment:
+  seed: 42
+
+wandb:
+  entity: hur
+
+model:
+  architecture: diffusion_unet
+  actor:
+    horizon: 32
+    n_obs_steps: 1
+    action_horizon: 8
+    num_diffusion_iters: 100
+    beta_schedule: squaredcos_cap_v2
+    prediction_type: epsilon
+    clip_sample: true
+    inference_steps: 16
+    warm_start: true
+    warm_start_timestep: 50
+    obs_clip: 3.0
+    down_dims:
+      - 256
+      - 512
+      - 1024
+    diffusion_step_embed_dim: 256
+    kernel_size: 5
+    n_groups: 8
+
+bc:
+  dataset: data/physic_aligned_tcp_300
+  obs_key: observation.state_abs
+  action_key: action.abs
+  # every demo of the new set (the current base: all 50 of physic_aligned)
+  num_demos: 300
+  test_split: 0.05
+  batch_size: 1024
+  steps_per_epoch: 1000
+  lr: 1.0e-4
+  weight_decay: 1.0e-6
+  lr_schedule: cosine
+  warmup_steps: 2000
+  max_grad_norm: 0.0
+  eval_every: 10
+  sample_every: 100
+  rollout_every: 10
+  rollout_loss_threshold: 1000.0
+  rollout_progress: false
+  max_hours: null
+  save_only_best_ckpt: true
+  normalization: per_dim
+  early_stop_patience: .inf
+  early_stop_smooth: 0.9
+  show_waypoints: false
+  action_metric_groups: null
+
+eval:
+  num_rollouts: 512
+  deterministic: true
+  save_state: true
+  record: false

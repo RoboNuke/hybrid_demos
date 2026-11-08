@@ -122,9 +122,12 @@ def main(argv=None, setup=None) -> int:
 
     from isaaclab.app import AppLauncher
 
+    from robonuke_rl_core.config import simulator_of, start_simulator
+
     AppLauncher.add_app_launcher_args(parser)
     args, overrides = parser.parse_known_args(argv)
-    app_launcher = AppLauncher(args)
+    # Isaac Sim starts only for a task it simulates (task.simulator)
+    app_launcher = start_simulator(args, simulator_of(args, overrides))
     try:
         return _train(args, overrides, setup, app_launcher)
     except BaseException:
@@ -439,5 +442,6 @@ def _train(args, overrides, setup, app_launcher) -> int:
 
     if env is not None:
         env.close()
-    app_launcher.app.close()
+    if app_launcher is not None:
+        app_launcher.app.close()
     return 0

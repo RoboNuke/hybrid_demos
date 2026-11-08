@@ -1,0 +1,45 @@
+# The coffee base: our diffusion UNet on the task's demos (1000 of them, ResFiT's offline episode count), 50 envs per
+# rollout eval; trained until its rollout success passes 50%, its best-rollout checkpoint the residual's base.
+#   python scripts/train_bc.py --config configs/experiments/resfit_coffee/bc_resfit_coffee.yaml --headless
+base: _foundation.yaml
+
+wandb:
+  project: resfit_validation
+  group: bc_resfit_coffee
+
+task:
+  cfg:
+    scene:
+      num_envs: 50
+
+trainer:
+  learner: diffusion_bc
+  total_timesteps: 100000
+  write_interval: 100
+  checkpoint_interval: 10000
+
+# the base: our diffusion UNet (one_leg's obs-fix_true-jacobian recipe), its horizon 16 at 20 Hz (0.8 s), 8 executed
+model:
+  architecture: diffusion_unet
+  actor:
+    horizon: 16
+    n_obs_steps: 1
+    action_horizon: 8
+    num_diffusion_iters: 100
+    beta_schedule: squaredcos_cap_v2
+    prediction_type: epsilon
+    clip_sample: true
+    inference_steps: 16
+    warm_start: true
+    warm_start_timestep: 50
+    obs_clip: 3.0
+    down_dims:
+      - 256
+      - 512
+      - 1024
+    diffusion_step_embed_dim: 256
+    kernel_size: 5
+    n_groups: 8
+
+hpc:
+  train_script: scripts/train_bc.py

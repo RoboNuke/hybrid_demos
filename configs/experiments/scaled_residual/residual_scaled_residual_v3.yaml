@@ -1,0 +1,34 @@
+# v3: v2's residual (the multiplier on the base's planned step, chained on the current target, the EE at a chunk start:
+# residual.multiply_reference: increment) on the 2026-11-06 code -- every input raw and z-scored by the learner's demo
+# preprocessor (ddpg.state_preprocessor: demo), the current target observed relative to the EE (zeros at a chunk start;
+# no chunk-start flag, no offset from the base), the critics taking the resulting target relative to the EE, the demos
+# raw episodes converted at load, the phase labels the env tracker's own -- with one setting changed from v2: the
+# warm-up's std 0.2 in multiplier units (ResFiT's warm-up scale; v2's 0.05), ddpg.random_action_scale 0.2 / 0.65.
+#   python scripts/make_raw_demos.py --config configs/experiments/scaled_residual/residual_scaled_residual_v3.yaml \
+#     --dataset data/physic_aligned_tcp_300 --out data/scaled_residual_v3/raw_demos.pt
+#   python scripts/train.py --config configs/experiments/scaled_residual/residual_scaled_residual_v3.yaml --headless
+#   python scripts/watch_residual_eval.py --headless --run runs/hybrid_demo_furniture_residual/scaled_residual_v3/scaled_residual_v3_a0 \
+#     --eval_config configs/eval/residual_watch_furniture.yaml
+base: _foundation.yaml
+
+wandb:
+  group: scaled_residual_v3
+
+task:
+  cfg:
+    scene:
+      num_envs: 1
+
+trainer:
+  learner: ddpg
+  total_timesteps: 750000
+
+residual:
+  enabled: true
+  multiply_reference: increment
+  # the warm-up N(0, 0.2) in multiplier units about the actor's own action (m = 1 at the start)
+  multiply_warmup_std: 0.2
+
+ddpg:
+  random_action_scale: 0.3076923076923077
+  demo_transitions: data/scaled_residual_v3/raw_demos.pt
