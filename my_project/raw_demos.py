@@ -1,17 +1,24 @@
 """Raw demo episodes for the residual, offline, on the CPU, no sim (``scripts/make_raw_demos.py``).
 
 The file holds only what is general about the demos -- nothing the residual's own settings shape (its observation,
-action map, phases, rewards, normalization): those are applied when the learner loads the file, with the env's own
-code (``my_project/demo_loader.py``, the package's ``register_demo_loader``). Per recorded demo episode (the base run's
-``bc.dataset``: LeRobot parquet, ``observation.state_abs`` and ``action.abs``), frames ``0..success_frame`` (the frame
-whose step assembles the leg, :func:`assembling_frame`):
+action map, routing, reward weights, normalization): those are applied when the learner loads the file, with the
+env's own code (``my_project/demo_loader.py``, the package's ``register_demo_loader``). Per recorded demo episode (the
+base run's ``bc.dataset``: LeRobot parquet, ``observation.state_abs`` and ``action.abs``; the env's own per-step data
+from the episode's source pkl, ``scripts/collect_scripted.py`` in Robonuke_Furniture_Bench), frames
+``0..success_frame`` (the step after which the training env's ``success`` termination holds, :func:`success_frame`):
 
 * ``states`` ``(T, 63)``: the raw env observations;
 * ``actions`` ``(T, 10)``: the absolute targets the env executed (:func:`executed_abs_actions`: a DART collection's
   perturbed commands during its bursts);
 * ``base_actions`` ``(T, 10)``: the frozen base's action at each frame, as the env runs it -- a plan (its own
   observation history, its DDIM steps, cold) at frames ``0, H, 2H, ...`` (``H`` its executed ``action_horizon``), each
-  frame taking the plan's next action. The base is stochastic, so its sample is stored, not recomputed.
+  frame taking the plan's next action. The base is stochastic, so its sample is stored, not recomputed;
+* ``infos`` ``{path: (T, ...)}``: the env's infos published with each frame's observation (frame 0 the collection's
+  settle step, frame ``t`` the infos of step ``t - 1``), flattened to ``"<key>/<name>"`` paths (``eval_state/phase/id``,
+  the phase tag), numeric values only (:func:`frame_infos`);
+* ``reward_terms`` ``{name: (T,)}``: every env reward term's own value at step ``t`` (unweighted: the loader applies
+  the training config's weights);
+* ``termination_terms`` ``{name: (T,)}`` bool: every training-env termination term at step ``t``.
 
 ``meta["fingerprint"]`` (:func:`raw_fingerprint`) is what the stored data depends on: the dataset, the base run and
 checkpoint, its planning settings, the task. The loader refuses a file whose fingerprint differs from the run's.
@@ -29,25 +36,58 @@ from typing import Any, Dict
 
 import torch
 
-__all__ = ["assembling_frame", "executed_abs_actions", "raw_fingerprint", "base_plan_actions", "RAW_FORMAT", "main"]
+__all__ = ["success_frame", "frame_infos", "executed_abs_actions", "raw_fingerprint", "base_plan_actions", "RAW_FORMAT",
+           "ENV_DATA", "main"]
 
 #: ``data["format"]`` of a raw demo file
-RAW_FORMAT = "raw_episodes"
+RAW_FORMAT = "raw_episodes_v2"
+#: the env's own per-step data a source pkl must carry (``collect_scripted.py``)
+ENV_DATA = ("infos", "infos_initial", "reward_terms", "termination_terms")
 
 
-def assembling_frame(rewards) -> int:
-    """The frame whose step assembles the leg. The scripted collector rewards (1) the first frame whose observation
-    is already assembled -- the expert's no-op there holds the pose and opens the gripper, and lifting clear
-    follows -- so the step that assembles is the frame before it: it is the demo's success, and nothing after it is
-    used."""
+def success_frame(data: Dict[str, Any]) -> int:
+    """The step after which the training env's ``success`` termination first holds (the pkl's ``termination_terms``):
+    the demo's last transition; nothing after it is used."""
     import numpy as np
 
-    hits = np.nonzero(np.asarray(rewards) > 0)[0]
+    hits = np.nonzero(np.asarray(data["termination_terms"]["success"], dtype=bool))[0]
     if hits.size == 0:
-        raise ValueError("the episode has no reward: no assembled frame")
-    if int(hits[0]) < 1:
-        raise ValueError("the episode is rewarded on its first frame: no step assembled the leg")
-    return int(hits[0]) - 1
+        raise ValueError("the episode never reaches the env's success termination")
+    return int(hits[0])
+
+
+def _flatten(value: Any, prefix: str, out: Dict[str, Any]) -> None:
+    import numpy as np
+
+    if isinstance(value, dict):
+        for key, sub in value.items():
+            _flatten(sub, f"{prefix}/{key}" if prefix else str(key), out)
+        return
+    array = np.asarray(value) if isinstance(value, (bool, int, float, np.ndarray, np.generic)) else None
+    if array is not None and array.dtype.kind in "biuf":
+        out[prefix] = array
+
+
+def frame_infos(data: Dict[str, Any], T: int) -> Dict[str, torch.Tensor]:
+    """The infos published with each of the first ``T`` frames' observations (``infos_initial``, then step ``t - 1``'s),
+    flattened to ``"<key>/<name>"`` paths, ``{path: (T, ...)}``: the numeric values every frame has with one shape."""
+    import numpy as np
+
+    frames = [data["infos_initial"]] + list(data["infos"][: T - 1])
+    flat = []
+    for frame in frames:
+        out: Dict[str, Any] = {}
+        _flatten(frame, "", out)
+        flat.append(out)
+    common = set(flat[0])
+    for out in flat[1:]:
+        common &= set(out)
+    stacked = {}
+    for path in sorted(common):
+        values = [out[path] for out in flat]
+        if len({v.shape for v in values}) == 1:
+            stacked[path] = torch.as_tensor(np.stack(values))
+    return stacked
 
 
 def executed_abs_actions(source: Path, states: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
@@ -154,24 +194,35 @@ def main(argv=None) -> int:
         for line in f:
             episode = json.loads(line)
             sources[str((dataset / episode["file"]).resolve())] = episode.get("source")
+    from my_project.demos.furniture import load_pkl
+
     episodes, skipped, dart_rows = [], [], 0
     for path in sorted(glob.glob(str(dataset / "data" / "**" / "*.parquet"), recursive=True)):
         frame = pd.read_parquet(path)
         states = torch.tensor(np.stack(frame["observation.state_abs"].values), dtype=torch.float32)
         labels = torch.tensor(np.stack(frame["action.abs"].values), dtype=torch.float32)
-        rewards = frame["reward"].values
-        if not (rewards > 0).any():
-            skipped.append((Path(path).name, "no success"))
-            continue
         source = sources.get(str(Path(path).resolve()))
         if not source:
-            raise ValueError(f"{path}: meta/episodes.jsonl names no source pkl for it; the executed actions are there")
+            raise ValueError(f"{path}: meta/episodes.jsonl names no source pkl for it; the env's data and the executed "
+                             "actions are there")
+        data = load_pkl(Path(source))
+        missing = [k for k in ENV_DATA if k not in data]
+        if missing:
+            raise ValueError(f"{source} carries no {missing}: collect the demos with Robonuke_Furniture_Bench's current "
+                             "scripts/collect_scripted.py (it records the env's infos, reward and termination terms)")
+        if not any(data["termination_terms"]["success"]):
+            skipped.append((Path(path).name, "no success"))
+            continue
         actions = executed_abs_actions(Path(source), states, labels)
-        success_frame = assembling_frame(rewards)
-        T = success_frame + 1
+        last = success_frame(data)
+        T = last + 1
         dart_rows += int((actions[:T] - labels[:T]).abs().amax(dim=-1).gt(1e-6).sum())
-        episodes.append({"states": states[:T], "actions": actions[:T], "base_actions": base_plan_actions(policy, states[:T]),
-                         "success_frame": int(success_frame), "file": Path(path).name})
+        episodes.append({
+            "states": states[:T], "actions": actions[:T], "base_actions": base_plan_actions(policy, states[:T]),
+            "success_frame": int(last), "file": Path(path).name, "infos": frame_infos(data, T),
+            "reward_terms": {k: torch.tensor(v[:T], dtype=torch.float32) for k, v in data["reward_terms"].items()},
+            "termination_terms": {k: torch.tensor(v[:T], dtype=torch.bool) for k, v in data["termination_terms"].items()},
+        })
     meta = {"fingerprint": raw_fingerprint(rc, policy, dataset, cfg.task_name, cfg.wandb.entity), "episodes": len(episodes), "skipped": skipped,
             "dart_rows": dart_rows, "seed": cfg.seed}
     out = Path(args.out)

@@ -1,20 +1,22 @@
 """The residual's demo transitions, built when the learner loads a raw demo file (``my_project/raw_demos.py``), with the
-env's own code: the package's ``register_demo_loader`` (every training script's ``setup()``).
+env's own code: the package's ``register_demo_loader`` (every training script's ``setup()``). One loader call per
+learner: a routed residual's (``route``, one of the learner's ``route_labels``) loads only its phase's steps; an unrouted
+learner (``route`` None) loads every step.
 
-For each raw episode (frames ``0..success_frame``):
+The loader copies the env's data and computes nothing of its own:
 
-1. the task phase of every frame, labelled by the env tracker's own checks on the recorded observations
-   (Robonuke_Furniture_Bench ``assembly/phases.phases_from_states``: ``phase_checks`` / ``phase_step``, with this run's
-   ``task.cfg.furniture.phase_*`` thresholds);
-2. ``action_frame: multiply``: the env wrapper's per-step inputs along the demo
-   (:meth:`~my_project.residual_multiply.MultiplyResidual.step_inputs`: the observation, the base's motion, the current
-   target, the critics' side input), the chain's current target being the demo's own target after a frame in a phase
-   with a residual (the residual followed the demo there) and the base's after one without, the EE at every chunk start
-   (frames ``0, H, 2H, ...``, as the env's base replans from the episode start); and each frame's ``r``, the demo's motion
-   over the base's (:meth:`~my_project.residual_multiply.MultiplyResidual.invert`);
-3. the route's rows: a frame in the route's phase, rewarded 1 when the next frame is in a later ``std_label_names``
-   entry or the demo succeeds on that frame (``success``); the attempt then ends (terminated), as it does at the demo's
-   end.
+* **phase** -- each frame's phase tag as the env published it with that observation (the episode's recorded
+  ``infos[<std_by_label>]``, e.g. ``eval_state/phase/id``), the same channel the router reads online;
+* **observations, critic states, side inputs, actions** -- the run's action space (:mod:`my_project.action_spaces`,
+  the env wrapper's own instance): :meth:`~my_project.action_spaces.ActionSpace.observe` on the raw observations and
+  the stored base actions, and :meth:`~my_project.action_spaces.ActionSpace.invert` on the executed actions, the
+  space's state carried from frame to frame as the env carries it (an episode's first frame fresh, the base's chunks at
+  frames ``0, H, 2H, ...``);
+* **rewards** -- the recorded per-step reward terms (unweighted) times this run's ``task.cfg.rewards.<term>.weight``:
+  the env reward manager's own sum (the package divides its ``step_dt`` back out);
+* **terminated** -- the run's termination terms (those not ``time_out``) as recorded at each step, and, for a routed
+  residual, the step whose next observation is in another phase (as the router marks it online): the only change made
+  to the env's data. The demo ends at the env's success, so every loaded episode's last step is terminal.
 
 The file's fingerprint (:func:`~my_project.raw_demos.raw_fingerprint`: the base run and checkpoint, its planning
 settings, the task) must be this run's, or it is refused.
@@ -22,80 +24,151 @@ settings, the task) must be this run's, or it is refused.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import torch
 
-__all__ = ["residual_demo_loader", "episode_rows"]
+__all__ = ["residual_demo_loader", "episode_steps", "episode_transitions", "env_rewards", "env_terminations"]
 
 
-def _phase_thresholds(cfg: Any) -> Dict[str, Any]:
-    f = cfg.task_cfg.furniture
-    return dict(mesh_frame=f.mesh_frame, top_grip_width=f.phase_top_grip_width, top_grip_dist=f.phase_top_grip_dist,
-                top_grip_height=f.phase_top_grip_height, lift=f.phase_lift, held_dist=f.phase_held_dist,
-                release_width=f.phase_release_width, hole_xz=f.phase_hole_xz, tilt_deg=f.phase_tilt_deg,
-                hold_steps=int(f.phase_hold_steps))
+def _terms(cfg_section: Any) -> Dict[str, Any]:
+    """``{name: term cfg}`` of an env cfg's reward / termination section (terms set to None are off)."""
+    return {name: term for name, term in vars(cfg_section).items() if term is not None and hasattr(term, "func")}
 
 
-def episode_rows(multiply, episode: Dict[str, torch.Tensor], labels: torch.Tensor, names: List[str], routes: List[str],
-                 route: str, horizon: int, keep) -> Dict[str, torch.Tensor]:
-    """One raw episode's transitions for ``route`` (the module docstring), ``labels`` ``(T,)`` its frames' phases."""
-    states, demo, base = episode["states"], episode["actions"], episode["base_actions"]
-    T = states.shape[0]
-    success_frame = int(episode["success_frame"])
-    if success_frame != T - 1:
-        raise ValueError(f"a raw episode holds frames 0..success_frame, got {T} frames and success_frame {success_frame}")
-    routed = torch.tensor([names[int(p)] in routes for p in labels])
-    chunk_start = torch.tensor([t % int(horizon) == 0 for t in range(T)])
-    # the chain's state before each frame: the demo's target after a routed frame, the base's otherwise; frame 0 the EE
-    demo_pose = torch.cat((demo[:, 0:9], base[:, 9:10]), dim=-1)
-    after = torch.where(routed.reshape(-1, 1), demo_pose, base)
-    prev_sent = torch.cat((torch.cat((states[:1, 0:9], base[:1, 9:10]), dim=-1), after[:-1]))
-    prev_base = torch.cat((base[:1], base[:-1]))
-    inputs = multiply.step_inputs(states, base, keep, routed, prev_sent=prev_sent, prev_base=prev_base, chunk_start=chunk_start)
-    r = multiply.invert(inputs["d"], demo, inputs["ref"])
-    index = names.index(route)
-    success_label = names.index("success") if "success" in names else len(names)
+def _cpu(value: Any) -> Any:
+    if torch.is_tensor(value):
+        return value.cpu()
+    if isinstance(value, dict):
+        return {k: _cpu(v) for k, v in value.items()}
+    return value
+
+
+def env_rewards(reward_terms: Dict[str, torch.Tensor], rewards_cfg: Any) -> torch.Tensor:
+    """``(T,)``: sum over the run's reward terms of ``weight x`` the recorded unweighted value."""
+    terms = _terms(rewards_cfg)
+    missing = [name for name in terms if name not in reward_terms]
+    if missing:
+        raise ValueError(f"the demos record no reward term {missing}: collect them with the current collector")
+    total = None
+    for name, term in terms.items():
+        value = float(term.weight) * reward_terms[name].to(torch.float32)
+        total = value if total is None else total + value
+    if total is None:
+        raise ValueError("the run's env has no reward terms")
+    return total
+
+
+def env_terminations(termination_terms: Dict[str, torch.Tensor], terminations_cfg: Any) -> torch.Tensor:
+    """``(T,)`` bool: any of the run's termination terms that is not a time-out, as recorded (the demos are shorter
+    than the run's episode, so a time-out never ends one)."""
+    terms = {name: term for name, term in _terms(terminations_cfg).items() if not getattr(term, "time_out", False)}
+    missing = [name for name in terms if name not in termination_terms]
+    if missing:
+        raise ValueError(f"the demos record no termination term {missing}: collect them with the current collector")
+    out = None
+    for name in terms:
+        value = termination_terms[name].to(torch.bool)
+        out = value if out is None else out | value
+    if out is None:
+        raise ValueError("the run's env has no termination that is not a time-out")
+    return out
+
+
+def episode_steps(space: Any, episodes: List[Dict[str, Any]], horizon: int, routed_of, device) -> List[Dict[str, torch.Tensor]]:
+    """Every frame's step inputs and ``r`` for every episode, all episodes in lockstep (one row each, as the env's
+    envs): ``space.observe`` then ``space.invert`` of the executed action, the space's state carried on. ``routed_of``
+    maps an episode's ``(T,)`` phase labels to its ``(T,)`` bool rows (the multiply space's routed flag). Returns per
+    episode ``{policy, critic, side, r}``, each ``(T, ...)``."""
+    n = len(episodes)
+    lengths = [int(e["states"].shape[0]) for e in episodes]
+    longest = max(lengths)
+    state = space.initial_state(n, device)
+
+    def at(name: str, t: int) -> torch.Tensor:
+        return torch.stack([e[name][min(t, length - 1)] for e, length in zip(episodes, lengths)]).to(device)
+
+    routed_rows = [routed_of(e["phase"]) for e in episodes]
+    out: List[Dict[str, List[torch.Tensor]]] = [{"policy": [], "critic": [], "side": [], "r": []} for _ in episodes]
+    for t in range(longest):
+        obs, base, executed = at("states", t), at("base_actions", t), at("actions", t)
+        fresh = torch.full((n,), t == 0, dtype=torch.bool, device=device)
+        new_chunk = torch.full((n,), t % int(horizon) == 0, dtype=torch.bool, device=device)
+        routed = torch.stack([rows[min(t, length - 1)] for rows, length in zip(routed_rows, lengths)]).to(device)
+        step, state = space.observe(obs, base, state, fresh=fresh, new_chunk=new_chunk, routed=routed)
+        r, state = space.invert(executed, step, state)
+        if step["critic"] is None:
+            raise NotImplementedError("the demo loader builds the critics' state from the observation: an env critic "
+                                      "state of its own (Forge's) is not recorded in the raw demos")
+        for i, length in enumerate(lengths):
+            if t < length:
+                for name, value in (("policy", step["policy"]), ("critic", step["critic"]), ("side", step["side"]), ("r", r)):
+                    out[i][name].append(value[i])
+    return [{name: torch.stack(values).cpu() for name, values in o.items()} for o in out]
+
+
+def episode_transitions(step: Dict[str, torch.Tensor], phase: torch.Tensor, rewards: torch.Tensor,
+                        terminated: torch.Tensor, index: Optional[int]) -> Dict[str, List[torch.Tensor]]:
+    """One episode's transitions (``step`` from :func:`episode_steps`; ``phase`` ``(T,)`` labels; the env's
+    ``rewards`` and ``terminated`` ``(T,)``): every step, or with ``index`` (a routed residual's label) the steps
+    starting in that phase, the step whose next observation is in another phase terminal. The last step is the env's
+    success: terminal. A terminal step's next observation is its own (unused: nothing bootstraps from it)."""
+    T = int(phase.shape[0])
+    terminated = terminated.clone()
+    terminated[T - 1] = True
+    if index is not None:
+        switch = torch.zeros(T, dtype=torch.bool)
+        switch[: T - 1] = phase[1:] != phase[:-1]
+        terminated = terminated | switch
+    keep = torch.ones(T, dtype=torch.bool) if index is None else phase == index
     rows: Dict[str, List[torch.Tensor]] = {}
-    for t in torch.nonzero(labels == index).reshape(-1).tolist():
-        nxt_label = success_label if t == success_frame else int(labels[t + 1])
-        local = index < nxt_label <= success_label
-        ended = local or t == T - 1
-        n = t if ended else t + 1
-        row = {"observations": inputs["policy"][t], "next_observations": inputs["policy"][n],
-               "states": inputs["critic"][t], "next_states": inputs["critic"][n], "actions": r[t],
-               "rewards": torch.tensor([1.0 if local else 0.0]), "terminated": torch.tensor([bool(ended)]),
-               "truncated": torch.tensor([False]), "success": torch.tensor([1.0 if local else 0.0]),
-               "residual_base": inputs["side"][t], "next_residual_base": inputs["side"][n]}
+    for t in torch.nonzero(keep).reshape(-1).tolist():
+        n = t if bool(terminated[t]) else t + 1
+        row = {"observations": step["policy"][t], "next_observations": step["policy"][n],
+               "states": step["critic"][t], "next_states": step["critic"][n], "actions": step["r"][t],
+               "rewards": rewards[t].reshape(1), "terminated": terminated[t].reshape(1),
+               "truncated": torch.tensor([False]), "residual_base": step["side"][t],
+               "next_residual_base": step["side"][n]}
         for name, value in row.items():
             rows.setdefault(name, []).append(value)
-    return {name: torch.stack(values) for name, values in rows.items()}
+    return rows
 
 
 def residual_demo_loader(cfg: Any, env: Any):
-    """The ``register_demo_loader`` builder: with ``residual.enabled`` and ``action_frame: multiply``, a loader that
-    turns a raw demo file into the route's transitions (the module docstring); otherwise None."""
+    """The ``register_demo_loader`` builder: with ``residual.enabled``, a loader that turns a raw demo file into the
+    learner's transitions (the module docstring); otherwise None."""
     rc = getattr(cfg, "residual", None)
-    if rc is None or not rc.enabled or rc.action_frame != "multiply":
+    if rc is None or not rc.enabled:
         return None
-    from furniture_lab.tasks.assembly.phases import phases_from_states
-
     from my_project.cfg import q_section
     from my_project.raw_demos import RAW_FORMAT, raw_fingerprint
     from my_project.residual import find_residual
 
     wrapper = find_residual(env)
     sec = q_section(cfg)
-    names, routes = list(sec.std_label_names), list(sec.route_labels)
-    thresholds = _phase_thresholds(cfg)
+    names = list(sec.std_label_names)
+    routes = list(sec.route_labels)
     policy = wrapper.base.policy
-    keep = None if wrapper.keep is None else wrapper.keep.cpu()
+    if int(rc.steps_per_chunk) != 1 or wrapper.extra_dims:
+        raise NotImplementedError("the demo loader makes one transition per demo step: residual.steps_per_chunk 1, no hybrid dims")
+    if wrapper.env_critic:
+        raise NotImplementedError("the demo loader builds the critics' state from the observation: an env critic state "
+                                  "of its own (Forge's) is not recorded in the raw demos")
+    if wrapper.phase_tables is not None:
+        raise NotImplementedError("residual.phase_scales reads the env's tracker online; the demo loader does not rebuild "
+                                  "its per-phase scale rows")
+    label_path = sec.std_by_label
+    if not label_path:
+        raise ValueError("the demo loader reads each frame's phase tag from the recorded infos: set the learner's std_by_label")
+    routed_set = routes or names  # no routing: one residual for every phase
 
-    def loader(data: Any, route: Any) -> Dict[str, Any]:
+    def routed_of(phase: torch.Tensor) -> torch.Tensor:
+        return torch.tensor([0 <= int(p) < len(names) and names[int(p)] in routed_set for p in phase.tolist()], dtype=torch.bool)
+
+    def loader(data: Any, route: Optional[str]) -> Dict[str, Any]:
         if not isinstance(data, dict) or data.get("format") != RAW_FORMAT:
-            raise ValueError("residual.action_frame: multiply loads raw demo episodes: build the file with scripts/make_raw_demos.py")
-        if route is None:
-            raise NotImplementedError("the raw demo loader builds per-phase transitions: set the learner's route_labels")
+            raise ValueError(f"the demo loader reads raw demo episodes ({RAW_FORMAT}): build the file with "
+                             "scripts/make_raw_demos.py from demos collected with the current collector")
         made = (data.get("meta") or {}).get("fingerprint") or {}
         now = raw_fingerprint(rc, policy, made.get("dataset", ""), cfg.task_name, getattr(cfg.wandb, "entity", None))
         off = {k: (made.get(k), v) for k, v in now.items() if k != "dataset" and made.get(k) != v}
@@ -103,19 +176,28 @@ def residual_demo_loader(cfg: Any, env: Any):
             raise ValueError(f"sac.demo_transitions was built for another setup (file -> this run): {off}; rebuild it with "
                              "scripts/make_raw_demos.py")
         if getattr(sec, "potential_terms", None):
-            raise NotImplementedError("the raw demo loader does not shape rewards: no potential_terms")
-        out: Dict[str, List[torch.Tensor]] = {}
+            raise NotImplementedError("the demo loader does not shape rewards: no potential_terms")
+        episodes = []
         for episode in data["episodes"]:
-            episode = {k: (v.cpu() if torch.is_tensor(v) else v) for k, v in episode.items()}
-            labels = phases_from_states(episode["states"], **thresholds).cpu()
-            rows = episode_rows(wrapper.multiply, episode, labels, names, routes, str(route), int(policy.action_horizon), keep)
-            for name, value in rows.items():
-                out.setdefault(name, []).append(value)
-        if not out:
+            episode = _cpu(episode)  # the learner loads the file onto its device
+            if label_path not in episode["infos"]:
+                raise ValueError(f"the demos record no infos channel {label_path!r} (the learner's std_by_label)")
+            episode["phase"] = episode["infos"][label_path].reshape(-1).round().long()
+            episodes.append(episode)
+        # on the wrapper's device: the space's tensors (its observation columns, scales) live there
+        steps = episode_steps(wrapper.space, episodes, int(policy.action_horizon), routed_of, wrapper.scale.device)
+        index = None if route is None else names.index(str(route))
+        rows: Dict[str, List[torch.Tensor]] = {}
+        for episode, step in zip(episodes, steps):
+            rewards = env_rewards(episode["reward_terms"], cfg.task_cfg.rewards)
+            terminated = env_terminations(episode["termination_terms"], cfg.task_cfg.terminations)
+            for name, values in episode_transitions(step, episode["phase"], rewards, terminated, index).items():
+                rows.setdefault(name, []).extend(values)
+        if not rows:
             raise ValueError(f"no demo frame is in phase {route!r}")
-        transitions = {name: torch.cat(values) for name, values in out.items()}
-        print(f"[demo loader] {route}: {transitions['actions'].shape[0]} transitions from {len(data['episodes'])} raw episodes, "
-              f"{int(transitions['terminated'].sum())} attempt ends", flush=True)
+        transitions = {name: torch.stack(values) for name, values in rows.items()}
+        print(f"[demo loader] {route or 'all phases'}: {transitions['actions'].shape[0]} transitions from "
+              f"{len(episodes)} raw episodes, {int(transitions['terminated'].sum())} terminal", flush=True)
         return {"transitions": transitions, "meta": {"route": route, "fingerprint": made}}
 
     return loader

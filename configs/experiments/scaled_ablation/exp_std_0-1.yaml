@@ -1,0 +1,9 @@
+base: _foundation.yaml
+wandb:
+  group: exp_std_0-2
+
+residual:
+  multiply_exploration_std: 0.1
+
+ddpg:
+  exploration_std: 0.04

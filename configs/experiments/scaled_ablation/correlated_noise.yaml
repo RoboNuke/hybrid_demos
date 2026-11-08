@@ -1,0 +1,8 @@
+base: _foundation.yaml
+wandb:
+  group: correlated_noise
+
+ddpg:
+  noise_repeat: true
+  noise_repeat_zeta_s: 2.0   # P(hold = k steps) ∝ k^-2 (FlashSAC's)
+  noise_repeat_max: 16       # longest hold, in env steps (FlashSAC's)

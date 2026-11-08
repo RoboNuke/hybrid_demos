@@ -1,0 +1,11 @@
+base: _foundation.yaml
+wandb:
+  group: one_residual
+
+ddpg:
+  route_labels: []           # one learner for every step
+  route_clock: false         # counts a routed residual's own steps: needs route_labels
+  phase_logging: false       # per-phase logging: needs route_labels
+  phase_logging_phases: []
+  std_by_label: eval_state/phase/id   # keep: the demo loader reads each frame's phase tag from it
+  # demo_transitions: the foundation's raw demo file, loaded whole (no route)

@@ -1,7 +1,6 @@
 """residual.action_frame: multiply (my_project/residual_multiply.py): the multiplier's range and neutral point, the
 increment chain (the current target, the EE at a chunk start), the critics' resulting-target action, the demo
-inversion, the EE-relative observation, the raw demo episodes' load-time rows (my_project/demo_loader.py) and the
-config's refusals."""
+inversion, the EE-relative observation and the config's refusals (the demo loader: tests/residual/test_action_spaces.py)."""
 
 import math
 from types import SimpleNamespace
@@ -160,38 +159,6 @@ def test_the_observation_is_fbrels_relative_to_the_ee_with_the_ee_pose_kept():
     torch.testing.assert_close(rel[:, 0:9], obs[:, 0:9])
     torch.testing.assert_close(rel[:, 9:61], fbrel[:, 0:52], atol=1e-5, rtol=0)
     torch.testing.assert_close(rel[:, 61:63], obs[:, 61:63])
-
-
-def test_the_raw_demo_rows_follow_the_chain_and_the_routes_rewards():
-    from my_project.demo_loader import episode_rows
-
-    m = mult()
-    T, H = 8, 4
-    ee0, base = trajectory(T, seed=7)
-    labels = torch.tensor([1, 2, 2, 2, 2, 3, 3, 3])  # grasp, insert x4, screw x3 (assembled on the last frame)
-    routed = torch.tensor([NAMES[int(p)] in ("insert", "screw") for p in labels])
-    r_true = torch.rand(T, 6) * 1.4 - 0.7
-    # the demo: the chain run with r_true where routed, every chunk (frames 0, 4) from the EE at that frame
-    states = torch.zeros(T, 63)
-    states[:, 0:9] = ee0
-    demo = torch.zeros(T, 10)
-    prev_sent, prev_base = torch.cat((ee0, base[:1, 9:]), -1), base[:1]
-    for t in range(T):
-        ins = m.step_inputs(states[t : t + 1], base[t : t + 1], None, routed[t : t + 1], prev_sent=prev_sent,
-                            prev_base=prev_base, chunk_start=torch.tensor([t % H == 0]))
-        demo[t] = m.sent(base[t : t + 1], ins["d"], ins["ref"], r_true[t : t + 1], routed[t : t + 1])[0]
-        prev_sent, prev_base = demo[t : t + 1], base[t : t + 1]
-    episode = {"states": states, "actions": demo, "base_actions": base, "success_frame": T - 1}
-    insert = episode_rows(m, episode, labels, NAMES, ["insert", "screw"], "insert", H, None)
-    screw = episode_rows(m, episode, labels, NAMES, ["insert", "screw"], "screw", H, None)
-    assert insert["actions"].shape[0] == 4 and screw["actions"].shape[0] == 3
-    d = torch.cat([insert["residual_base"][:, 9:15]])
-    big = d.abs() >= torch.tensor([m.eps_pos] * 3 + [m.eps_rot] * 3)
-    torch.testing.assert_close(insert["actions"][big], r_true[1:5][big], atol=3e-3, rtol=0)
-    assert insert["rewards"].reshape(-1).tolist() == [0.0, 0.0, 0.0, 1.0]  # insert passed into screw on its last frame
-    assert insert["terminated"].reshape(-1).tolist() == [False, False, False, True]
-    assert screw["rewards"].reshape(-1).tolist() == [0.0, 0.0, 1.0] and bool(screw["terminated"][-1])  # assembled
-    torch.testing.assert_close(insert["next_observations"][0], insert["observations"][1])
 
 
 def _cfg(**over):

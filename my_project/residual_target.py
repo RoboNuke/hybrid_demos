@@ -135,6 +135,42 @@ class TargetResidual:
         v = self.rot_scale * r_rot
         return euler_rpy(v) if self.rotation == "euler" else exp_so3(v)
 
+    def unrotate(self, R: torch.Tensor) -> torch.Tensor:
+        """:meth:`rotate`'s inverse: the ``r_rot`` ``(..., 3)`` whose correction rotation is ``R``."""
+        from my_project.residual_ee import log_so3
+
+        v = rpy_of(R) if self.rotation == "euler" else log_so3(R)
+        return v / self.rot_scale
+
+    def _gripper_r(self, base: torch.Tensor, sent: torch.Tensor) -> torch.Tensor:
+        return (sent[..., 9:10] - base[..., 9:10]) / self.grip_scale
+
+    def invert(self, base: torch.Tensor, sent: torch.Tensor) -> torch.Tensor:
+        """:meth:`step`'s inverse: the ``r`` ``(..., width)`` that turns ``base`` into ``sent`` (exact where ``clip``
+        does not bind and the rotation is under pi -- pitch inside +-90 deg for "euler")."""
+        R_base = rot6d_to_mat(base[..., 3:9])
+        R_sent = rot6d_to_mat(sent[..., 3:9])
+        dp = sent[..., 0:3] - base[..., 0:3]
+        if self.axes == "base":
+            R = R_sent @ R_base.transpose(-1, -2)
+        else:
+            dp = (R_base.transpose(-1, -2) @ dp.unsqueeze(-1)).squeeze(-1)
+            R = R_base.transpose(-1, -2) @ R_sent
+        parts = [dp / self.pos_scale, self.unrotate(R)]
+        if self.gripper:
+            parts.append(self._gripper_r(base, sent))
+        return torch.cat(parts, dim=-1)
+
+    def invert_accumulate(self, base: torch.Tensor, sent: torch.Tensor, off_pos: torch.Tensor, off_rot: torch.Tensor):
+        """:meth:`accumulate`'s inverse: from the offset before the step, the ``r`` that sends ``sent`` and the offset
+        after it, ``(r, off_pos', off_rot')`` (exact where ``clip`` does not bind)."""
+        new_pos = sent[..., 0:3] - base[..., 0:3]
+        new_rot = rot6d_to_mat(sent[..., 3:9]) @ rot6d_to_mat(base[..., 3:9]).transpose(-1, -2)
+        parts = [(new_pos - off_pos) / self.pos_scale, self.unrotate(new_rot @ off_rot.transpose(-1, -2))]
+        if self.gripper:
+            parts.append(self._gripper_r(base, sent))
+        return torch.cat(parts, dim=-1), new_pos, new_rot
+
     def step(self, base: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
         """``base`` ``(..., 10)`` absolute targets, ``r`` ``(..., width)`` -> the sent targets ``(..., 10)``."""
         if r.shape[-1] != self.width:

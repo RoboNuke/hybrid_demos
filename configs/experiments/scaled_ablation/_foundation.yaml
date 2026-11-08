@@ -1,0 +1,230 @@
+# scaled_residual (the leading _ keeps launch_train from submitting this file on its own): ResFiT_phase_v7's setup
+# (configs/experiments/ResFiT/_foundation.yaml + residual_ResFiT_phase_v7.yaml: one residual per bottleneck phase,
+# insert and screw, on the 50-demo base, each with its own observation standardization over its own demo frames)
+# with one change, the residual's mode: residual.action_frame: multiply (my_project/residual_multiply.py).
+#
+# The base's target is taken relative to the EE, in the EE's frame (position 3, axis-angle 3), and the residual
+# multiplies it per dim by m in [multiply_min, multiply_max] = [-0.05, 1.25] (r = -1 / 1 of the actor's tanh); the sent
+# target is m * d composed back on the EE, the gripper the base's. So the correction scales with the base's own step and
+# needs no action scale: v7's per-phase median-correction scale is not used. The actor starts at m = 1 (the base's own
+# target): its output layer zero and its bias atanh(0.6154), the r whose m is 1. The agent observes the observation
+# relative to the EE (the EE's own pose dropped: residual.observation_drop [0, 9]) and the base's motion; the critics the
+# observation part and the resulting target relative to the EE. Every input raw: the learner's state_preprocessor
+# (demo: fitted once on the demo rows, then frozen) normalizes them all (since 2026-11-06; before, per-phase
+# observation stats, the base's min-max and fixed 2 cm / 0.1 rad units).
+#
+# The noise in multiplier units (residual.multiply_warmup_std 0.05, multiply_exploration_std 0.025), in r units over the
+# 0.65 multiplier per unit r: the warm-up N(0, 0.0769) about the actor's own action (ddpg.random_action_mode:
+# actor_gaussian; uniform about r = 0 would be m = 0.6), the online exploration N(0, 0.0385), the target smoothing's
+# clip 6 of its std (v7's ratio, 2.4 / 0.4), r clamped to [-1, 1].
+#
+# ResFiT_phase_v7's comments on the learning (from configs/experiments/ResFiT/_foundation.yaml):
+#
+# ResFiT (the leading _ keeps launch_train from submitting this file on its own): Ankile et al. 2025,
+# arXiv:2509.19301, "Residual Off-Policy RL for Finetuning Behavior Cloning Policies", with the learning settings of
+# its official code (github.com/amazon-far/residual-offpolicy-rl) on our frozen base physic_aligned_evalHappy_a0.
+# Only the learning is ResFiT's: the task, its timing (10 Hz) and its episodes are fb_one_leg.yaml's.
+#
+# The learner is the package's ddpg (learners/ddpg.py): a deterministic residual actor 0.1 tanh(mu(s, a_base)) with
+# fixed Gaussian noise (std 0.025, unclipped), a target actor, 10 critics with the target's min over a random 2 and
+# the actor on their mean (REDQ), TD3's target smoothing (clip 0.3), 5-step returns, 4 critic updates and 1 actor
+# update per env step, a 10k-update critic warm-up, uniform warm-up actions, and half of every batch from the demos
+# (the actor on that same mixed batch).
+#
+# one_leg runs one residual per bottleneck phase (ddpg.route_labels: insert, screw), each with its own actor,
+# critics, optimizers, replay memory and clock (route_clock): each counts its learning start, critic warm-up and
+# updates in its own phase's steps, so the screw residual starts when screw has given it 10k rows, not after 10k
+# env steps. Each is rewarded sparsely and locally: 1 when its phase is passed (insert: the leg held inserted for
+# 5 steps, furniture.phase_hold_steps; screw: assembled), its attempt then over.
+#
+# The residual: r in the base's normalized action units, 7-dof (position 3, Euler roll-pitch-yaw 3, gripper 1),
+# added to the base's absolute target in the robot-base frame, the sent position and gripper clamped to the base's
+# normalized range widened 10% (ResFiT's action scaler and clamp). The actor sees the observation (without the 3
+# unused legs and the fixed obstacle) and the base action; the critics see that observation and the executed
+# action (normalized), never the base action itself.
+#
+# Not ResFiT's (our setup has no equivalent, or none is possible here):
+#  * the observation is the base's min-max normalization (residual.normalize_observation), not a standardization;
+#  * the rotation: ResFiT adds 0.1 to its normalized rotation; ours is Euler RPY at 1 rad per unit r (57.3 deg), so
+#    0.1 tanh reaches 5.7 deg per step, about what 0.1 of a unit rot6d component is;
+#  * the base plans every chunk cold (residual.base_warm_start: false): the per-phase demos measure each demo
+#    residual against a cold base plan, so the env's base must plan the same way;
+#  * their critics share one encoder; ours are separate MLPs (the same widths);
+#  * images: their tasks are image-based, ours is state-based.
+base: ../../base/fb_one_leg.yaml
+
+experiment:
+  seed: 42
+  num_agents: 5
+
+wandb:
+  entity: hur
+  project: one_leg_scaled_ablations
+
+trainer:
+  best_by: success
+  checkpoint_interval: 10000
+  # publish every 1000 env steps; episode/success the mean of the last 10 episodes, each phase's success rate
+  # (phase/passed_*, counted only for the episodes that reached the phase) the mean of the last 10 that reached it
+  write_interval: 1000
+  success_window: 10
+  learner: ddpg
+  total_timesteps: 750000
+
+task:
+  cfg:
+    scene:
+      num_envs: 5
+    furniture:
+      # insert counts as passed after the leg has stayed inserted for 5 steps
+      phase_hold_steps: 5
+      # no no-progress reset (0 is off): every episode runs to its time limit. Ending a stuck attempt early cut the
+      # steps the later phase's residual gets, and the per-phase residuals are already short of data
+      stall_steps_insert: 0
+      stall_steps_screw: 0
+    # the env's phase rewards: 1 on the step the episode gets past each of corner, grasp and insert (once per
+    # episode); assembling pays 1 (rewards.assembled, its default)
+    rewards:
+      corner_done:
+        weight: 1.0
+      grasp_done:
+        weight: 1.0
+      insert_done:
+        weight: 1.0
+
+residual:
+  enabled: true
+  multiply_reference: increment
+  # the 50-demo base (v7's)
+  base_run: runs/hybrid_demo_furniture/obs-fix_true-jacobian_50demos/obs-fix_true-jacobian_50demos_a0
+  base_project: null
+  base_run_name: null
+  base_warm_start: false
+  steps_per_chunk: 1
+  # the residual's mode (my_project/residual_multiply.py): r multiplies the base's EE-relative pose target per dim, m in
+  # [multiply_min, multiply_max] (their defaults, -0.05 and 1.25); the gripper the base's. No action scale
+  action_frame: multiply
+  action_scale: null
+  action_scale_fraction: 1.0
+  executed_clip: null
+  # the noise in multiplier units (their defaults; ddpg's random_action_scale and exploration_std below are these over
+  # the 0.65 multiplier per unit r)
+  multiply_warmup_std: 0.5
+  multiply_exploration_std: 0.05
+  multiply_min: -1.5
+  multiply_max: 3.5
+  
+  observe_base_action: true
+  # the actor observes the observation and the base's motion; the critics the observation and the resulting target
+  # relative to the EE
+  critic_state: observation
+  critic_action: full
+  # the EE's own pose (position 3, rot6d 6: the residual sees everything relative to the EE, its velocities in its own
+  # frame), legs 1-3 (never touched in one_leg) and the front obstacle (fixed on every reset)
+  observation_drop:
+    - - 0
+      - 9
+    - - 25
+      - 52
+    - - 61
+      - 63
+
+ddpg:
+  # the Coffee / CanSorting paper runs' (the code's defaults: 0.99, 3-step)
+  discount_factor: 0.995
+  n_step: 5
+  batch_size: 256
+  polyak: 0.005
+  # timeouts end the target as a termination does (ResFiT's done = terminated | truncated)
+  bootstrap_time_limits: false
+  # AdamW, weight decay 0.01, gradient norm clipped at 1
+  actor_lr: 1.0e-6
+  critic_lr: 1.0e-4
+  weight_decay: 0.01
+  grad_norm_clip: 1.0
+  # 10 critics (REDQ): the target's min over a random 2, the actor on their mean; the critic loss (mean_k |Q_k - y|)^2
+  num_critics: 10
+  critic_subset: 2
+  actor_q_reduction: mean
+  critic_loss: mean_abs_squared
+  # 4 critic updates per env step, the actor on the 4th
+  gradient_steps: 4
+  update_every: 1
+  policy_delay: 4
+  # per residual: no update before its phase has given it 10k rows; meanwhile it acts at random about the actor's
+  # starting point; then 10k critic-only updates at once, then the actor
+  learning_starts_rows: 10000
+  critic_warmup_updates: 10000
+  # r = tanh(mu) in [-1, 1] (the multiplier's whole range); the warm-up N(0, 0.05 / 0.65) about the actor's own action
+  # (m = 1 at the start), the online exploration N(0, 0.025 / 0.65), both unclipped but r clamped to [-1, 1]; the
+  # target smoothing with the exploration's std, clipped at 6 of it (v7's ratio)
+  actor_action_scale: 1.0
+  random_action_mode: actor_gaussian
+  random_action_scale: 0.2
+  exploration_std: 0.02
+  target_actor: true
+  target_policy_noise: true
+  target_noise_clip: 0.06
+  action_clip: 1.0
+  # half of every batch from the phase's demos -- raw demo episodes (scripts/make_raw_demos.py, from the 300 demos of
+  # Robonuke_Furniture_Bench datasets/physic_aligned_tcp_300_envdata, collected with phase_hold_steps 5) turned into each
+  # learner's transitions when it loads them (my_project/demo_loader.py) -- the actor on the same batch
+  demo_transitions: data/scaled_ablation/raw_demos.pt
+  demo_storage: sample
+  demo_sampling_start: 0
+  demo_sampling_end: 1000000000
+  demo_batch_shared: true
+  save_memory_with_checkpoints: false
+  # every input (the actor's observation, the critics' state, the critics' action) z-scored by the demo rows' mean and
+  # std, fitted once when the learner starts and frozen (state_preprocessor_kwargs.update_normalizer_during_training
+  # false, the demo preprocessor's default), clipped at +-5
+  state_preprocessor: demo
+  # one residual per phase, insert and screw, each counting its own steps (route_clock): its 10k learning start and
+  # 10k critic warm-up in its phase's steps; corner and grasp run on the base alone
+  route_labels:
+    - insert
+    - screw
+  route_clock: true
+  std_by_label: eval_state/phase/id
+  std_label_names:
+    - corner
+    - grasp
+    - insert
+    - screw
+    - success
+  metrics_by_label:
+    - residual/position_mm
+    - residual/rot_deg
+  cuda_graph: true
+  # per-phase logging: <phase>_episode/*, <phase>_q/*, ... against <phase>_step for insert and screw; corner and grasp
+  # in episode/
+  phase_logging: true
+  phase_logging_phases:
+    - corner
+    - grasp
+    - insert
+    - screw
+
+# 300k transitions per residual (the Coffee / CanSorting paper runs'; the code's default 200k)
+memory:
+  memory_size: 300000
+
+# 2 x 1024 ReLU MLPs with LayerNorm, PyTorch's default init; the actor's last layer zero and its bias atanh(0.6154): r
+# = 0.6154, m = 1, the base's own target, at the start
+model:
+  architecture: mlp
+  actor:
+    hidden_size: 1024
+    num_layers: 2
+    activation: ReLU
+    layer_norm: true
+    init: default
+    output_init_scale: 0.0
+    output_bias: 0.0
+    squash: true
+  critic:
+    hidden_size: 1024
+    num_layers: 2
+    activation: ReLU
+    layer_norm: true
+    init: default
