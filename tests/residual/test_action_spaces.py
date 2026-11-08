@@ -128,3 +128,20 @@ def test_a_routed_phase_keeps_its_steps_with_the_envs_reward_and_ends_at_the_pha
     assert [bool(v) for v in screw["terminated"]] == [False, True]  # the env's success
     every = episode_transitions(step, phase, rewards, terminated, index=None)
     assert len(every["rewards"]) == T_ and sum(bool(v) for v in every["terminated"]) == 1  # no phase switch unrouted
+
+
+def test_the_observation_form_check_takes_raw_episode_files_routed_or_not(tmp_path):
+    from my_project.cfg import check_observation_form_demos
+    from my_project.raw_demos import RAW_FORMAT
+
+    raw = tmp_path / "raw.pt"
+    torch.save({"format": RAW_FORMAT, "episodes": [], "meta": {}}, raw)
+    check_observation_form_demos(str(raw))  # the demo loader builds the observation form at load
+    ready = tmp_path / "ready.pt"
+    torch.save({"transitions": {}, "meta": {"form": "observation"}}, ready)
+    check_observation_form_demos(str(ready))
+    other = tmp_path / "other.pt"
+    torch.save({"transitions": {}, "meta": {"form": "residual"}}, other)
+    with pytest.raises(ValueError, match="observation form"):
+        check_observation_form_demos(str(other))
+    check_observation_form_demos(str(tmp_path / "missing.pt"))  # not a file yet: left to the learner

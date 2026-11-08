@@ -251,6 +251,31 @@ class HybridCfg:
             )
 
 
+def check_observation_form_demos(path: str) -> None:
+    """``residual.critic_state: observation``: the demo file must give the critics the observation. A raw demo episode
+    file (scripts/make_raw_demos.py) does -- the demo loader builds every input through the run's action space, routed
+    (one phase per learner) or not (every phase) -- as does a ready transition file in the observation form (meta
+    ``form: "observation"``); refused is a ready file in another form (make_demo_transitions.py's residual critic state).
+    A path that is not (yet) a file is left to the learner, which refuses it at load."""
+    from pathlib import Path
+
+    file = Path(path)
+    if not file.is_file():
+        return
+    import torch
+
+    from my_project.raw_demos import RAW_FORMAT
+
+    data = torch.load(file, map_location="cpu", weights_only=False, mmap=True)
+    if isinstance(data, dict) and data.get("format") == RAW_FORMAT:
+        return
+    form = ((data.get("meta") if isinstance(data, dict) else None) or {}).get("form")
+    if form != "observation":
+        raise ValueError(f"residual.critic_state: observation reads demos in the observation form; {file} is form {form!r} "
+                         "(scripts/make_demo_transitions.py writes the residual's critic state): rebuild them in the "
+                         "observation form, or as raw demo episodes (scripts/make_raw_demos.py)")
+
+
 @dataclass
 class ResidualCfg:
     """Residual RL on a frozen diffusion policy (``my_project/residual.py``).
@@ -648,22 +673,8 @@ class ResidualCfg:
             if family_of(cfg.task_name) == FORGE:
                 raise NotImplementedError("residual.critic_state: observation: a Forge env has a critic state of its own")
             sac = q_section(cfg)
-            # an unrouted residual's demos must be in the observation form (meta form "observation"); refused is a file in
-            # another form (make_demo_transitions.py's residual critic state). Routed residuals load raw demo episodes
-            # (scripts/make_raw_demos.py), converted at load by my_project/demo_loader.py
-            if sac is not None and sac.demo_transitions and not getattr(sac, "route_labels", None):
-                from pathlib import Path
-
-                path = Path(str(sac.demo_transitions))
-                form = None
-                if path.is_file():
-                    import torch
-
-                    form = (torch.load(path, map_location="cpu", weights_only=False, mmap=True).get("meta") or {}).get("form")
-                if path.is_file() and form != "observation":
-                    raise ValueError(f"residual.critic_state: observation reads demos in the observation form; {path} is "
-                                     f"form {form!r} (scripts/make_demo_transitions.py writes the residual's critic state): "
-                                     "rebuild them in the observation form")
+            if sac is not None and sac.demo_transitions:
+                check_observation_form_demos(str(sac.demo_transitions))
         remote = self.base_project is not None or self.base_run_name is not None
         if bool(self.base_run) == remote:
             raise ValueError(
