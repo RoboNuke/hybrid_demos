@@ -80,12 +80,18 @@ python scripts/debug.py --run hur/hybrid_demo_furniture/<run_name> --resets --ho
 
 ## Run on the cluster
 
-The launchers submit SLURM + Apptainer jobs from a login node — a light python is enough
-(omegaconf + pyyaml; wandb only for `launch_eval`'s run query). Resources come from the
-`hpc` config section (`configs/base/hpc.yaml`, overridable per experiment or on the CLI);
-the field reference is the package README. Names derive from wandb: `--project` and
-`--group_prefix` are required, group = `{group_prefix}_{config_stem}` (sweeps append
-`_{label}-{value}`), the SLURM job name is the group, runs are `{group}_a{i}`.
+The cluster side (the `general` env as Apptainer images, the `~/hpc-share/robonuke/` layout,
+the clones of this repo, the package and Robonuke_Furniture_Bench, a per-partition smoke test)
+is set up once by the package's `hpc/install_hpc.sh`, run on a login node; its README `## hpc`
+section is the reference. The launchers then submit SLURM + Apptainer jobs from a login node —
+a light python is enough (omegaconf + pyyaml; wandb only for `launch_eval`'s run query; the
+installer makes a `rnk-launch` conda env with them). Resources come from the `hpc` config
+section (`configs/base/hpc.yaml`, overridable per experiment or on the CLI); the field
+reference is the package README. This project's `hpc.yaml` also names the Furniture Bench
+clone in `hpc.extra_repos`: the job binds it and puts it on `PYTHONPATH`, since `setup()`
+imports `furniture_lab.tasks` and the image carries no research code. Names derive from
+wandb: `--project` and `--group_prefix` are required, group = `{group_prefix}_{config_stem}`
+(sweeps append `_{label}-{value}`), the SLURM job name is the group, runs are `{group}_a{i}`.
 
 ```bash
 # one job per launch config in the group's folder (the _foundation.yaml is skipped)
