@@ -561,6 +561,21 @@ def _summary(result: Dict[str, Any]) -> str:
             f"length mean {result['length_mean']:.0f}{phases}")
 
 
+def new_run_id() -> str:
+    """A fresh wandb run id: 8 lowercase alphanumerics, wandb's own form (``wandb.sdk.lib.runid.generate_id``
+    where it exists; ``wandb.util.generate_id`` is gone since wandb 0.30)."""
+    try:
+        from wandb.sdk.lib import runid
+
+        return str(runid.generate_id())
+    except (ImportError, AttributeError):
+        import secrets
+        import string
+
+        alphabet = string.ascii_lowercase + string.digits
+        return "".join(secrets.choice(alphabet) for _ in range(8))
+
+
 class _AgentSink:
     """One agent's outputs: ``<agent dir>/<out_name>/results.jsonl`` (what a restarted watcher resumes from) and its
     wandb eval run (``<agent>_eval``, the training run's project and group), whose id lives beside the results so a
@@ -601,7 +616,7 @@ class _AgentSink:
 
         run_id = self.id_path.read_text().strip() if self.id_path.exists() else None
         try:
-            self.run = init(run_id or wandb.util.generate_id())
+            self.run = init(run_id or new_run_id())
         except wandb.errors.CommError as error:
             if run_id is None or "deleted" not in str(error):
                 raise
@@ -611,7 +626,7 @@ class _AgentSink:
             if self.results_path.exists():
                 self.results_path.rename(self.out_dir / f"results_{run_id}.jsonl")
             self.done = set()
-            self.run = init(wandb.util.generate_id())
+            self.run = init(new_run_id())
         self.id_path.write_text(self.run.id)
         print(f"[watch] {self.agent_dir.name}: wandb eval run {self.run.id} ({self.run.name}), results to "
               f"{self.results_path}", flush=True)

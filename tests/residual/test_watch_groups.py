@@ -148,3 +148,19 @@ def test_trimming_drops_the_values_of_untaken_envs():
 def test_the_round_count_covers_num_rollouts():
     assert math.ceil(200 / 40) == 5  # the ablation config: 5 agents x 40 envs, 200 episodes each
     assert math.ceil(100 / 100) == 1  # residual_watch_furniture: one round, as before
+
+
+# ---------------------------------------------------------------- new_run_id
+def test_a_new_run_id_has_wandbs_form_with_and_without_the_helper(monkeypatch):
+    import re
+
+    import wandb
+
+    assert not hasattr(wandb.util, "generate_id")  # gone since wandb 0.30: the watcher must not call it
+    first = watch.new_run_id()
+    assert re.fullmatch(r"[a-z0-9]{8}", first)
+    import wandb.sdk.lib.runid as runid
+
+    monkeypatch.delattr(runid, "generate_id")  # the fallback has the same form
+    second = watch.new_run_id()
+    assert re.fullmatch(r"[a-z0-9]{8}", second) and second != first
