@@ -146,7 +146,7 @@ def test_trimming_drops_the_values_of_untaken_envs():
 
 
 def test_the_round_count_covers_num_rollouts():
-    assert math.ceil(200 / 40) == 5  # the ablation config: 5 agents x 40 envs, 200 episodes each
+    assert math.ceil(200 / 200) == 1  # the ablation config: 5 agents x 200 envs, 200 episodes each, one round
     assert math.ceil(100 / 100) == 1  # residual_watch_furniture: one round, as before
 
 

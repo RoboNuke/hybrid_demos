@@ -47,7 +47,7 @@ bodies with your observations, rewards and resets.
   and you get a known task with known physics.
 * `configs/eval/` -- only what one test changes on top of the trained run's own config (more friction, a
   recording: `one_leg_phases.yaml`; the residual watcher's 100 envs: `residual_watch_furniture.yaml`; the
-  ablations' 5 agents x 40 envs, 200 episodes each: `residual_watch_ablation.yaml`), chained onto `hpc.yaml` for the cluster launcher's resources.
+  ablations' 5 agents x 200 envs, 200 episodes each in one round: `residual_watch_ablation.yaml`), chained onto `hpc.yaml` for the cluster launcher's resources.
 * `configs/experiments/<group>/` -- one folder per experiment group: `_foundation.yaml` (based on a
   `base/` task) holds what every training of the group shares -- the seed, the wandb entity, every
   learning parameter -- and one launch config per training (`bc_<group>.yaml`, `residual_<group>.yaml`)
@@ -608,7 +608,7 @@ python scripts/watch_residual_eval.py --run <residual run dir> --eval_config <ev
 python scripts/watch_residual_eval.py \
   --run runs/hybrid_demo_furniture_residual/residual_resip_replica/residual_resip_replica_a0 \
   --eval_config configs/eval/residual_watch_furniture.yaml
-# a scaled_ablation run's 5 agents at once, 200 episodes each over 5 x 40 envs, every checkpoint on disk:
+# a scaled_ablation run's 5 agents at once, 200 episodes each over 5 x 200 envs, every checkpoint on disk:
 python scripts/watch_residual_eval.py --run runs/one_leg_scaled_ablations/abs_1_base \
   --eval_config configs/eval/residual_watch_ablation.yaml --once
 ```
