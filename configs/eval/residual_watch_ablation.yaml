@@ -5,8 +5,8 @@
 #   python launchers/launch_watch.py configs/experiments/scaled_ablation/ --project one_leg_scaled_ablations \
 #       --group_prefix abs --eval_config configs/eval/residual_watch_ablation.yaml
 # hpc.yaml: the cluster's resources for launchers/launch_watch.py, which reads them from this chain. The watcher
-# needs no cameras; 1000 one_leg envs plus the diffusion base want a large card, so only the 80 / 141 GB
-# dgxh nodes are asked for, and the walltime stays under 16 h so a job submitted the day before
+# needs no cameras, so any partition trains it; 1000 one_leg envs plus the diffusion base want more than the
+# RTX 6000's 24 GB, so eecs2 is left out, and the walltime stays under 16 h so a job submitted the day before
 # a maintenance window (Slurm refuses a start that would cross one) still starts; a relaunch resumes from each
 # agent's eval_watch/results.jsonl.
 base: ../base/hpc.yaml
@@ -23,8 +23,8 @@ task:
       stall_steps_screw: 0
 
 hpc:
-  partitions: dgxh
-  constraint: vram80g|vram140g
+  partitions: dgxh,dgx2,tiamat
+  constraint: vram80g|vram140g|v100|l40s
   mem: 96G
   cpus: 8
   time: "16:00:00"
