@@ -586,6 +586,11 @@ deterministic. It logs `eval/success_rate`, `eval/engaged_rate`, `eval/force_mea
 run (`<run>_eval`, same group) at the checkpoint's step, and appends each result to
 `<run dir>/eval_watch/results.jsonl`, which is also what a restarted watcher resumes from. Each round shows a tqdm bar on stderr: env steps out of the
 episode's length (FurnitureBench: with the envs still running and the successes so far).
+`results.jsonl` is the record and the wandb run a view of it: `wandb_run_id` beside it names the
+run a restart continues, `wandb_logged_steps` names that run and the steps it has received, and a
+start re-sends every recorded step the run lacks. Remove `wandb_run_id` (keep the results) to
+fill a fresh wandb run from what is on disk; two agents whose `wandb_run_id` files name the same
+run are refused before anything opens.
 
 `--run` is one agent's directory, or the **group directory** of a run that trained several agents in
 one process (`experiment.num_agents`): then every agent is evaluated side by side, each in its own

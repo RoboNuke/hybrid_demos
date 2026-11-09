@@ -579,7 +579,15 @@ def new_run_id() -> str:
 class _AgentSink:
     """One agent's outputs: ``<agent dir>/<out_name>/results.jsonl`` (what a restarted watcher resumes from) and its
     wandb eval run (``<agent>_eval``, the training run's project and group), whose id lives beside the results so a
-    restarted watcher continues the same run."""
+    restarted watcher continues the same run.
+
+    ``results.jsonl`` is the record; the wandb run is a view of it. ``wandb_logged_steps`` beside them names the run
+    (first line) and lists the steps it has received, and ``start`` re-sends every recorded step the run lacks -- so
+    a fresh run (the id file removed) is filled from the results, and a step evaluated but not delivered is not lost.
+
+    Several sinks live in one process, so every ``wandb.init`` passes ``reinit="create_new"``: wandb's default for a
+    second ``init`` is to hand back the first run, which would pour every agent into one run.
+    """
 
     def __init__(self, agent_dir: Path, out_name: str, run_name: str) -> None:
         self.agent_dir = Path(agent_dir)
@@ -587,11 +595,25 @@ class _AgentSink:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.results_path = self.out_dir / "results.jsonl"
         self.id_path = self.out_dir / "wandb_run_id"
+        self.logged_path = self.out_dir / "wandb_logged_steps"
         self.run_name = run_name
-        self.done = set()
-        if self.results_path.exists():
-            self.done = {json.loads(line)["step"] for line in self.results_path.read_text().splitlines() if line}
+        self.done = {row["step"] for row in self.rows()}
+        # the steps delivered to wandb, and the run they went to (the file's first line): a different run lacks
+        # them all
+        self.logged_run, self.logged = None, set()
+        if self.logged_path.exists():
+            head, *steps = self.logged_path.read_text().split()
+            self.logged_run, self.logged = head, {int(step) for step in steps}
+        elif self.id_path.exists():
+            # a run resumed from a watcher that kept no such list: it delivered what it recorded
+            self.logged_run, self.logged = self.id_path.read_text().strip(), set(self.done)
         self.run = None
+
+    def rows(self) -> List[Dict[str, Any]]:
+        """The recorded results, oldest first."""
+        if not self.results_path.exists():
+            return []
+        return [json.loads(line) for line in self.results_path.read_text().splitlines() if line]
 
     def start(self, cfg: Any, args: Any, num_envs: int, seed: int) -> None:
         import wandb
@@ -604,6 +626,7 @@ class _AgentSink:
                 name=self.run_name,
                 id=run_id,
                 resume="allow",
+                reinit="create_new",  # one run per agent in this process, never the first run handed back
                 mode=cfg.wandb.mode,
                 config={
                     "run": str(self.agent_dir),
@@ -626,12 +649,22 @@ class _AgentSink:
             if self.results_path.exists():
                 self.results_path.rename(self.out_dir / f"results_{run_id}.jsonl")
             self.done = set()
+            self.logged = set()
             self.run = init(new_run_id())
         self.id_path.write_text(self.run.id)
+        if self.run.id != self.logged_run:
+            self.logged_run, self.logged = self.run.id, set()
+        self.logged_path.write_text("".join(f"{line}\n" for line in [self.run.id, *sorted(self.logged)]))
         print(f"[watch] {self.agent_dir.name}: wandb eval run {self.run.id} ({self.run.name}), results to "
               f"{self.results_path}", flush=True)
+        missing = sorted((row for row in self.rows() if row["step"] not in self.logged), key=lambda row: row["step"])
+        for row in missing:
+            self._log(row["step"], {k: v for k, v in row.items() if k not in ("step", "label")})
+        if missing:
+            print(f"[watch] {self.agent_dir.name}: {len(missing)} recorded result(s) the run lacked re-sent, steps "
+                  f"{[row['step'] for row in missing]}", flush=True)
 
-    def record(self, step: int, label: str, result: Dict[str, Any]) -> None:
+    def _log(self, step: int, result: Dict[str, Any]) -> None:
         import wandb
 
         logged = {f"eval/{k}": v for k, v in result.items() if k != "episodes" and k not in HISTOGRAMS}
@@ -641,15 +674,38 @@ class _AgentSink:
             step=step,
             commit=True,  # publish now; otherwise wandb holds a step until a later one arrives
         )
+        with self.logged_path.open("a") as f:
+            f.write(f"{step}\n")
+        self.logged.add(step)
+
+    def record(self, step: int, label: str, result: Dict[str, Any]) -> None:
         with self.results_path.open("a") as f:
             f.write(json.dumps({"step": step, "label": label, **result}) + "\n")
         self.done.add(step)
+        self._log(step, result)
         print(f"[watch] {self.agent_dir.name} {label} (step {step}): {_summary(result)} over {result['episodes']} "
               "episodes", flush=True)
 
     def finish(self) -> None:
         if self.run is not None:
             self.run.finish()  # flush and close the eval run on any exit, Ctrl+C included
+
+
+def check_run_ids(sinks: Sequence[_AgentSink]) -> None:
+    """Two agents must not resume the same wandb run. Stale ``wandb_run_id`` files from a watcher that opened one run
+    for every agent are refused here, before any run is opened, naming the files to remove."""
+    claimed: Dict[str, Path] = {}
+    for sink in sinks:
+        if not sink.id_path.exists():
+            continue
+        run_id = sink.id_path.read_text().strip()
+        if run_id in claimed:
+            raise RuntimeError(
+                f"{sink.id_path} and {claimed[run_id]} name the same wandb run {run_id}; every agent needs its own eval "
+                "run. Remove the stale wandb_run_id files (keep results.jsonl: a fresh run is filled from it) and "
+                "relaunch"
+            )
+        claimed[run_id] = sink.id_path
 
 
 def _watch(args, overrides, setup) -> int:
@@ -690,6 +746,7 @@ def _watch(args, overrides, setup) -> int:
     out_name = args.out_name or ("eval_watch_stochastic" if args.stochastic else "eval_watch")
     suffix = f"_{args.out_name}" if args.out_name else ("_eval_stochastic" if args.stochastic else "_eval")
     sinks = [_AgentSink(agent, out_name, f"{agent.name}{suffix}") for agent in agents]
+    check_run_ids(sinks)
     for sink in sinks:
         sink.start(cfg, args, int(env.num_envs), seed)
     print(f"[watch] {run_dir}: {len(agents)} agent(s) x {int(env.num_envs) // len(agents)} envs, "

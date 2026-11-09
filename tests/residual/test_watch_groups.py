@@ -164,3 +164,117 @@ def test_a_new_run_id_has_wandbs_form_with_and_without_the_helper(monkeypatch):
     monkeypatch.delattr(runid, "generate_id")  # the fallback has the same form
     second = watch.new_run_id()
     assert re.fullmatch(r"[a-z0-9]{8}", second) and second != first
+
+
+# ---------------------------------------------------------------- _AgentSink: one wandb run per agent
+class _Args:
+    eval_config = "configs/eval/x.yaml"
+    stochastic = False
+
+
+def _cfg(mode="offline"):
+    from omegaconf import OmegaConf
+
+    return OmegaConf.create({"wandb": {"entity": "e", "project": "p", "group": "g", "mode": mode}})
+
+
+def _result(success):
+    return {"success_rate": success, "out_of_bounds_rate": 0.0, "length_mean": 5.0, "lengths": [5, 5], "episodes": 2}
+
+
+def test_two_sinks_in_one_process_open_two_runs(tmp_path, monkeypatch):
+    """wandb hands a second ``init`` the first run unless told otherwise: every agent would log into agent 0's run."""
+    monkeypatch.setenv("WANDB_DIR", str(tmp_path))
+    monkeypatch.setenv("WANDB_SILENT", "true")
+    sinks = [watch._AgentSink(tmp_path / f"g_a{i}", "eval_watch", f"g_a{i}_eval") for i in range(2)]
+    try:
+        for sink in sinks:
+            sink.start(_cfg(), _Args(), 4, 0)
+        assert sinks[0].run is not sinks[1].run
+        assert sinks[0].run.id != sinks[1].run.id
+        assert [s.run.name for s in sinks] == ["g_a0_eval", "g_a1_eval"]
+        assert [s.id_path.read_text() for s in sinks] == [s.run.id for s in sinks]
+    finally:
+        for sink in sinks:
+            sink.finish()
+
+
+def test_agents_claiming_one_run_id_are_refused_before_any_run_opens(tmp_path):
+    sinks = [watch._AgentSink(tmp_path / f"g_a{i}", "eval_watch", f"g_a{i}_eval") for i in range(3)]
+    sinks[0].id_path.write_text("abcdefgh")
+    sinks[2].id_path.write_text("abcdefgh")
+    with pytest.raises(RuntimeError) as err:
+        watch.check_run_ids(sinks)
+    assert "g_a0" in str(err.value) and "g_a2" in str(err.value) and "abcdefgh" in str(err.value)
+    sinks[2].id_path.write_text("stuvwxyz")
+    watch.check_run_ids(sinks)  # distinct ids, or none: fine
+
+
+class _FakeRun:
+    def __init__(self, run_id):
+        self.id, self.name, self.logged = run_id, "n", []
+
+    def log(self, data, step, commit):
+        self.logged.append((step, data["eval/success_rate"]))
+
+    def finish(self):
+        pass
+
+
+def _fake_init(monkeypatch):
+    import wandb
+
+    runs = []
+
+    def init(**kw):
+        runs.append(_FakeRun(kw["id"]))
+        assert kw["reinit"] == "create_new"
+        return runs[-1]
+
+    monkeypatch.setattr(wandb, "init", init)
+    return runs
+
+
+def test_a_fresh_run_is_filled_from_the_recorded_results(tmp_path, monkeypatch):
+    runs = _fake_init(monkeypatch)
+    sink = watch._AgentSink(tmp_path / "g_a1", "eval_watch", "g_a1_eval")
+    sink.start(_cfg(), _Args(), 4, 0)
+    sink.record(0, "base", _result(0.1))
+    sink.record(10000, "ckpt", _result(0.2))
+    assert runs[0].logged == [(0, 0.1), (10000, 0.2)]
+    assert sink.logged_path.read_text().split() == [runs[0].id, "0", "10000"]
+
+    # the id file removed (the run was shared or deleted): a new run receives everything recorded
+    sink.id_path.unlink()
+    again = watch._AgentSink(tmp_path / "g_a1", "eval_watch", "g_a1_eval")
+    assert again.done == {0, 10000}
+    again.start(_cfg(), _Args(), 4, 0)
+    assert runs[1].id != runs[0].id and runs[1].logged == [(0, 0.1), (10000, 0.2)]
+
+
+def test_a_resumed_run_receives_only_the_steps_it_lacks(tmp_path, monkeypatch):
+    runs = _fake_init(monkeypatch)
+    sink = watch._AgentSink(tmp_path / "g_a1", "eval_watch", "g_a1_eval")
+    sink.start(_cfg(), _Args(), 4, 0)
+    sink.record(0, "base", _result(0.1))
+    # recorded, but the run never got it (the job died between the two writes)
+    with sink.results_path.open("a") as f:
+        import json
+
+        f.write(json.dumps({"step": 10000, "label": "ckpt", **_result(0.2)}) + "\n")
+    again = watch._AgentSink(tmp_path / "g_a1", "eval_watch", "g_a1_eval")
+    again.start(_cfg(), _Args(), 4, 0)
+    assert runs[1].id == runs[0].id and runs[1].logged == [(10000, 0.2)]
+
+
+def test_a_run_resumed_from_an_older_watcher_counts_its_results_as_delivered(tmp_path, monkeypatch):
+    runs = _fake_init(monkeypatch)
+    out = tmp_path / "g_a0" / "eval_watch"
+    out.mkdir(parents=True)
+    import json
+
+    (out / "results.jsonl").write_text(json.dumps({"step": 0, "label": "base", **_result(0.3)}) + "\n")
+    (out / "wandb_run_id").write_text("abcdefgh")  # no wandb_logged_steps beside it
+    sink = watch._AgentSink(tmp_path / "g_a0", "eval_watch", "g_a0_eval")
+    sink.start(_cfg(), _Args(), 4, 0)
+    assert runs[0].logged == [] and sink.logged == {0}
