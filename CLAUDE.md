@@ -76,7 +76,7 @@ Never create a new conda env; never vendor a copy of the package into this repo.
     is no demos folder.
 * `scripts/` — thin callers of `robonuke_rl_core.{train,eval,debug}.main(setup=setup)`.
   Do not add logic here; flow fixes belong in the package.
-* `launchers/` — thin callers of `robonuke_rl_core.hpc.launch_{train,sweep,eval}.main()`,
+* `launchers/` — thin callers of `robonuke_rl_core.hpc.launch_{train,sweep,eval,watch}.main()`,
   run from the project root on a cluster login node. No `setup` hook: the submitters never
   load the full config. Cluster resources are the `hpc` config section —
   `configs/base/hpc.yaml` holds the cluster-wide values and sits at the bottom of every

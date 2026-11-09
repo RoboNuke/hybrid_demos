@@ -46,7 +46,8 @@ bodies with your observations, rewards and resets.
   to the end-effector), chained onto `hpc.yaml` (the cluster's resources). Base one on it
   and you get a known task with known physics.
 * `configs/eval/` -- only what one test changes on top of the trained run's own config (more friction, a
-  recording: `one_leg_phases.yaml`; the residual watcher's 100 envs: `residual_watch_furniture.yaml`), chained onto `hpc.yaml` for the cluster launcher's resources.
+  recording: `one_leg_phases.yaml`; the residual watcher's 100 envs: `residual_watch_furniture.yaml`; the
+  ablations' 5 agents x 40 envs, 200 episodes each: `residual_watch_ablation.yaml`), chained onto `hpc.yaml` for the cluster launcher's resources.
 * `configs/experiments/<group>/` -- one folder per experiment group: `_foundation.yaml` (based on a
   `base/` task) holds what every training of the group shares -- the seed, the wandb entity, every
   learning parameter -- and one launch config per training (`bc_<group>.yaml`, `residual_<group>.yaml`)
@@ -106,6 +107,12 @@ python launchers/launch_sweep.py configs/experiments/resip_replica/residual_resi
 # one eval job per (trained run x eval config), selected by group
 python launchers/launch_eval.py --eval_config configs/eval/one_leg_phases.yaml \
     --project hybrid_demo_furniture --group oct21_bc_resip_replica
+
+# one watcher job per training run of the folder (scripts/watch_residual_eval.py over the run's group
+# directory, every agent side by side, every checkpoint on disk, then exit; --follow keeps polling):
+# the launch_train command with the verb swapped, the eval config supplying the job's resources
+python launchers/launch_watch.py configs/experiments/scaled_ablation/ --project one_leg_scaled_ablations \
+    --group_prefix abs --eval_config configs/eval/residual_watch_ablation.yaml
 ```
 
 `--dry_run` on any of them prints the exact `sbatch` commands and submits nothing.
@@ -570,15 +577,25 @@ residual:
   critic_action: full
 ```
 
-**Watching a residual run learn.** `scripts/watch_residual_eval.py` runs beside training in
-its own Isaac process, with the eval conditions it is given (`--eval_config`, required). It evaluates the
+**Watching a residual run learn.** `scripts/watch_residual_eval.py` runs beside training (or after
+it, `--once`) in its own Isaac process, with the eval conditions it is given (`--eval_config`, required). It evaluates the
 **base alone** first, at startup (step 0: a zero residual), then every new numbered checkpoint
-as training writes it, each with the same seed (the same 100 starting conditions), the SAC policy
+as training writes it, each with the same seed (the same starting conditions), the SAC policy
 deterministic. It logs `eval/success_rate`, `eval/engaged_rate`, `eval/force_mean`,
 `eval/force_max_mean` and histograms of per-episode max and mean contact force to its own wandb
 run (`<run>_eval`, same group) at the checkpoint's step, and appends each result to
-`<run dir>/eval_watch/results.jsonl`. Each round shows a tqdm bar on stderr: env steps out of the
+`<run dir>/eval_watch/results.jsonl`, which is also what a restarted watcher resumes from. Each round shows a tqdm bar on stderr: env steps out of the
 episode's length (FurnitureBench: with the envs still running and the successes so far).
+
+`--run` is one agent's directory, or the **group directory** of a run that trained several agents in
+one process (`experiment.num_agents`): then every agent is evaluated side by side, each in its own
+slot of one N-agent eval learner on its own block of envs (the learner's own split, so the eval
+config's `task.cfg.scene.num_envs` must divide by the agent count), a checkpoint step evaluated once
+every agent has written its file, and each agent keeps its own `results.jsonl` and `<agent>_eval`
+wandb run. `eval.num_rollouts` episodes per agent come from `ceil(num_rollouts / envs per agent)`
+rounds, round `k` reset under `seed + k`; the base-alone round runs once (it is the same policy for
+every agent). Several agents at once are implemented for FurnitureBench envs; a Forge or standalone
+run is watched one agent directory at a time.
 
 ```bash
 python scripts/watch_residual_eval.py --run <residual run dir> --eval_config <eval config>
@@ -586,11 +603,15 @@ python scripts/watch_residual_eval.py --run <residual run dir> --eval_config <ev
 python scripts/watch_residual_eval.py \
   --run runs/hybrid_demo_furniture_residual/residual_resip_replica/residual_resip_replica_a0 \
   --eval_config configs/eval/residual_watch_furniture.yaml
+# a scaled_ablation run's 5 agents at once, 200 episodes each over 5 x 40 envs, every checkpoint on disk:
+python scripts/watch_residual_eval.py --run runs/one_leg_scaled_ablations/abs_1_base \
+  --eval_config configs/eval/residual_watch_ablation.yaml --once
 ```
 
 On a FurnitureBench residual run each env's first episode counts, and it logs
 `eval/success_rate`, `eval/out_of_bounds_rate`, `eval/length_mean` and `eval/length_hist`
-(no force or engagement on that env).
+(no force or engagement on that env). On the cluster, `launchers/launch_watch.py` submits one such
+watcher per training run of an experiment folder (see "Run on the cluster").
 
 **Deterministic vs sampled.** The watcher evaluates the SAC policy's **mean** action by
 default. Training only ever values **sampled** actions (the entropy target keeps the policy's

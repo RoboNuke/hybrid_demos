@@ -2,23 +2,31 @@
 
     python scripts/watch_residual_eval.py --run <residual run dir> --eval_config <eval config>
 
-Runs beside training, in its own Isaac process. The env is the run's own (its resolved config)
-with ``--eval_config`` on top (required: the eval conditions, e.g. the env count), built through the same project wrappers training uses. Then:
+Runs beside training (or after it, ``--once``), in its own Isaac process. ``--run`` is one agent's
+directory (``<group>/<group>_a<i>``, holds ``checkpoints/``) or the **group directory** of a run
+that trained several agents in one process (``experiment.num_agents``): then every agent of the
+run is evaluated side by side, each in its own slot of one N-agent eval learner, on its own
+block of envs, exactly the split training used. The env is the run's own (its resolved config)
+with ``--eval_config`` on top (required: the eval conditions, e.g. the env count, which must divide
+by the agent count), built through the same project wrappers training uses. Then:
 
 1. **Step 0, the base alone**, right at startup: a residual of exactly zero, so the frozen
-   diffusion policy acts by itself (no checkpoint needed).
-2. **Every numbered checkpoint** (``ckpt_<step>.ckpt``) not yet evaluated, oldest first, with
-   the residual on, the SAC policy deterministic (its mean action) or, with ``--stochastic``,
-   sampled as in training; new ones are picked up as training writes them. It stops after the
-   checkpoint at or past the run's ``trainer.total_timesteps``, with ``--once`` when no
-   checkpoint on disk is left, or on Ctrl+C.
+   diffusion policy acts by itself (no checkpoint needed). The same policy for every agent, so
+   it runs once and is recorded for each.
+2. **Every numbered checkpoint** (``ckpt_<step>.ckpt``) not yet evaluated, oldest first, once
+   every agent has written its file of that step, with the residual on, the SAC policy
+   deterministic (its mean action) or, with ``--stochastic``, sampled as in training; new ones
+   are picked up as training writes them. It stops after the checkpoint at or past the run's
+   ``trainer.total_timesteps``, with ``--once`` when no checkpoint on disk is left, or on Ctrl+C.
 
 The two action modes measure different policies: training only ever values sampled actions,
 so the mean alone can be much worse (measured on these runs: 15–40 points lower).
 
-Every evaluation is one round: all envs reset together under the same seed (the same 100
-starting conditions every time) and step for the episode's full length; each env contributes
-exactly one episode. Per episode, from the true (noise-free) sensor force:
+An evaluation is ``ceil(eval.num_rollouts / E)`` rounds, ``E`` the envs per agent: in a round all
+envs reset together under one seed (round ``k`` under ``seed + k``, so every checkpoint sees the
+same starting conditions) and step for the episode's full length; each env contributes exactly
+one episode, and the first ``num_rollouts`` episodes of each agent count. Per episode, from the
+true (noise-free) sensor force:
 
 * success: the env's success check held at any step; engaged: its engage check did;
 * the mean and the maximum contact-force magnitude over the episode (N).
@@ -26,13 +34,14 @@ exactly one episode. Per episode, from the true (noise-free) sensor force:
 On a FurnitureBench run (``Isaac-Furniture-*``, a manager-based env that ends an episode on
 assembly or a part out of bounds) each env's FIRST episode of the round counts: success is the
 env's ``success`` termination firing in it, plus the share that ended out of bounds and the
-mean episode length; there is no force or engagement.
+mean episode length; there is no force or engagement. Several agents at once are supported on
+FurnitureBench envs (the ablations' case); a Forge or standalone env evaluates one agent.
 
 With ``residual.steps_per_chunk: k > 1`` one ``env.step`` is ``k`` sim steps: a round is
 ``ceil(steps / k)`` agent steps, the success / engagement / force reads happen after each agent
 step (every ``k`` sim steps), and an episode's length counts sim steps (the wrapper's ``counted``).
 
-Logged to its own wandb run (``<run name>_eval``, the training run's project and group), at
+Logged per agent to its own wandb run (``<agent>_eval``, the training run's project and group), at
 ``step`` = the checkpoint's step: ``eval/success_rate``, ``eval/engaged_rate``,
 ``eval/force_mean`` (mean over episodes of each episode's mean force), ``eval/force_max_mean``,
 and histograms ``eval/force_max_hist`` and ``eval/force_mean_hist``; on a FurnitureBench env that tracks one_leg's
@@ -41,8 +50,8 @@ phases, also ``eval/phase_success/<phase>`` (each phase's success among the epis
 and ``eval/residual_mm/<phase>`` / ``eval/residual_deg/<phase>`` (the mean correction over the agent steps that
 started in that phase). ``--skip_base`` leaves out the base-alone round (step 0), for one-off tests on checkpoints whose reference is already
 known. Each result is also
-appended to ``<run dir>/eval_watch/results.jsonl``. Each round shows its progress as a tqdm bar
-on stderr.
+appended to ``<agent dir>/eval_watch/results.jsonl``, which is also what a restarted watcher
+resumes from (per agent). Each round shows its progress as a tqdm bar on stderr.
 """
 
 from __future__ import annotations
@@ -55,12 +64,17 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Sequence
 
 
 
 def add_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    parser.add_argument("--run", required=True, help="the residual run's agent directory (holds checkpoints/)")
+    parser.add_argument(
+        "--run",
+        required=True,
+        help="the residual run: one agent's directory (holds checkpoints/), or the group directory of a run that "
+        "trained several agents, to evaluate them all side by side",
+    )
     parser.add_argument("--eval_config", required=True, help="eval conditions layered on the run's config")
     parser.add_argument("--poll_seconds", type=float, default=30.0, help="how often to look for new checkpoints")
     parser.add_argument(
@@ -138,6 +152,46 @@ def _numbered_checkpoints(directory: Path) -> Dict[int, Path]:
     return found
 
 
+# ---------------------------------------------------------------------- the run's agents
+def agent_dirs(run_dir: Path, run_names: Sequence[str]) -> List[Path]:
+    """The agent directories ``--run`` names, in slot order.
+
+    ``run_dir`` is an **agent** directory when its name is one of the run's ``derived.run_names``
+    (``<group>_a<i>``): one slot, that agent. Otherwise it is the **group** directory and every
+    agent of the run is evaluated: ``<run_dir>/<name>`` for each run name, all of which must exist.
+    """
+    run_dir = Path(run_dir)
+    names = [str(name) for name in run_names]
+    if not names:
+        raise ValueError(f"{run_dir}: the run's resolved config names no agents (derived.run_names)")
+    if run_dir.name in names:
+        return [run_dir]
+    agents = [run_dir / name for name in names]
+    missing = [str(path) for path in agents if not path.is_dir()]
+    if missing:
+        raise FileNotFoundError(
+            f"--run {run_dir} is neither an agent directory (one of {names}) nor a group directory holding "
+            f"every agent: missing {missing}"
+        )
+    return agents
+
+
+def checkpoint_dirs(agents: Sequence[Path], routes: Sequence[str]) -> List[Path]:
+    """Where each agent's numbered checkpoints are: ``<agent>/checkpoints``, or for a routed learner (one residual
+    per phase, each phase writing its own checkpoints of the same names) the first phase's folder,
+    ``<agent>/<routes[0]>/checkpoints``; every phase's file of a name is loaded together."""
+    return [Path(agent) / routes[0] / "checkpoints" if routes else Path(agent) / "checkpoints" for agent in agents]
+
+
+def pending_steps(ckpt_dirs: Sequence[Path], done: Sequence[set]) -> List[int]:
+    """The checkpoint steps to evaluate next, oldest first: every agent has a settled file of that step on disk
+    (``SETTLED_SECONDS``; the agents of one training process write together, so this waits for the slowest
+    file only), and at least one agent has not recorded it yet (``done``: per agent, the steps in its results)."""
+    on_disk = [_numbered_checkpoints(Path(d)) for d in ckpt_dirs]
+    common = set.intersection(*(set(found) for found in on_disk)) if on_disk else set()
+    return sorted(step for step in common if any(step not in agent_done for agent_done in done))
+
+
 def _find_residual(env: Any):
     from my_project.residual import find_residual
 
@@ -164,13 +218,19 @@ def _round_bar(total: int, label: str):
     return tqdm(total=total, desc=f"[watch] {label}", unit="step", dynamic_ncols=True, leave=False)
 
 
+def _is_furniture(env: Any) -> bool:
+    """A manager-based FurnitureBench env (ends episodes through its termination manager)."""
+    return hasattr(getattr(env, "unwrapped", env), "termination_manager")
+
+
 def evaluate(env: Any, policy: Any, seed: int, label: str = "eval", episodes: int | None = None) -> Dict[str, Any]:
-    """One round on every env: success, engagement, mean and max force per episode
-    (FurnitureBench: :func:`evaluate_furniture`). ``label`` names the round's progress bar."""
+    """One agent's evaluation: success, engagement, mean and max force per episode over one round on every env
+    (FurnitureBench: :func:`evaluate_rounds`, ``ceil(episodes / num_envs)`` rounds; standalone:
+    :func:`evaluate_episodes`). ``label`` names the round's progress bar."""
     import torch
 
-    if hasattr(env.unwrapped, "termination_manager"):
-        return evaluate_furniture(env, policy, seed, label)
+    if _is_furniture(env):
+        return evaluate_rounds(env, policy, seed, label, episodes, num_agents=1)[0]
     if getattr(type(env.unwrapped.cfg), "SIMULATOR", "isaac") == "standalone":
         return evaluate_episodes(env, policy, seed, label, episodes)
 
@@ -194,11 +254,6 @@ def evaluate(env: Any, policy: Any, seed: int, label: str = "eval", episodes: in
     # Forge ends an episode one step before the limit; one env.step is steps_per_chunk sim steps
     steps = _agent_steps(int(u.max_episode_length) - 1, residual.steps_per_chunk if residual is not None else 1)
     bar = _round_bar(steps, label)
-    # per-phase outcomes (the env's phase/passed_*: NaN for an episode that never reached the phase) and the
-    # residual's correction per phase (the phase each agent step started in), when the env tracks phases
-    passed: Dict[str, Any] = {}
-    correction: Dict[str, List[float]] = {}
-    phase = torch.zeros(n, dtype=torch.long, device=u.device)
     for _ in range(steps):
         with torch.no_grad():
             actions = policy(observations, states)
@@ -207,24 +262,6 @@ def evaluate(env: Any, policy: Any, seed: int, label: str = "eval", episodes: in
             # a routed policy (sac.route_labels) picks each env's residual from the phase the env just published
             policy.observe(infos)
         states = env_states(env)
-        if isinstance(infos, dict):
-            metrics = infos.get("metrics_to_log") or {}
-            for key, unit in (("residual/position_mm", "mm"), ("residual/rot_deg", "deg")):
-                value = metrics.get(key)
-                if value is None:
-                    continue
-                value = torch.as_tensor(value, device=u.device).reshape(-1)
-                for index, name in enumerate(PHASE_NAMES):
-                    rows = alive & (phase == index)
-                    if bool(rows.any()):
-                        correction.setdefault(f"residual_{unit}/{name}", []).extend(value[rows].tolist())
-            ending = alive & (terminated.reshape(-1).bool() | truncated.reshape(-1).bool())
-            for key, value in (infos.get("episode_metrics_to_log") or {}).items():
-                if key.startswith("phase/passed_") and bool(ending.any()):
-                    passed.setdefault(key, []).extend(torch.as_tensor(value, device=u.device).reshape(-1)[ending].tolist())
-            label = (infos.get("eval_state") or {}).get("phase/id")
-            if label is not None:
-                phase = torch.as_tensor(label, device=u.device).reshape(-1).round().long()
         force = u.force_sensor_smooth[:, 0:3].norm(dim=-1)
         force_sum += force
         force_max = torch.maximum(force_max, force)
@@ -327,11 +364,16 @@ def _episodes_round(env: Any, policy: Any, seed: int, label: str) -> Dict[str, A
     return result
 
 
-def evaluate_furniture(env: Any, policy: Any, seed: int, label: str = "eval") -> Dict[str, Any]:
-    """One round on every env of a manager-based FurnitureBench env: each env's first episode
-    (the env resets an env on its own when it ends): success, out of bounds, length. The progress
-    bar shows the envs still in their first episode and the successes so far; it stops early when
-    every env's episode has ended."""
+# ---------------------------------------------------------------------- FurnitureBench rounds
+def furniture_round(env: Any, policy: Any, seed: int, label: str = "eval") -> Dict[str, Any]:
+    """One round on every env of a manager-based FurnitureBench env, reset under ``seed``: each env's first
+    episode (the env resets an env on its own when it ends). Per env: ``success`` / ``out`` (bool) and ``length``
+    (sim steps); per phase outcome (the env's ``phase/passed_*``, NaN for an episode that never reached the phase)
+    the ``(env, value)`` pairs of the episodes that ended; per residual correction (``residual_mm|deg/<phase>``,
+    the phase each agent step started in) the ``(env, value)`` pairs over the agent steps. Keeping the env index
+    is what lets :func:`split_furniture` attribute every number to the agent whose env produced it. The progress
+    bar shows the envs still in their first episode and the successes so far; the round stops early when every
+    env's episode has ended."""
     import torch
 
     from robonuke_rl_core.envs.build import reseed_env
@@ -354,10 +396,8 @@ def evaluate_furniture(env: Any, policy: Any, seed: int, label: str = "eval") ->
     # one env.step is the residual's steps_per_chunk sim steps
     steps = _agent_steps(int(u.max_episode_length), residual.steps_per_chunk if residual is not None else 1)
     bar = _round_bar(steps, label)
-    # per-phase outcomes (the env's phase/passed_*: NaN for an episode that never reached the phase) and the
-    # residual's correction per phase (the phase each agent step started in), when the env tracks phases
-    passed: Dict[str, Any] = {}
-    correction: Dict[str, List[float]] = {}
+    passed: Dict[str, List[Any]] = {}  # key -> [(env indices, values)] per step
+    correction: Dict[str, List[Any]] = {}
     phase = torch.zeros(n, dtype=torch.long, device=u.device)
     for _ in range(steps):
         with torch.no_grad():
@@ -377,14 +417,18 @@ def evaluate_furniture(env: Any, policy: Any, seed: int, label: str = "eval") ->
                 for index, name in enumerate(PHASE_NAMES):
                     rows = alive & (phase == index)
                     if bool(rows.any()):
-                        correction.setdefault(f"residual_{unit}/{name}", []).extend(value[rows].tolist())
+                        where = rows.nonzero().reshape(-1)
+                        correction.setdefault(f"residual_{unit}/{name}", []).append((where.cpu(), value[where].cpu()))
             ending = alive & (terminated.reshape(-1).bool() | truncated.reshape(-1).bool())
-            for key, value in (infos.get("episode_metrics_to_log") or {}).items():
-                if key.startswith("phase/passed_") and bool(ending.any()):
-                    passed.setdefault(key, []).extend(torch.as_tensor(value, device=u.device).reshape(-1)[ending].tolist())
-            label = (infos.get("eval_state") or {}).get("phase/id")
-            if label is not None:
-                phase = torch.as_tensor(label, device=u.device).reshape(-1).round().long()
+            if bool(ending.any()):
+                where = ending.nonzero().reshape(-1)
+                for key, value in (infos.get("episode_metrics_to_log") or {}).items():
+                    if key.startswith("phase/passed_"):
+                        values = torch.as_tensor(value, device=u.device).reshape(-1)
+                        passed.setdefault(key, []).append((where.cpu(), values[where].cpu()))
+            label_ = (infos.get("eval_state") or {}).get("phase/id")
+            if label_ is not None:
+                phase = torch.as_tensor(label_, device=u.device).reshape(-1).round().long()
         # the episode's sim steps in this agent step (the residual's counted sub-steps; 1 without one)
         length += alive.long() * (residual.counted.to(length.device) if residual is not None else 1)
         # a term counts only on the step it ends the episode: Isaac Lab's term buffer keeps the
@@ -400,24 +444,107 @@ def evaluate_furniture(env: Any, policy: Any, seed: int, label: str = "eval") ->
         if not alive.any():
             break
     bar.close()
-    result = {
-        "success_rate": float(success.float().mean()),
-        "out_of_bounds_rate": float(out.float().mean()),
-        "length_mean": float(length.float().mean()),
-        "lengths": length.cpu().tolist(),
-        "episodes": n,
+
+    def pairs(parts):
+        idx = torch.cat([i for i, _ in parts]) if parts else torch.zeros(0, dtype=torch.long)
+        val = torch.cat([v for _, v in parts]) if parts else torch.zeros(0)
+        return idx, val.float()
+
+    return {
+        "success": success.cpu(),
+        "out": out.cpu(),
+        "length": length.cpu(),
+        "passed": {key: pairs(parts) for key, parts in passed.items()},
+        "correction": {key: pairs(parts) for key, parts in correction.items()},
+    }
+
+
+def split_furniture(rounds: Sequence[Dict[str, Any]], envs: range, num_rollouts: Optional[int]) -> Dict[str, Any]:
+    """One agent's result from :func:`furniture_round` data: its envs ``envs`` (a contiguous block) over the rounds,
+    in round order, trimmed to the first ``num_rollouts`` episodes (None: all). The keys the watcher logs:
+    ``success_rate``, ``out_of_bounds_rate``, ``length_mean``, ``lengths``, ``episodes``, and when the env tracks
+    phases ``phase_success/<phase>`` (each phase's success among the episodes that reached it; ``screw`` is
+    ``phase/passed_success``), ``phase_reached/<phase>`` and ``residual_mm|deg/<phase>`` (the mean correction over
+    the agent steps that started in that phase)."""
+    import torch
+
+    per_round = len(envs)
+    wanted = int(num_rollouts) if num_rollouts else per_round * len(rounds)
+    success, out, length = [], [], []
+    passed: Dict[str, List[torch.Tensor]] = {}
+    correction: Dict[str, List[torch.Tensor]] = {}
+    taken = 0
+    for data in rounds:
+        take = min(per_round, wanted - taken)
+        if take <= 0:
+            break
+        lo, hi = envs.start, envs.start + take
+        success.append(data["success"][lo:hi])
+        out.append(data["out"][lo:hi])
+        length.append(data["length"][lo:hi])
+        for key, (idx, val) in data["passed"].items():
+            keep = (idx >= lo) & (idx < hi)
+            passed.setdefault(key, []).append(val[keep])
+        for key, (idx, val) in data["correction"].items():
+            keep = (idx >= lo) & (idx < hi)
+            correction.setdefault(key, []).append(val[keep])
+        taken += take
+    success_t, out_t, length_t = torch.cat(success), torch.cat(out), torch.cat(length)
+    result: Dict[str, Any] = {
+        "success_rate": float(success_t.float().mean()),
+        "out_of_bounds_rate": float(out_t.float().mean()),
+        "length_mean": float(length_t.float().mean()),
+        "lengths": length_t.tolist(),
+        "episodes": int(length_t.numel()),
     }
     # phase_success/<phase>: each phase's success among the episodes that reached it (screw: phase/passed_success)
-    for key, values in sorted(passed.items()):
-        reached = [v for v in values if v == v]
+    for key, parts in sorted(passed.items()):
+        values = torch.cat(parts)
+        reached = values[~torch.isnan(values)]
         name = "screw" if key == "phase/passed_success" else key[len("phase/passed_"):]
-        if reached:
-            result[f"phase_success/{name}"] = sum(reached) / len(reached)
-            result[f"phase_reached/{name}"] = len(reached)
+        if reached.numel():
+            result[f"phase_success/{name}"] = float(reached.mean())
+            result[f"phase_reached/{name}"] = int(reached.numel())
     # residual_mm/<phase>, residual_deg/<phase>: the mean correction over the agent steps that started in that phase
-    for key, values in sorted(correction.items()):
-        result[key] = sum(values) / len(values)
+    for key, parts in sorted(correction.items()):
+        values = torch.cat(parts)
+        if values.numel():
+            result[key] = float(values.mean())
     return result
+
+
+def evaluate_rounds(env: Any, policy: Any, seed: int, label: str, num_rollouts: Optional[int], num_agents: int = 1) -> List[Dict[str, Any]]:
+    """Every agent's evaluation on a FurnitureBench env, side by side: agent ``i`` owns envs ``[i*E, (i+1)*E)``
+    (``E = num_envs / num_agents``, the learner's own split), ``ceil(num_rollouts / E)`` rounds (one when
+    ``num_rollouts`` is None or fits one round), round ``k`` reset under ``seed + k``. One result dict per agent."""
+    n = int(env.unwrapped.num_envs)
+    num_agents = int(num_agents)
+    if num_agents < 1 or n % num_agents:
+        raise ValueError(f"{num_agents} agents cannot share {n} envs: each agent owns a contiguous block")
+    per_agent = n // num_agents
+    rounds = max(1, -(-int(num_rollouts) // per_agent)) if num_rollouts else 1
+    data = [furniture_round(env, policy, seed + k, label if rounds == 1 else f"{label} {k + 1}/{rounds}")
+            for k in range(rounds)]
+    return [split_furniture(data, range(i * per_agent, (i + 1) * per_agent), num_rollouts) for i in range(num_agents)]
+
+
+def evaluate_furniture(env: Any, policy: Any, seed: int, label: str = "eval") -> Dict[str, Any]:
+    """One round on every env of a FurnitureBench env for one agent: :func:`furniture_round` summarised by
+    :func:`split_furniture` (kept for callers of the one-round form)."""
+    return split_furniture([furniture_round(env, policy, seed, label)], range(int(env.unwrapped.num_envs)), None)
+
+
+def evaluate_agents(env: Any, policy: Any, seed: int, label: str, num_rollouts: Optional[int], num_agents: int) -> List[Dict[str, Any]]:
+    """One result per agent slot: :func:`evaluate_rounds` on a FurnitureBench env; the single-agent paths of
+    :func:`evaluate` otherwise (several agents at once are not implemented for a Forge or standalone env)."""
+    if _is_furniture(env):
+        return evaluate_rounds(env, policy, seed, label, num_rollouts, num_agents)
+    if int(num_agents) != 1:
+        raise NotImplementedError(
+            f"{num_agents} agents side by side: only FurnitureBench envs split their results per agent; evaluate "
+            "a Forge or standalone run one agent directory at a time"
+        )
+    return [evaluate(env, policy, seed, label, num_rollouts)]
 
 
 #: list-valued results logged as histograms, under these names
@@ -434,129 +561,166 @@ def _summary(result: Dict[str, Any]) -> str:
             f"length mean {result['length_mean']:.0f}{phases}")
 
 
+class _AgentSink:
+    """One agent's outputs: ``<agent dir>/<out_name>/results.jsonl`` (what a restarted watcher resumes from) and its
+    wandb eval run (``<agent>_eval``, the training run's project and group), whose id lives beside the results so a
+    restarted watcher continues the same run."""
+
+    def __init__(self, agent_dir: Path, out_name: str, run_name: str) -> None:
+        self.agent_dir = Path(agent_dir)
+        self.out_dir = self.agent_dir / out_name
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        self.results_path = self.out_dir / "results.jsonl"
+        self.id_path = self.out_dir / "wandb_run_id"
+        self.run_name = run_name
+        self.done = set()
+        if self.results_path.exists():
+            self.done = {json.loads(line)["step"] for line in self.results_path.read_text().splitlines() if line}
+        self.run = None
+
+    def start(self, cfg: Any, args: Any, num_envs: int, seed: int) -> None:
+        import wandb
+
+        def init(run_id: str):
+            return wandb.init(
+                entity=cfg.wandb.entity,
+                project=cfg.wandb.project,
+                group=cfg.wandb.group,
+                name=self.run_name,
+                id=run_id,
+                resume="allow",
+                mode=cfg.wandb.mode,
+                config={
+                    "run": str(self.agent_dir),
+                    "eval_config": args.eval_config,
+                    "num_envs": int(num_envs),
+                    "seed": seed,
+                    "deterministic": not args.stochastic,
+                },
+            )
+
+        run_id = self.id_path.read_text().strip() if self.id_path.exists() else None
+        try:
+            self.run = init(run_id or wandb.util.generate_id())
+        except wandb.errors.CommError as error:
+            if run_id is None or "deleted" not in str(error):
+                raise
+            # the previous eval run was deleted in wandb: start a new one and evaluate from step 0
+            # again, so it holds the whole history
+            print(f"[watch] {self.agent_dir.name}: wandb run {run_id} was deleted; starting a new eval run", flush=True)
+            if self.results_path.exists():
+                self.results_path.rename(self.out_dir / f"results_{run_id}.jsonl")
+            self.done = set()
+            self.run = init(wandb.util.generate_id())
+        self.id_path.write_text(self.run.id)
+        print(f"[watch] {self.agent_dir.name}: wandb eval run {self.run.id} ({self.run.name}), results to "
+              f"{self.results_path}", flush=True)
+
+    def record(self, step: int, label: str, result: Dict[str, Any]) -> None:
+        import wandb
+
+        logged = {f"eval/{k}": v for k, v in result.items() if k != "episodes" and k not in HISTOGRAMS}
+        logged.update({f"eval/{HISTOGRAMS[k]}": wandb.Histogram(v) for k, v in result.items() if k in HISTOGRAMS})
+        self.run.log(
+            logged,
+            step=step,
+            commit=True,  # publish now; otherwise wandb holds a step until a later one arrives
+        )
+        with self.results_path.open("a") as f:
+            f.write(json.dumps({"step": step, "label": label, **result}) + "\n")
+        self.done.add(step)
+        print(f"[watch] {self.agent_dir.name} {label} (step {step}): {_summary(result)} over {result['episodes']} "
+              "episodes", flush=True)
+
+    def finish(self) -> None:
+        if self.run is not None:
+            self.run.finish()  # flush and close the eval run on any exit, Ctrl+C included
+
+
 def _watch(args, overrides, setup) -> int:
     if setup is not None:
         setup()
 
     import gymnasium as gym
-    import torch
-    
+    from omegaconf import OmegaConf
+
     from robonuke_rl_core.config import load_from_run
     from robonuke_rl_core.envs.build import build_env, prepare_task, wrap_for_skrl
-    from robonuke_rl_core.evaluation import SINGLE_AGENT_OVERRIDE, build_eval_policy, resolved_config_path
+    from robonuke_rl_core.evaluation import resolved_config_path
 
     run_dir = Path(args.run).expanduser()
-    ckpt_dir = run_dir / "checkpoints"
+    config_path = resolved_config_path(run_dir)
+    # the run's agents, read before the config loads: the eval learner gets one slot per agent
+    run_names = list(OmegaConf.load(config_path).derived.run_names)
+    agents = agent_dirs(run_dir, run_names)
     cfg = load_from_run(
-        resolved_config_path(run_dir), list(overrides) + [SINGLE_AGENT_OVERRIDE], extra_files=[args.eval_config]
+        config_path, list(overrides) + [f"experiment.num_agents={len(agents)}"], extra_files=[args.eval_config]
     )
     if not cfg.residual.enabled:
         raise ValueError(f"{run_dir} is not a residual run (residual.enabled is false)")
     from my_project.cfg import Q_LEARNERS, q_section
 
     routes = list(getattr(q_section(cfg), "route_labels", None) or []) if cfg.trainer.learner in Q_LEARNERS else []
-    if routes:
-        # a routed SAC (one residual per phase): each phase writes its own checkpoints of the same names; the first
-        # phase's folder lists them, and every phase's file of a name is loaded together
-        ckpt_dir = run_dir / routes[0] / "checkpoints"
+    ckpt_dirs = checkpoint_dirs(agents, routes)
     prepare_task(cfg, cfg.task_name, cfg.task_cfg)
     env = wrap_for_skrl(build_env(cfg, gym.make(cfg.task_name, cfg=cfg.task_cfg), cfg.task_name), cfg.experiment.seed)
     _find_residual(env)  # fails loudly if the run's env has no residual
-    total = int(cfg.trainer.total_timesteps)
     seed = int(cfg.experiment.seed)
+    if len(agents) > 1 and not _is_furniture(env):
+        raise NotImplementedError(
+            f"{len(agents)} agents side by side: only FurnitureBench envs split their results per agent; pass one "
+            "agent directory as --run for this env"
+        )
 
     out_name = args.out_name or ("eval_watch_stochastic" if args.stochastic else "eval_watch")
-    out_dir = run_dir / out_name
-    out_dir.mkdir(parents=True, exist_ok=True)
-    results_path = out_dir / "results.jsonl"
-    done = set()
-    if results_path.exists():
-        done = {json.loads(line)["step"] for line in results_path.read_text().splitlines() if line}
-
-    import wandb
-
-    id_path = out_dir / "wandb_run_id"
-
-    def start(run_id: str):
-        return wandb.init(
-            entity=cfg.wandb.entity,
-            project=cfg.wandb.project,
-            group=cfg.wandb.group,
-            name=(f"{run_dir.name}_{args.out_name}" if args.out_name
-                  else f"{run_dir.name}_eval" + ("_stochastic" if args.stochastic else "")),
-            id=run_id,
-            resume="allow",
-            mode=cfg.wandb.mode,
-            config={
-                "run": str(run_dir),
-                "eval_config": args.eval_config,
-                "num_envs": int(env.num_envs),
-                "seed": seed,
-                "deterministic": not args.stochastic,
-            },
-        )
-
-    # the run's id lives beside the results, so a restarted watcher continues the same run
-    run_id = id_path.read_text().strip() if id_path.exists() else None
-    try:
-        run = start(run_id or wandb.util.generate_id())
-    except wandb.errors.CommError as error:
-        if run_id is None or "deleted" not in str(error):
-            raise
-        # the previous eval run was deleted in wandb: start a new one and evaluate from step 0
-        # again, so it holds the whole history
-        print(f"[watch] wandb run {run_id} was deleted; starting a new eval run", flush=True)
-        if results_path.exists():
-            results_path.rename(out_dir / f"results_{run_id}.jsonl")
-        done = set()
-        run = start(wandb.util.generate_id())
-    id_path.write_text(run.id)
-    print(f"[watch] wandb eval run {run.id} ({run.name}); actions "
+    suffix = f"_{args.out_name}" if args.out_name else ("_eval_stochastic" if args.stochastic else "_eval")
+    sinks = [_AgentSink(agent, out_name, f"{agent.name}{suffix}") for agent in agents]
+    for sink in sinks:
+        sink.start(cfg, args, int(env.num_envs), seed)
+    print(f"[watch] {run_dir}: {len(agents)} agent(s) x {int(env.num_envs) // len(agents)} envs, "
+          f"{int(cfg.eval.num_rollouts)} episodes per agent, seed {seed}, actions "
           f"{'sampled' if args.stochastic else 'deterministic (mean)'}", flush=True)
-
-    def record(step: int, label: str, result: Dict[str, Any]) -> None:
-        logged = {f"eval/{k}": v for k, v in result.items() if k != "episodes" and k not in HISTOGRAMS}
-        logged.update({f"eval/{HISTOGRAMS[k]}": wandb.Histogram(v) for k, v in result.items() if k in HISTOGRAMS})
-        run.log(
-            logged,
-            step=step,
-            commit=True,  # publish now; otherwise wandb holds a step until a later one arrives
-        )
-        with results_path.open("a") as f:
-            f.write(json.dumps({"step": step, "label": label, **result}) + "\n")
-        print(f"[watch] {label} (step {step}): {_summary(result)} over {result['episodes']} episodes", flush=True)
-
-    print(f"[watch] {run_dir}: {int(env.num_envs)} envs, seed {seed}, results to {results_path}", flush=True)
     try:
-        return _evaluate_all(env, cfg, ckpt_dir, done, record, seed, args, run)
+        return _evaluate_all(env, cfg, ckpt_dirs, sinks, seed, args)
     finally:
-        run.finish()  # flush and close the eval run on any exit, Ctrl+C included
+        for sink in sinks:
+            sink.finish()
 
 
-def _evaluate_all(env, cfg, ckpt_dir, done, record, seed, args, run) -> int:
+def _evaluate_all(env, cfg, ckpt_dirs: Sequence[Path], sinks: Sequence[_AgentSink], seed: int, args) -> int:
     import torch
 
     from robonuke_rl_core.evaluation import build_eval_policy
 
     total = int(cfg.trainer.total_timesteps)
-    if 0 not in done and not getattr(args, "skip_base", False):
-        # the base alone: a residual of exactly zero, no checkpoint needed
+    num_agents = len(sinks)
+    num_rollouts = int(cfg.eval.num_rollouts)
+
+    def record_all(step: int, label: str, results: Sequence[Dict[str, Any]]) -> None:
+        for sink, result in zip(sinks, results):
+            if step not in sink.done:
+                sink.record(step, label, result)
+
+    if any(0 not in sink.done for sink in sinks) and not getattr(args, "skip_base", False):
+        # the base alone: a residual of exactly zero, no checkpoint needed; the same policy for every agent
         width = int(env.action_space.shape[-1])
         zero = lambda observations, states: torch.zeros((observations.shape[0], width), device=observations.device)
-        record(0, "base only", evaluate(env, zero, seed, "base only", int(cfg.eval.num_rollouts)))
-        done.add(0)
+        record_all(0, "base only", evaluate_agents(env, zero, seed, "base only", num_rollouts, num_agents))
 
     policy = learner = None
     waiting = False
     if args.steps is not None:
-        on_disk = _numbered_checkpoints(ckpt_dir)
+        on_disk = set.intersection(*(set(_numbered_checkpoints(d)) for d in ckpt_dirs))
         missing = [s for s in args.steps if s not in on_disk]
         if missing:
-            raise FileNotFoundError(f"--steps {missing}: no settled checkpoint in {ckpt_dir} (have {sorted(on_disk)})")
+            raise FileNotFoundError(
+                f"--steps {missing}: no settled checkpoint of every agent in {[str(d) for d in ckpt_dirs]} "
+                f"(have {sorted(on_disk)})"
+            )
     while True:
-        pending = sorted((s, p) for s, p in _numbered_checkpoints(ckpt_dir).items() if s not in done)
+        pending = pending_steps(ckpt_dirs, [sink.done for sink in sinks])
         if args.steps is not None:
-            pending = [(s, p) for s, p in pending if s in args.steps]
+            pending = [s for s in pending if s in args.steps]
             if not pending:
                 print("[watch] --steps: every requested checkpoint evaluated", flush=True)
                 return 0
@@ -565,18 +729,22 @@ def _evaluate_all(env, cfg, ckpt_dir, done, record, seed, args, run) -> int:
             return 0
         if not pending:
             if not waiting:
-                print(f"[watch] waiting for new checkpoints in {ckpt_dir}", flush=True)
+                print(f"[watch] waiting for new checkpoints in {', '.join(str(d) for d in ckpt_dirs)}", flush=True)
                 waiting = True
             time.sleep(args.poll_seconds)
             continue
         waiting = False
-        if policy is None:
-            policy, learner, _ = build_eval_policy(cfg, env, pending[0][1], deterministic=not args.stochastic)
-        for step, path in pending:
-            learner.load_agent(path, slot=0, with_optimizer=False)
+        for step in pending:
+            name = f"ckpt_{step}.ckpt"
+            paths = [Path(d) / name for d in ckpt_dirs]
+            if policy is None:
+                policy, learner, _ = build_eval_policy(
+                    cfg, env, paths[0], deterministic=not args.stochastic, num_agents=num_agents
+                )
+            for slot, path in enumerate(paths):
+                learner.load_agent(path, slot=slot, with_optimizer=False)
             learner.enable_training_mode(False)
-            record(step, path.name, evaluate(env, policy, seed, path.name, int(cfg.eval.num_rollouts)))
-            done.add(step)
+            record_all(step, name, evaluate_agents(env, policy, seed, name, num_rollouts, num_agents))
             if step >= total - 1:
                 print("[watch] reached the run's last checkpoint", flush=True)
                 return 0
@@ -673,7 +841,7 @@ def probe_main(argv=None, setup=None) -> int:
         if setup is not None:
             setup()
         import gymnasium as gym
-        
+
         from robonuke_rl_core.config import load_from_run
         from robonuke_rl_core.envs.build import build_env, prepare_task, wrap_for_skrl
         from robonuke_rl_core.evaluation import SINGLE_AGENT_OVERRIDE, resolved_config_path

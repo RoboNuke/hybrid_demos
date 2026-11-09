@@ -95,10 +95,44 @@ def test_skip_base_leaves_out_the_base_alone_round(monkeypatch, tmp_path):
                         lambda env, policy, seed, label, episodes=None: calls.append(label) or {"success_rate": 0.0})
     env = SimpleNamespace(action_space=SimpleNamespace(shape=(1, 28)))
     cfg = SimpleNamespace(trainer=SimpleNamespace(total_timesteps=10), eval=SimpleNamespace(num_rollouts=4))
-    recorded = []
-    record = lambda step, label, result: recorded.append(step)  # noqa: E731
+
+    class Sink:
+        def __init__(self):
+            self.done, self.recorded = set(), []
+
+        def record(self, step, label, result):
+            self.recorded.append(step)
+            self.done.add(step)
+
     for skip, expected in ((True, []), (False, [0])):
-        recorded.clear()
+        sink = Sink()
         args = SimpleNamespace(steps=[], once=False, poll_seconds=0.0, stochastic=False, skip_base=skip)
-        residual_eval._evaluate_all(env, cfg, tmp_path, set(), record, 0, args, None)
-        assert recorded == expected
+        residual_eval._evaluate_all(env, cfg, [tmp_path], [sink], 0, args)
+        assert sink.recorded == expected
+
+
+def test_the_base_alone_round_is_recorded_only_for_agents_that_lack_it(monkeypatch, tmp_path):
+    """Two agents of one run: the base-alone policy is the same for both, so it runs once; an agent that already
+    has step 0 in its results (a restarted watcher) is not written again."""
+    from types import SimpleNamespace
+
+    env = SimpleNamespace(action_space=SimpleNamespace(shape=(1, 4)))
+    cfg = SimpleNamespace(trainer=SimpleNamespace(total_timesteps=10), eval=SimpleNamespace(num_rollouts=4))
+    rounds = []
+    monkeypatch.setattr(residual_eval, "evaluate_agents",
+                        lambda env, policy, seed, label, num_rollouts, num_agents: rounds.append(label)
+                        or [{"success_rate": float(i)} for i in range(num_agents)])
+
+    class Sink:
+        def __init__(self, done):
+            self.done, self.recorded = set(done), []
+
+        def record(self, step, label, result):
+            self.recorded.append((step, result["success_rate"]))
+            self.done.add(step)
+
+    fresh, resumed = Sink(()), Sink((0,))
+    args = SimpleNamespace(steps=[], once=False, poll_seconds=0.0, stochastic=False, skip_base=False)
+    residual_eval._evaluate_all(env, cfg, [tmp_path / "a0", tmp_path / "a1"], [fresh, resumed], 0, args)
+    assert rounds == ["base only"]  # once, not per agent
+    assert fresh.recorded == [(0, 0.0)] and resumed.recorded == []  # each agent gets its own slot's result

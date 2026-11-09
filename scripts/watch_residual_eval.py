@@ -1,5 +1,7 @@
 """Evaluate a residual run's checkpoints as they appear (and its base alone, as step 0):
-delegates to :func:`my_project.residual_eval.main`.
+delegates to :func:`my_project.residual_eval.main`. ``--run`` is one agent's directory or a
+run's group directory (every agent side by side, one slot each); ``--once`` evaluates what is
+on disk and exits. On the cluster ``launchers/launch_watch.py`` submits one per training run.
 
 The ``setup`` hook runs after AppLauncher (so Isaac imports work) and before the config
 loads -- every project registration goes in there, never at module top."""

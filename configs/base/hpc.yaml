@@ -37,3 +37,7 @@ hpc:
   # carry: bound at its own path and put on PYTHONPATH after the package and the project
   extra_repos:
     - ~/hpc-share/Robonuke_Furniture_Bench
+
+  # the checkpoint watcher launchers/launch_watch.py runs, one job per training run, over the
+  # run's group directory (every agent side by side) with an eval config from configs/eval/
+  watch_script: scripts/watch_residual_eval.py
