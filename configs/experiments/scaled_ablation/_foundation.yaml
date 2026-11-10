@@ -155,6 +155,9 @@ ddpg:
   # starting point; then 10k critic-only updates at once, then the actor
   learning_starts_rows: 10000
   critic_warmup_updates: 10000
+  # until the agents start learning, every env's row in a phase goes to every agent's memory: the 10k rows arrive
+  # num_agents x sooner and the critic warm-up runs once per phase for all agents together
+  shared_warmup: true
   # r = tanh(mu) in [-1, 1] (the multiplier's whole range); the warm-up N(0, 0.05 / 0.65) about the actor's own action
   # (m = 1 at the start), the online exploration N(0, 0.025 / 0.65), both unclipped but r clamped to [-1, 1]; the
   # target smoothing with the exploration's std, clipped at 6 of it (v7's ratio)
