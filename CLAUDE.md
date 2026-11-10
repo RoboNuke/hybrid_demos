@@ -21,6 +21,10 @@ Never create a new conda env; never vendor a copy of the package into this repo.
 * Everything the project registers happens inside the entry scripts' `setup()` hook — task
   imports, `register_section`, loss/overlay/architecture imports — never at module top:
   task modules import Isaac Lab, which only works after `AppLauncher`.
+* **No host synchronization on the per-step path** (the package rule): the residual wrapper, the
+  base policy and the observation terms keep everything on the device. The base policy's one
+  read is which envs need a new chunk; the phase-label consistency check is latched on the
+  device and raised every `LABEL_CHECK_EVERY` steps (`my_project/residual.py`).
 * **Isaac Lab resets an env only through `_reset_idx`.** `env.reset()` through skrl's wrapper is
   a one-shot: after its first call it returns the cached last observation and resets nothing.
   Isaac Lab's own in-step auto-reset calls `_reset_idx` for the envs in `reset_buf`. A true reset

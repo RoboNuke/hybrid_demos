@@ -65,6 +65,8 @@ SIDE_INPUT = "residual_base"
 #: one_leg's task phases in phase/id order (furniture_lab assembly/phases.py); ids from len(PHASE_NAMES) on are an
 #: episode's end codes
 PHASE_NAMES = ("corner", "grasp", "insert", "screw")
+#: how often (env steps) the latched phase-label check is read to the host and raised on (one synchronization)
+LABEL_CHECK_EVERY = 100
 #: the residual's per-step correction sizes it logs (``residual/<name>``), split per phase when the phases are tracked
 RESIDUAL_SIZES = ("position_mm", "rot_deg", "yaw_deg", "multiplier")
 
@@ -559,6 +561,11 @@ class ResidualPolicyWrapper(gym.Wrapper):
         #: the task phase of each env's current observation, whenever the env publishes it (infos eval_state phase/id,
         #: furniture.track_phases), for the per-phase correction sizes (:meth:`_phase_metrics`); None until it has
         self.obs_phase = None
+        #: the phase-label consistency check (:meth:`_check_phase_label`), latched on the device and read every
+        #: LABEL_CHECK_EVERY steps: the envs that ever mismatched, and the labels they mismatched with
+        self._label_mismatch = None
+        self._label_mismatch_pair = None
+        self._label_checks = 0
         #: the normalized base action(s) the agent's last observation was made with (the side input), then with
         #: ee_relative_actions the raw EE pose (9) the chunk's targets are taken against
         self.side = torch.zeros((hooks.num_envs, base_width + (9 if self.ee_rel is not None else 0)), device=hooks.device)
@@ -908,10 +915,31 @@ class ResidualPolicyWrapper(gym.Wrapper):
             return
         now = torch.as_tensor(published, device=label.device).reshape(-1).round().long()
         expected = torch.where(now >= len(PHASE_NAMES), torch.zeros_like(now), now)
-        if not torch.equal(expected, label):
-            bad = torch.nonzero(expected != label).reshape(-1)[:8].tolist()
+        # the check stays on the device (torch.equal would synchronize every step); a mismatch is latched and
+        # raised, with the offending envs, at the next interval check (_phase_label_check_due)
+        mismatch = expected != label
+        if self._label_mismatch is None:
+            self._label_mismatch = mismatch
+            self._label_mismatch_pair = (expected, label, now)
+        else:
+            self._label_mismatch = self._label_mismatch | mismatch
+            self._label_mismatch_pair = (torch.where(mismatch, expected, self._label_mismatch_pair[0]),
+                                         torch.where(mismatch, label, self._label_mismatch_pair[1]),
+                                         torch.where(mismatch, now, self._label_mismatch_pair[2]))
+        self._label_checks += 1
+        if self._label_checks % LABEL_CHECK_EVERY == 0:
+            self._raise_label_mismatch()
+
+    def _raise_label_mismatch(self) -> None:
+        """Read the latched label check (one host synchronization) and fail loudly if any env ever mismatched."""
+        if self._label_mismatch is None:
+            return
+        if bool(self._label_mismatch.any()):
+            expected, label, now = self._label_mismatch_pair
+            bad = torch.nonzero(self._label_mismatch).reshape(-1)[:8].tolist()
             raise RuntimeError(f"the residual built envs {bad}'s observations with phase labels {label[bad].tolist()} but the env "
-                               f"published {now[bad].tolist()} for the learner: the two must be one source")
+                               f"published {now[bad].tolist()} for the learner: the two must be one source "
+                               f"(found within the last {LABEL_CHECK_EVERY} steps)")
 
     def _track_phase(self, infos) -> None:
         """``active_from_phase``: each env's phase at its new observation, from the env's eval_state phase/id."""

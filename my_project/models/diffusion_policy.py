@@ -267,12 +267,23 @@ class DiffusionPolicy(nn.Module):
         else:
             t = torch.full((B,), self.cfg.warm_start_timestep, device=nobs.device).long()
             naction = scheduler.add_noise(start, noise, t)
-        for k in scheduler.timesteps:
-            prediction = self.model(sample=naction, timestep=k.to(nobs.device), global_cond=nobs)
+        # the schedule's timesteps on the device once: moving each one over per iteration is a host-to-device copy,
+        # i.e. a host synchronization, per denoising step
+        timesteps = self._timesteps_on(scheduler.timesteps, nobs.device)
+        for k, k_dev in zip(scheduler.timesteps, timesteps):
+            prediction = self.model(sample=naction, timestep=k_dev, global_cond=nobs)
             naction = scheduler.step(
                 model_output=prediction, timestep=k, sample=naction, eta=self.eta
             ).prev_sample
         return naction
+
+    def _timesteps_on(self, timesteps: torch.Tensor, device) -> torch.Tensor:
+        cached = getattr(self, "_timesteps_cache", None)
+        key = (tuple(timesteps.tolist()), str(device))
+        if cached is None or cached[0] != key:
+            cached = (key, timesteps.to(device))
+            self._timesteps_cache = cached
+        return cached[1]
 
     @torch.no_grad()
     def predict_chunk(self, nobs: torch.Tensor) -> torch.Tensor:
@@ -390,11 +401,14 @@ class ChunkedBase:
             raise ValueError(f"base policy: expected obs {(self.num_envs, p.obs_dim)}, got {tuple(obs.shape)}")
         fresh = fresh.to(torch.bool).reshape(-1)
         self.history = torch.cat((self.history[:, 1:], obs.unsqueeze(1)), dim=1)
-        if bool(fresh.any()):
-            self.history[fresh] = obs[fresh].unsqueeze(1).expand(-1, p.n_obs_steps, -1)
-            self.prev_naction[fresh] = 0.0
-            self.prev_obs[fresh] = obs[fresh]
-            self.index[fresh] = p.action_horizon
+        # a fresh env's history is this observation repeated, its warm start cleared and its chunk due: written with
+        # a where for every env (asking the device whether any env is fresh would be a host synchronization)
+        fresh_rows = fresh.view(-1, 1, 1)
+        self.history = torch.where(fresh_rows, obs.unsqueeze(1).expand(-1, p.n_obs_steps, -1), self.history)
+        self.prev_naction = torch.where(fresh_rows, torch.zeros_like(self.prev_naction), self.prev_naction)
+        self.prev_obs = torch.where(fresh.view(-1, 1), obs, self.prev_obs)
+        self.index = torch.where(fresh, torch.full_like(self.index, p.action_horizon), self.index)
+        # which envs ran out of chunk is data: the one host read of the base policy's step
         need = (self.index >= p.action_horizon).nonzero(as_tuple=False).reshape(-1)
         if need.numel():
             nobs = p.normalizer.normalize(self.history[need], "obs").clamp(-p.cfg.obs_clip, p.cfg.obs_clip)
@@ -408,7 +422,7 @@ class ChunkedBase:
                 keep = p.horizon - p.action_horizon
                 self.prev_naction[need, :keep] = naction[:, p.action_horizon :]
             self.chunk[need] = p.to_env(p.normalizer.denormalize(naction, "action"), obs[need])
-            self.index[need] = 0
+            self.index.index_fill_(0, need, 0)  # a Python 0 would be copied to the device each time
         action = self.chunk[self._rows, self.index]
         self.index += 1
         return action
