@@ -20,6 +20,9 @@ task:
       # episode logs phase/passed_<corner|grasp|insert|success> (their means: the share of rollouts that got past
       # each stage), and the phase rewards (task.cfg.rewards.<corner|grasp|insert>_done, off by default) read it
       track_phases: true
+      # each physics substep's torch work (IK, gripper command, kick, wrench estimate, actuator model) as one CUDA
+      # graph between its PhysX reads and writes (furniture_lab/substep_graph.py): the step is launch-bound otherwise
+      cuda_graph: true
 
 wrappers:
   task_metrics:
