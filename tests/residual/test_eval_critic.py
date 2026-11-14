@@ -13,7 +13,7 @@ class FakeLearner:
 
     def __init__(self, n_step=1, num_agents=2):
         self.cfg = SimpleNamespace(std_label_names=["grasp", "insert", "screw"], std_by_label="eval_state/phase/id",
-                                   exploration_scale_key=None, discount_factor=0.9)
+                                   discount_factor=0.9)
         self.n = n_step
         self.num_agents = num_agents
         self.seen = []

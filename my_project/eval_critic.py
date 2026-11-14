@@ -3,7 +3,7 @@ rollouts, every learner's (each routed phase's) critics are scored on
 
 * the eval rows -- every agent step of every env's first episode in each round, built as the learner stores a
   transition in training: the env's reward, the step whose next observation is in another phase terminal (a routed
-  learner's), the critics' side inputs and the adaptive-exploration factor from the env's infos, folded into n-step rows
+  learner's), the critics' side inputs from the env's infos, folded into n-step rows
   (``n_step_rows``, each env's run in its phase one episode-ordered segment);
 * the run's demo rows -- loaded once through the run's own demo loader (``register_demo_loader``), as training loads
   them;
@@ -40,7 +40,6 @@ class CriticEval:
         for part in parts.values():
             part.init_side_inputs()
         self.side_names = sorted(getattr(learner, "_side_inputs", {}) or {})
-        self.explore_key = getattr(section, "exploration_scale_key", None)
         if any(route is not None for route in parts) and not self.label_path:
             raise ValueError("the critics' eval health of a routed run reads the phase tag: set the learner's std_by_label")
         self.demos = self._load_demos(cfg, env)
@@ -94,8 +93,6 @@ class CriticEval:
                 if value is None:
                     raise RuntimeError(f"the critics' eval health reads the side input '{stored}' from the env's infos")
                 row[stored] = col(value)
-        if self.explore_key:
-            row["next_exploration_scale"] = col(infos[self.explore_key])
         start = start_label if start_label is not None else torch.zeros(n, device=alive.device)
         nxt = self._labels(infos)
         row["start_label"] = col(start)
