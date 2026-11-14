@@ -32,7 +32,6 @@ residual:
   action_scale_fraction: 0.1
   critic_action: residual
   steps_per_chunk: 1
-  normalize_observation: true
   observe_base_action: true
 
 # a 10M-transition replay buffer (the paper; the code's default is 1M)
@@ -86,9 +85,9 @@ sac:
   noise_repeat: true
   noise_repeat_zeta_s: 2.0
   noise_repeat_max: 16
-  # no running observation normalizer (FlashSAC normalizes inside its network; the agent's observation is already the
-  # base's normalized one)
-  normalize_observations: false
+  # no input normalizer (FlashSAC normalizes inside its network). The residual's own min-max of the observation (the
+  # base's normalizer) no longer exists: the network gets the raw observation and base action
+  state_preprocessor: none
   # FlashSAC's network-side training: every Linear weight row projected back to unit length after each optimizer
   # step, and [s, a] ++ [s', a'] in one call so the BatchNorm statistics are shared by the values and their targets
   weight_normalization: true

@@ -1,9 +1,7 @@
 base: _foundation.yaml
 wandb:
-  group: exp_std_0-2
+  group: exp_std_0-1
 
-residual:
-  multiply_exploration_std: 0.1
-
+# the online exploration std in multiplier units (the foundation: 0.05)
 ddpg:
-  exploration_std: 0.04
+  exploration_std: 0.1

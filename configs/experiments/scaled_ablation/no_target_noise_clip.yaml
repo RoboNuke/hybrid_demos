@@ -3,4 +3,4 @@ wandb:
   group: no_target_noise_clip
 
 ddpg:
-  target_noise_clip: 2.0
+  target_noise_clip: 5.0

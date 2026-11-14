@@ -25,7 +25,9 @@ trainer:
 
 residual:
   enabled: true
-  multiply_reference: increment
+  action_frame: absolute
+  action_rotation: absolute
+  action_target: target
   phase_stats: data/scaled_residual_v2/phase_stats.pt
 
 ddpg:

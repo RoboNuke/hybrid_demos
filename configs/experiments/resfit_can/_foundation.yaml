@@ -14,13 +14,13 @@
 #
 # Not theirs (the diagnostic keeps our side):
 #  * the observation is low-dim (the robot state 9, then the object state 14: the can's pose, which theirs saw through
-#    two 84x84 cameras), min-max normalized as the base's (theirs standardized, std floored at 0.1);
+#    two 84x84 cameras), its normalization the model's (ddpg.state_preprocessor; theirs standardized, std floored at 0.1);
 #  * the base is our diffusion policy trained on the same 300 MH demos (theirs a LeRobot ACT, chunk 20);
-#  * the residual: r scales by 1.1 x the base's half range per dim (residual.action_scale_fraction), their action
-#    normalization's x(1 + action_scale) widening, so 0.1 r is the same move as theirs;
 #  * the critic warm-up's target-policy noise is the exploration std (theirs 0 during the warm-up);
 #  * a demo's reward is 1 on its first successful step, which ends it (theirs on robomimic's last 5-6 done frames).
-base: ../../base/robosuite_can.yaml
+base:
+  - ../../base/robosuite_can.yaml
+  - ../../methods/resfit.yaml
 
 experiment:
   seed: 42
@@ -60,50 +60,9 @@ eval:
   save_state: false
   record: false
 
+# the task's own values over the method file's (configs/methods/resfit.yaml)
 residual:
+  # the base plans every chunk cold, as the demo residuals were measured
   base_warm_start: false
-  steps_per_chunk: 1
-  # ResFiT's form: the executed action is the base's plus 1.1 x half range x r per dim, gripper included
-  action_frame: absolute
-  action_scale: null
-  action_scale_fraction: 1.1
-  normalize_observation: true
-  observe_base_action: true
-  # the actor observes the observation and the base action; the critics the observation and the executed action
-  critic_state: observation
-  critic_action: full
-
 ddpg:
-  discount_factor: 0.99
-  n_step: 3
-  batch_size: 256
-  polyak: 0.005
-  actor_lr: 1.0e-6
-  critic_lr: 1.0e-4
-  weight_decay: 0.01
-  grad_norm_clip: 1.0
-  num_critics: 10
-  critic_subset: 2
-  actor_q_reduction: mean
-  critic_loss: mean_abs_squared
-  gradient_steps: 4
-  update_every: 1
-  policy_delay: 4
-  learning_starts_rows: 10000
-  random_action_scale: 0.2
-  critic_warmup_updates: 10000
-  actor_action_scale: 0.1
-  exploration_std: 0.05
-  target_actor: true
-  target_policy_noise: true
-  target_noise_clip: 0.3
-  action_clip: 1.0
-  # timeouts end the target as a termination does (theirs: done = terminated | truncated)
-  bootstrap_time_limits: false
-  normalize_observations: false
-  route_labels: []
-  route_clock: false
   cuda_graph: true
-
-memory:
-  memory_size: 200000

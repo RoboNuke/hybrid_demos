@@ -1,0 +1,19 @@
+base: _foundation.yaml
+wandb:
+  group: add_chain
+
+# the foundation's chained target with the base's increment plus a correction instead of times a multiplier:
+# step = d + scale * r per dim, r in [-1, 1] (0, the base's own trajectory, at the start). The scales and the noise
+# below are starting values, not tuned: 1 cm and 5 deg per unit r per step, which add up along the chain until the base
+# replans
+residual:
+  combine: add
+  step_scale_pos: 0.01
+  step_scale_rot_deg: 5.0
+ddpg:
+  action_range:
+    - -1.0
+    - 1.0
+  random_action_scale: 0.2
+  exploration_std: 0.05
+  target_noise_clip: 0.15

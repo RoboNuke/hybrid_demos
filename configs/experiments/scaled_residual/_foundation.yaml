@@ -1,22 +1,22 @@
 # scaled_residual (the leading _ keeps launch_train from submitting this file on its own): ResFiT_phase_v7's setup
 # (configs/experiments/ResFiT/_foundation.yaml + residual_ResFiT_phase_v7.yaml: one residual per bottleneck phase,
 # insert and screw, on the 50-demo base, each with its own observation standardization over its own demo frames)
-# with one change, the residual's mode: residual.action_frame: multiply (my_project/residual_multiply.py).
+# with one change, the residual's mode: a multiplied motion (action_space: pose, combine: multiply).
 #
-# The base's target is taken relative to the EE, in the EE's frame (position 3, axis-angle 3), and the residual
-# multiplies it per dim by m in [multiply_min, multiply_max] = [-0.05, 1.25] (r = -1 / 1 of the actor's tanh); the sent
-# target is m * d composed back on the EE, the gripper the base's. So the correction scales with the base's own step and
+# The base's target is taken relative to the EE, in the EE's frame and axes (action_frame / action_rotation relative,
+# position 3, axis-angle 3), and the residual multiplies it per dim by r in ddpg.action_range [-0.05, 1.25]; the sent
+# target is r * d taken back out of the EE frame, the gripper the base's. The versions from v2 on use the chained target
+# instead (action_target: target, the base's increment in the robot-base frame). So the correction scales with the base's own step and
 # needs no action scale: v7's per-phase median-correction scale is not used. The actor starts at m = 1 (the base's own
-# target): its output layer zero and its bias atanh(0.6154), the r whose m is 1. The agent observes the observation
+# target): its output layer zero and its bias atanh(0.6154), where mid + half tanh(bias) is 1. The agent observes the observation
 # relative to the EE (the EE's own pose dropped: residual.observation_drop [0, 9]) and the base's motion; the critics the
 # observation part and the resulting target relative to the EE. Every input raw: the learner's state_preprocessor
 # (demo: fitted once on the demo rows, then frozen) normalizes them all (since 2026-11-06; before, per-phase
 # observation stats, the base's min-max and fixed 2 cm / 0.1 rad units).
 #
-# The noise in multiplier units (residual.multiply_warmup_std 0.05, multiply_exploration_std 0.025), in r units over the
-# 0.65 multiplier per unit r: the warm-up N(0, 0.0769) about the actor's own action (ddpg.random_action_mode:
-# actor_gaussian; uniform about r = 0 would be m = 0.6), the online exploration N(0, 0.0385), the target smoothing's
-# clip 6 of its std (v7's ratio, 2.4 / 0.4), r clamped to [-1, 1].
+# The noise in multiplier units: the warm-up N(0, 0.05) about the actor's own action (ddpg.random_action_mode:
+# actor_gaussian; uniform about the range's midpoint would be r = 0.6), the online exploration N(0, 0.025), the target
+# smoothing's clip 0.15 (6 of its std, v7's ratio), r clamped to the range.
 #
 # ResFiT_phase_v7's comments on the learning (from configs/experiments/ResFiT/_foundation.yaml):
 #
@@ -94,17 +94,14 @@ residual:
   base_run_name: null
   base_warm_start: false
   steps_per_chunk: 1
-  # the residual's mode (my_project/residual_multiply.py): r multiplies the base's EE-relative pose target per dim, m in
-  # [multiply_min, multiply_max] (their defaults, -0.05 and 1.25); the gripper the base's. No action scale
-  action_frame: multiply
-  action_scale: null
-  action_scale_fraction: 1.0
-  executed_clip: null
-  # the noise in multiplier units (their defaults; ddpg's random_action_scale and exploration_std below are these over
-  # the 0.65 multiplier per unit r)
-  multiply_warmup_std: 0.05
-  multiply_exploration_std: 0.025
-  residual_gripper: true
+  # the residual's mode: r multiplies the base's EE-relative pose target per dim (EE frame and axes, axis-angle); the
+  # observation relative to the EE; the gripper the base's. No action scale
+  action_space: pose
+  action_frame: relative
+  action_rotation: relative
+  observation_frame: relative
+  observation_rotation: relative
+  combine: multiply
   observe_base_action: true
   # the actor observes the observation and the base's motion; the critics the observation and the resulting target
   # relative to the EE
@@ -146,17 +143,18 @@ ddpg:
   # starting point; then 10k critic-only updates at once, then the actor
   learning_starts_rows: 10000
   critic_warmup_updates: 10000
-  # r = tanh(mu) in [-1, 1] (the multiplier's whole range); the warm-up N(0, 0.05 / 0.65) about the actor's own action
-  # (m = 1 at the start), the online exploration N(0, 0.025 / 0.65), both unclipped but r clamped to [-1, 1]; the
-  # target smoothing with the exploration's std, clipped at 6 of it (v7's ratio)
-  actor_action_scale: 1.0
+  # r = the multiplier, 0.6 + 0.65 tanh(mu) in [-0.05, 1.25]; the warm-up N(0, 0.05) about the actor's own action (r =
+  # 1 at the start), the online exploration N(0, 0.025), both unclipped but r clamped to the range; the target smoothing
+  # with the exploration's std, clipped at 0.15 (6 of it, v7's ratio)
+  action_range:
+    - -0.05
+    - 1.25
   random_action_mode: actor_gaussian
-  random_action_scale: 0.07692307692307693
-  exploration_std: 0.038461538461538464
+  random_action_scale: 0.05
+  exploration_std: 0.025
   target_actor: true
   target_policy_noise: true
-  target_noise_clip: 0.23076923076923078
-  action_clip: 1.0
+  target_noise_clip: 0.15
   # half of every batch from the phase's demos -- raw demo episodes (scripts/make_raw_demos.py) turned into each phase's
   # transitions when the learner loads them (my_project/demo_loader.py: each frame's multiplier, the demo's motion over
   # the base's per dim) -- the actor on the same batch; each version sets its file
@@ -201,7 +199,7 @@ memory:
   memory_size: 300000
 
 # 2 x 1024 ReLU MLPs with LayerNorm, PyTorch's default init; the actor's last layer zero and its bias atanh(0.6154): r
-# = 0.6154, m = 1, the base's own target, at the start
+# = 0.6 + 0.65 x 0.6154 = 1, the base's own target, at the start
 model:
   architecture: mlp
   actor:

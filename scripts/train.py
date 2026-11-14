@@ -49,6 +49,12 @@ def setup() -> None:
 
     register_critic_action(residual_critic_action)  # residual.critic_action: full
 
+    from robonuke_rl_core.learners.sac import register_exploration_scale
+
+    from my_project.residual import residual_exploration_scale
+
+    register_exploration_scale(residual_exploration_scale)  # ddpg.exploration_std_mode: adaptive (the base's motion in r units)
+
     from robonuke_rl_core.learners.sac import register_demo_loader
 
     from my_project.demo_loader import residual_demo_loader

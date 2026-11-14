@@ -506,9 +506,22 @@ def test_the_resip_fbabs_layout_appends_the_obstacle(furniture_layout):
     assert not families.observes_obstacle("Isaac-Furniture-OneLeg-FBAbs-v0")
 
 
-def test_the_accumulating_target_residual_offsets_persist_until_the_base_replans(monkeypatch):
-    """residual.target_accumulate: a constant r adds up step after step on the base's targets, the offset is observed
-    (agent and critics, 6 more columns) and carried in the side input, and it starts over when the base replans."""
+class FakePoseAbsEnv(FakeAbsEnv):
+    """FakeAbsEnv whose observation holds a valid EE pose (0.5 m forward, identity orientation): the pose residual
+    reads the EE."""
+
+    def __init__(self):
+        super().__init__()
+        obs = torch.zeros(2, 61)
+        obs[:, 0] = 0.5
+        obs[:, 3], obs[:, 7] = 1.0, 1.0  # rot6d of the identity
+        self.observation_manager = SimpleNamespace(compute=lambda update_history=False: {"policy": obs.clone()})
+
+
+def test_the_chained_additive_target_persists_until_the_base_replans(monkeypatch):
+    """action_space: pose, combine: add, action_target: target: a constant r adds up step after step on the base's
+    targets (the chained target starts at the EE at each chunk start and follows the base's increments), the current
+    target joins the agent's and the critics' observation, and the chain starts over when the base replans."""
     from my_project import residual as residual_mod
     from my_project.models.cfg import DiffusionUnetActorCfg
     from my_project.models.diffusion_policy import DiffusionPolicy
@@ -522,21 +535,21 @@ def test_the_accumulating_target_residual_offsets_persist_until_the_base_replans
     monkeypatch.setattr(residual_mod, "load_base_policy", lambda *a, **k: policy.eval())
     cfg = SimpleNamespace(
         task_name="Isaac-Furniture-OneLeg-FBAbs-ResiP-v0",
-        residual=ResidualCfg(base_run="r", base_checkpoint="c", action_frame="target", target_axes="base", target_rotation="euler",
-                             residual_gripper=False, critic_state="observation", critic_action="full", target_accumulate=True,
-                             target_pos_scale=[0.02, 0.02, 0.02], target_rot_scale_deg=[6.0, 6.0, 6.0]),
+        residual=ResidualCfg(base_run="r", base_checkpoint="c", action_space="pose", combine="add", action_target="target",
+                             rotation_param="euler", critic_state="observation", critic_action="full", step_scale_pos=0.02,
+                             step_scale_rot_deg=6.0),
         hybrid=SimpleNamespace(extra_dims=0, enabled=False),
     )
-    env = residual_mod.ResidualPolicyWrapper(FakeAbsEnv(), cfg)
+    env = residual_mod.ResidualPolicyWrapper(FakePoseAbsEnv(), cfg)
     obs, _ = env.reset()
-    assert obs["policy"].shape == (2, 61 + 10 + 6) and obs["critic"].shape == (2, 61 + 6)
-    assert env.side.shape == (2, 16) and torch.all(obs["policy"][:, -6:] == 0)
+    assert obs["policy"].shape == (2, 61 + 7 + 6) and obs["critic"].shape == (2, 61 + 6)
+    assert env.side.shape == (2, 35)
     r = torch.zeros(2, 6)
-    r[:, 0] = 1.0  # +2 cm along x every step
+    r[:, 0] = 1.0  # +2 cm along the robot base's x every step
     offsets = []
     for _ in range(6):
         base = env.base_action.clone()
         env.step(r)
         offsets.append(float((env.env.sent[0, 0] - base[0, 0]) * 1000))
-    # steps 1-4 add up within the base's 4-step chunk; the replan at step 5 starts the offset over
+    # steps 1-4 add up within the base's 4-step chunk; the replan at step 5 starts the chain over at the EE
     assert offsets == pytest.approx([20.0, 40.0, 60.0, 80.0, 20.0, 40.0], abs=1e-3)

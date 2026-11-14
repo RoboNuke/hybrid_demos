@@ -36,22 +36,3 @@ ddpg:
   demo_sampling_end: 1000000000
   demo_batch_shared: true
   save_memory_with_checkpoints: true
-
-# 2 x 1024 ReLU MLPs with LayerNorm (ResFiT's actor and critic heads), PyTorch's default init, the actor's last layer
-# zero (r = 0 at the start)
-model:
-  architecture: mlp
-  actor:
-    hidden_size: 1024
-    num_layers: 2
-    activation: ReLU
-    layer_norm: true
-    init: default
-    output_init_scale: 0.0
-    squash: true
-  critic:
-    hidden_size: 1024
-    num_layers: 2
-    activation: ReLU
-    layer_norm: true
-    init: default

@@ -25,10 +25,11 @@ trainer:
 
 residual:
   enabled: true
-  multiply_reference: increment
+  action_frame: absolute
+  action_rotation: absolute
+  action_target: target
   # the warm-up N(0, 0.2) in multiplier units about the actor's own action (m = 1 at the start)
-  multiply_warmup_std: 0.2
 
 ddpg:
-  random_action_scale: 0.3076923076923077
+  random_action_scale: 0.2
   demo_transitions: data/scaled_residual_v3/raw_demos.pt

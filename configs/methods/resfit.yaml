@@ -1,0 +1,85 @@
+# ResFiT (Ankile et al. 2025, arXiv:2509.19301; code github.com/amazon-far/residual-offpolicy-rl, commit 66262b0) as a
+# method: its residual, learner, memory and networks, no task. A foundation chains it after a task file,
+#   base: [../../base/<task>.yaml, ../../methods/resfit.yaml]
+# and sets only the task's own values (the paper run's per-task settings, routes, demo file, base run).
+#
+# The values are the code's defaults (ResidualTD3 config, the Can run). Per task the paper runs change action_scale
+# (0.2: action_range [-0.2, 0.2] with action_scale_fraction / executed_clip 1.2), discount and n-step (0.995, 5),
+# the memory (300k) and the actor's learning rate.
+#
+# Half of every batch comes from the demos, the actor on the same mixed batch: that window goes with the task's demo file,
+# in the launch config (demo_transitions, demo_storage: sample, demo_sampling_start: 0, demo_sampling_end: 1000000000,
+# demo_batch_shared: true).
+#
+# Not here, on purpose: the input normalization (theirs standardizes with the demos' mean and std, the std floored at
+# 0.1) is the model's choice (ddpg.state_preprocessor); images (theirs) vs states (ours).
+
+# the residual: ResFiT's ActionScaler and residual env wrapper. The executed action is the base's plus
+# action_scale_fraction x max(demo half range, 0.05) x r per action dim (their 1 + action_scale widening of the min-max
+# range with the 0.1 min_action_range floor), clamped to the widened range (their unscale clamp); the actor sees the
+# observation and the base action, the critics the observation and the executed action
+residual:
+  action_space: per_dim
+  action_scale: null
+  action_scale_fraction: 1.1
+  action_half_range_floor: 0.05
+  executed_clip: 1.1
+  observe_base_action: true
+  critic_state: observation
+  critic_action: full
+trainer:
+  learner: ddpg
+ddpg:
+  discount_factor: 0.99
+  n_step: 3
+  batch_size: 256
+  polyak: 0.005
+  # AdamW, weight decay 0.01, gradient norm clipped at 1
+  actor_lr: 1.0e-6
+  critic_lr: 1.0e-4
+  weight_decay: 0.01
+  grad_norm_clip: 1.0
+  # 10 critics (REDQ): the target's min over a random 2, the actor on their mean; the loss (mean_k |Q_k - y|)^2
+  num_critics: 10
+  critic_subset: 2
+  actor_q_reduction: mean
+  critic_loss: mean_abs_squared
+  # 4 critic updates per env step, the actor on the 4th
+  gradient_steps: 4
+  update_every: 1
+  policy_delay: 4
+  # 10k env steps of the base plus uniform +-0.2 residuals before learning, then 10k critic-only updates
+  learning_starts_rows: 10000
+  random_action_scale: 0.2
+  critic_warmup_updates: 10000
+  # the residual action_scale x tanh(mu) (action_scale 0.1), exploration N(0, 0.05) unclipped, TD3 target smoothing
+  # with the same std clipped at 0.3; r itself unclamped (the clamp is on the executed action, executed_clip)
+  action_range:
+    - -0.1
+    - 0.1
+  clip_actions: false
+  exploration_std: 0.05
+  target_actor: true
+  target_policy_noise: true
+  target_noise_clip: 0.3
+  # time-outs end the target as a termination does (theirs: done = terminated | truncated)
+  bootstrap_time_limits: false
+memory:
+  memory_size: 200000
+# 2 x 1024 ReLU MLPs with LayerNorm, PyTorch's default init; the actor's last layer zero (r = 0 at the start)
+model:
+  architecture: mlp
+  actor:
+    hidden_size: 1024
+    num_layers: 2
+    activation: ReLU
+    layer_norm: true
+    init: default
+    output_init_scale: 0.0
+    squash: true
+  critic:
+    hidden_size: 1024
+    num_layers: 2
+    activation: ReLU
+    layer_norm: true
+    init: default

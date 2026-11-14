@@ -19,7 +19,7 @@ def _policy(action_min, action_max, obs_min, obs_max):
 
 
 def _rc(**over):
-    rc = dict(action_scale=None, action_scale_fraction=1.2, action_half_range_floor=None, action_frame="absolute", executed_clip=None)
+    rc = dict(action_scale=None, action_scale_fraction=1.2, action_half_range_floor=None, action_space="per_dim", executed_clip=None)
     rc.update(over)
     return SimpleNamespace(**rc)
 

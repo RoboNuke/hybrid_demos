@@ -4,7 +4,7 @@ config, for the file's ``meta["fingerprint"]``).
 
     python scripts/make_robosuite_demos.py --config configs/experiments/resfit_can/residual_resfit_can.yaml
 
-For the residual ``action_frame: absolute`` with ``critic_state: observation`` and ``critic_action: full`` (ResFiT's
+For the residual ``action_space: per_dim`` with ``critic_state: observation`` and ``critic_action: full`` (ResFiT's
 form: the executed action is the base's plus ``scale * r``, the critics see the observation and the executed action):
 every demo frame ``t`` from 0 up to its ``success_frame`` (the step that put the can in its bin) becomes one transition:
 
@@ -123,9 +123,9 @@ def _build(args) -> int:
     rc, section = cfg.residual, q_section(cfg)
     if family_of(cfg.task_name) != ROBOSUITE:
         raise ValueError(f"{args.config}: task {cfg.task_name!r} is not a robosuite task")
-    if not (rc.enabled and rc.action_frame == "absolute" and rc.critic_state == "observation" and rc.critic_action == "full"
+    if not (rc.enabled and rc.action_space == "per_dim" and rc.critic_state == "observation" and rc.critic_action == "full"
             and int(rc.steps_per_chunk) == 1 and not rc.observation_drop):
-        raise ValueError("these demos are for residual.action_frame: absolute, critic_state: observation, critic_action: full, "
+        raise ValueError("these demos are for residual.action_space: per_dim, critic_state: observation, critic_action: full, "
                          "steps_per_chunk 1, no observation_drop")
     if getattr(section, "route_labels", None):
         raise ValueError("these demos are for one residual over the whole task (no route_labels)")

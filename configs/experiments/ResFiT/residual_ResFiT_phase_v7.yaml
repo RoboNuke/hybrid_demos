@@ -39,32 +39,12 @@ residual:
   base_run: runs/hybrid_demo_furniture/obs-fix_true-jacobian_50demos/obs-fix_true-jacobian_50demos_a0
   base_project: null
   base_run_name: null
-  # the executed action is the base's plus scale x r per dim, no accumulation, no clamp; the scale and the observation
-  # standardization per routed phase (insert, screw), from that phase's demo frames: one unit of r is the phase's median
-  # demo correction |a_demo - a_base| on each dim (0 where the demos never correct it: the gripper)
-  action_frame: absolute
   action_scale: null
   executed_clip: null
+  action_half_range_floor: null
   phase_scales: true
   phase_stats: data/ResFiT_phase_v7/phase_stats.pt
   action_scale_source: median_correction
-  residual_gripper: true
-  # the foundation's target-frame fields back to their defaults (the absolute frame has none)
-  target_axes: target
-  target_rotation: rotvec
-  target_scale_from_base: false
-  target_pos_scale: null
-  target_rot_scale_deg: null
-  target_accumulate: false
-  # ResFiT's StateStandardizer for the residual's observation inputs (v3's), the foundation's min-max floors off
-  observation_normalization: standardize
-  observation_std_floor: 0.1
-  observation_floors:
-    pos: null
-    rot6d: null
-    lin_vel: null
-    ang_vel: null
-    finger_width: null
 
 ddpg:
   # timeouts end the target as a termination does (ResFiT's done = terminated | truncated; Coffee v2's)
@@ -78,12 +58,14 @@ ddpg:
   # r is in multiples of the phase's median demo correction on every dim (residual.action_scale_source). The reach 5
   # covers 80-98% of insert's corrections per dim and 83-97% of screw's; exploration N(0, 0.4): a typical draw 0.27x the
   # median correction; the warm-up uniform +-0.8 of it
-  actor_action_scale: 5.0
+  action_range:
+    - -5.0
+    - 5.0
   exploration_std: 0.4
   random_action_scale: 0.8
-  # every r clamped to +-6 (the reach plus 3 noise std; the default 1 would cut the reach to 1), the target policy's
-  # smoothing noise clipped at 2.4 (ResFiT's 6 x its std)
-  action_clip: 6.0
+  # r unclamped (it was clamped at +-6, the reach plus 3 noise std, before the clamp became the range's own), the target
+  # policy's smoothing noise clipped at 2.4 (ResFiT's 6 x its std)
+  clip_actions: false
   target_noise_clip: 2.4
   # each phase's demo residuals, in its own phase's units (scripts/make_phase_demos.py)
   demo_transitions: data/ResFiT_phase_v7/demos_{route}.pt

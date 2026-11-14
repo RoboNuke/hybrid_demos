@@ -16,7 +16,7 @@ frame's next state was never recorded):
 * **states** / **next_states**: the residual wrapper's critic state
   (:func:`~my_project.residual.critic_state`): the recorded critic state (``observation.critic``)
   or, for an env without a critic group (FurnitureBench), the base's observation, then the base action,
-  the EE offset (``accumulate``) and the history, all raw (the learner's ``state_preprocessor`` normalizes
+  and the history, all raw (the learner's ``state_preprocessor`` normalizes
   them), whatever ``residual.observe_base_action`` makes of the agent's observation. At its default (and no
   critic group) ``states`` equals ``observations``. The file records the
   layout (``meta["critic_state_format"]``, :data:`CRITIC_STATE_FORMAT`); an older one is refused.
@@ -727,14 +727,10 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
                 raise ValueError(f"task.cfg.state_order must hold {name}: the reward needs the hole's base pose, from the recorded critic state")
     scale = residual_scale(policy, cfg.residual.action_scale, cfg.residual.action_scale_fraction).to(device)
     n, longest = len(frames), max(f["state"].shape[0] for f in frames)
-    ee = None
-    if rc.action_frame == "ee":  # the EE-frame correction (my_project/residual_ee.py) that reproduces the demo
-        from my_project.residual_ee import EEResidual, WIDTH, ee_rotation
-
-        ee = EEResidual(rc.ee_pos_scale, rc.ee_rot_scale_deg, rc.accumulate, policy.action_horizon)
-        offset_pos, offset_rot = ee.identity(n, device)
-        ee_actions = []
-    width = WIDTH if ee is not None else scale.numel()
+    if rc.action_space != "per_dim":
+        raise ValueError("scripts/make_demo_transitions.py builds the per_dim residual's transitions; a pose residual's demos "
+                         "are raw episodes converted at load (scripts/make_raw_demos.py, my_project/demo_loader.py)")
+    width = scale.numel()
 
     # the base on every demo at once, each on its own chunk clock from its first frame; a
     # finished demo keeps repeating its last frame (its outputs are not used)
@@ -749,24 +745,10 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
         obs = torch.stack([f["state"][min(t, f["state"].shape[0] - 1)] for f in frames])
         critic = torch.stack([f["critic"][min(t, f["critic"].shape[0] - 1)] for f in frames]) if critic_group else None
         fresh = torch.full((n,), t == 0, dtype=torch.bool, device=device)
-        # the demos whose base starts a new chunk this step, as the env wrapper reads it (residual.accumulate)
-        new_chunk = fresh | (base.index >= policy.action_horizon) if ee is not None and ee.accumulate else None
         a_base = base.actions(obs, fresh)
         policy_part, _ = residual_observation(obs, a_base, rc.observe_base_action)
         # the critic state, as the env wrapper builds it whatever the agent observes (residual.critic_state), raw
         state_part = critic_state(obs, a_base, critic)
-        if ee is not None:
-            R_ee = ee_rotation(obs)
-            if ee.accumulate:  # the offset before this step: zero when the base re-plans
-                zero_o, eye = ee.identity(1, device)
-                offset_pos = torch.where(new_chunk[:, None], zero_o, offset_pos)
-                offset_rot = torch.where(new_chunk[:, None, None], eye, offset_rot)
-                offset = ee.offset_obs(R_ee, offset_pos, offset_rot)
-                policy_part = torch.cat((policy_part, offset), dim=-1)
-                state_part = torch.cat((state_part, offset), dim=-1)
-            a_demo = torch.stack([f["action"][min(t, f["action"].shape[0] - 1)] for f in frames])
-            r, offset_pos, offset_rot = ee.invert(a_base, a_demo, R_ee, offset_pos, offset_rot)
-            ee_actions.append(r)
         if history is not None:
             past = history.step(policy_part, fresh)
             policy_part = torch.cat((policy_part, past), dim=-1)
@@ -783,10 +765,7 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
     for e, f in enumerate(frames):
         steps = f["transitions"]  # transitions t -> t+1
         now, nxt = slice(0, steps), slice(1, steps + 1)
-        if ee is not None:
-            residual = torch.stack([ee_actions[t][e] for t in range(steps)])
-        else:
-            residual = (f["action"][now] - torch.stack([base_actions[t][e] for t in range(steps)])) / scale
+        residual = (f["action"][now] - torch.stack([base_actions[t][e] for t in range(steps)])) / scale
         beyond = residual.abs() > 1.0
         beyond_dims += beyond.float().sum(dim=0)
         beyond_rows += int(beyond.any(dim=-1).sum())
@@ -854,7 +833,7 @@ def convert(cfg: Any, policy, episodes: List[dict], frames: List[dict], device):
         "max_abs_action": (
             transitions["actions"][:, :width].abs().amax(dim=0).tolist() if kept_rows else [0.0] * width
         ),
-        "residual_scale": scale.tolist() if ee is None else [cfg.residual.ee_pos_scale] * 3 + [cfg.residual.ee_rot_scale_deg] * 3,
+        "residual_scale": scale.tolist(),
         "rows_after_env_success": sum(p["rows_after_env_success"] for p in per_episode),
         # each demo's per-step offline reward, for --check_in_sim
         "rewards_by_episode": [p["rewards"] for p in per_episode],

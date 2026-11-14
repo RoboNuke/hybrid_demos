@@ -133,14 +133,14 @@ def test_the_resip_ppo_replica_is_resips_residual_recipe_on_our_base():
     assert (c["ppo.rollouts"], c["ppo.learning_epochs"], c["ppo.mini_batches"], c["ppo.discount_factor"], c["ppo.gae_lambda"]) == (700, 50, 1, 0.999, 0.95)
     assert (c["ppo.kl_threshold"], c["ppo.grad_norm_clip"], c["ppo.policy_lr"], c["ppo.value_lr"], c["ppo.value_clip"]) == (0.1, 1.0, 3.0e-4, 5.0e-3, 0.0)
     assert c["ppo.normalize_rewards"] is True and c["ppo.reward_clip"] == 5.0 and c["ppo.normalize_values"] is False
-    assert c["ppo.reset_every_iteration"] is True and c["ppo.time_limit_bootstrap"] is False and c["ppo.normalize_observations"] is False
+    assert c["ppo.reset_every_iteration"] is True and c["ppo.time_limit_bootstrap"] is False and c["ppo.state_preprocessor"] == "none"
     assert (c["ppo.lr_schedule"], c["ppo.policy_lr_warmup"], c["ppo.value_lr_warmup"]) == ("cosine", 5, 0)
     assert (c["model.actor.hidden_size"], c["model.actor.num_layers"], c["model.actor.activation"]) == (512, 2, "SiLU")
     assert c["model.actor.init_log_std"] == -1.0 and c["model.actor.learn_std"] is False and c["model.actor.squash"] is False
     assert c["model.actor.output_init_scale"] == 0.01 and (c["model.critic.hidden_size"], c["model.critic.activation"]) == (512, "SiLU")
     assert c["task.cfg.scene.num_envs"] == 1024 and c["task.cfg.episode_length_s"] == 70.0
     assert c["trainer.total_timesteps"] % c["ppo.rollouts"] == 0 and c["trainer.checkpoint_interval"] == 5 * c["ppo.rollouts"]
-    assert c["residual.steps_per_chunk"] == 1 and c["residual.normalize_observation"] is True and c["residual.observe_base_action"] is True
+    assert c["residual.steps_per_chunk"] == 1 and "residual.normalize_observation" not in c and c["residual.observe_base_action"] is True
     assert c["residual.action_scale_fraction"] == 0.1 and c["residual.critic_action"] == "residual"
     assert c.get("history.enabled", False) is False
 
@@ -367,3 +367,59 @@ def test_residual_flash_sac_v12_is_v11_with_a_learned_std_and_the_foundations_en
                        "model.actor.fixed_std", "model.actor.init_std"}
     assert (v12["sac.learn_entropy"], v12["sac.initial_entropy_value"], v12["sac.backup_entropy"]) == (True, 0.01, True)
     assert "model.actor.fixed_std" not in v12 and v12["model.actor.init_std"] == 0.36788
+
+
+# ------------------------------------------------------------------ every experiment config loads
+#: launch configs known not to validate, and why (left as they are, not guessed at)
+KNOWN_BROKEN = {
+    "scaled_residual/residual_scaled_residual.yaml":
+        "ddpg.state_preprocessor: demo (its foundation's, added after this file) with no demo file of its own",
+}
+
+
+def _sections(path: Path):
+    """``{name: section object}`` of the learner and residual sections the file's chain sets, merged onto their
+    dataclasses (unknown keys raise)."""
+    from robonuke_rl_core.learners.cfg import DDPGCfg, PPOCfg
+
+    merged = OmegaConf.merge(*[layer for _, layer in load_file_chain(path)])
+    out = {}
+    for name, cls in (("residual", ResidualCfg), ("ddpg", DDPGCfg), ("sac", SACCfg), ("ppo", PPOCfg)):
+        if name in merged:
+            out[name] = OmegaConf.to_object(OmegaConf.merge(OmegaConf.structured(cls), merged[name]))
+    return out
+
+
+EXPERIMENT_FILES = sorted(p for p in (CONFIGS / "experiments").rglob("*.yaml"))
+
+
+@pytest.mark.parametrize("path", EXPERIMENT_FILES, ids=lambda p: str(p.relative_to(CONFIGS / "experiments")))
+def test_every_experiment_config_sets_only_known_fields_and_every_launch_config_validates(path):
+    """A stale field (one a refactor removed) fails here, not on the cluster: every file's chain merges onto the section
+    dataclasses; every launch config (no leading _) also passes the sections' validate. Foundations are partial by
+    design (a demo file, a base run set by the launch), so they are checked for their keys only."""
+    rel = str(path.relative_to(CONFIGS / "experiments"))
+    if rel in KNOWN_BROKEN:
+        pytest.xfail(KNOWN_BROKEN[rel])
+    sections = _sections(path)
+    if path.name.startswith("_"):
+        return
+    for name, section in sections.items():
+        if name != "ppo":  # PPO's checks read the whole config (env counts): its keys are checked above
+            section.validate(None)
+
+
+def test_a_method_file_adds_onto_a_task_file_through_a_list_base():
+    """configs/methods/resfit.yaml is ResFiT with no task: the robosuite and one_leg foundations chain it after their task
+    file and keep only the task's own values."""
+    from robonuke_rl_core.configfile import chain
+
+    for folder, task in (("resfit_can", "robosuite_can.yaml"), ("ResFiT", "fb_one_leg.yaml")):
+        files = [p.name for p in chain(CONFIGS / "experiments" / folder / "_foundation.yaml")]
+        assert files[-3:] == [task, "resfit.yaml", "_foundation.yaml"]
+    can = leaves(merged(CONFIGS / "experiments" / "resfit_can" / "residual_resfit_can.yaml"))
+    one_leg = leaves(merged(CONFIGS / "experiments" / "ResFiT" / "residual_ResFiT.yaml"))
+    for key in ("residual.action_space", "residual.action_scale_fraction", "residual.action_half_range_floor",
+                "residual.executed_clip", "ddpg.action_range", "ddpg.num_critics", "ddpg.critic_subset", "ddpg.policy_delay"):
+        assert can[key] == one_leg[key], key  # the same method on two tasks
+    assert can["residual.action_space"] == "per_dim" and can["ddpg.action_range"] == [-0.1, 0.1]

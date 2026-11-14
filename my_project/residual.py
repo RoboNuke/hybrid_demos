@@ -37,9 +37,11 @@ run every env step, as they must for the base's per-step actions.
 
 ``residual/*`` per-env metrics report the size of the correction (per sub-step means in a chunk).
 
-``residual.action_frame: multiply`` (``my_project/residual_multiply.py``): the agent's ``r`` multiplies the base's target
-taken relative to the EE, per pose dim, and the agent observes that relative target and the observation relative to the
-EE (each routed phase standardized over its own demo frames, ``residual.phase_scales``).
+``residual.action_space``: ``per_dim`` (above: ``scale * r`` added per action dim, any task) or ``pose``
+(``my_project/pose_residual.py``, furniture absolute targets): ``r`` acts on the base's target expressed in a chosen
+frame, rotation convention and parametrisation, added or multiplied, optionally through a chained target; the agent
+observes the observation re-expressed in its own frame, the base's motion and -- with a target -- the current target.
+The action map lives in ``my_project/action_spaces.py``, shared with the demo loader.
 """
 
 from __future__ import annotations
@@ -52,9 +54,9 @@ import torch
 
 __all__ = [
     "load_base_policy", "base_run_dir", "base_source", "override_base", "ResidualPolicyWrapper", "residual_scale",
-    "residual_observation", "critic_state", "find_residual", "full_action_transform", "target_residual", "residual_scale_and_clip",
-    "residual_critic_action",
-    "SideInputTransform", "MultiplySideInput", "SIDE_INPUT",
+    "residual_observation", "critic_state", "find_residual", "full_action_transform", "residual_scale_and_clip",
+    "residual_critic_action", "residual_exploration_scale",
+    "SideInputTransform", "PoseSideInput", "SIDE_INPUT",
 ]
 
 #: ``residual.critic_state: observation``: the per-transition side input (the learner's ``side_inputs``) the
@@ -184,7 +186,7 @@ def demo_action_range(base_dir: Any) -> Dict[str, torch.Tensor]:
 def residual_scale_and_clip(rc: Any, policy, base_dir: Any):
     """``(scale, clip)`` of the residual's action, as the config sets them: the per-dim scale (:func:`residual_scale`, or
     with ``action_half_range_floor`` ``action_scale_fraction x max(the demos' half range, floor)``) and, for
-    ``action_frame: absolute`` with ``executed_clip``, the executed action's per-dim bounds ``center +- executed_clip x
+    ``action_space: per_dim`` with ``executed_clip``, the executed action's per-dim bounds ``center +- executed_clip x
     half range`` (ResFiT clamps the combined action to its widened range), else None. The residual's inputs are never
     scaled here: the learner's ``state_preprocessor`` normalizes them."""
     scale = residual_scale(policy, rc.action_scale, rc.action_scale_fraction)
@@ -198,7 +200,7 @@ def residual_scale_and_clip(rc: Any, policy, base_dir: Any):
         center = ((stats["action_max"] + stats["action_min"]) / 2).to(device)
         scale = float(rc.action_scale_fraction) * half
     clip = None
-    if rc.action_frame == "absolute" and getattr(rc, "executed_clip", None) is not None:
+    if rc.action_space == "per_dim" and getattr(rc, "executed_clip", None) is not None:
         clip = (center - float(rc.executed_clip) * half, center + float(rc.executed_clip) * half)
     return scale, clip
 
@@ -216,29 +218,6 @@ def phase_tables(path: Any, names, routes, width: int, device: Any) -> Dict[str,
     for route in routes:
         scale[list(names).index(route)] = torch.as_tensor(stats["phases"][route]["scale"])
     return {"scale": scale.to(device), "source": stats.get("meta", {})}
-
-
-def target_residual(rc: Any, scale: torch.Tensor, normalizer, gripper: int):
-    """``residual.action_frame: target``'s map (:class:`~my_project.residual_target.TargetResidual`) as the config
-    gives it: ``scale`` the absolute frame's per-dim scale (:func:`residual_scale`; the gripper's unless
-    ``ee_grip_scale`` sets it, the position's with ``target_scale_from_base``), ``normalizer`` the base's (``executed_clip``'s bounds), ``gripper``
-    the gripper's action dim."""
-    from my_project.residual_target import TargetResidual
-
-    pos = scale[0:3].clone() if rc.target_scale_from_base else rc.ee_pos_scale
-    if getattr(rc, "target_pos_scale", None) is not None:
-        pos = torch.tensor([float(v) for v in rc.target_pos_scale], dtype=torch.float32, device=scale.device)
-    rot = rc.ee_rot_scale_deg
-    if getattr(rc, "target_rot_scale_deg", None) is not None:
-        rot = torch.tensor([float(v) for v in rc.target_rot_scale_deg], dtype=torch.float32, device=scale.device)
-    clip = None
-    if rc.executed_clip is not None:
-        center = (normalizer.action_max + normalizer.action_min) / 2
-        half = (normalizer.action_max - normalizer.action_min) / 2 * float(rc.executed_clip)
-        clip = (center - half, center + half)
-    grip = float(rc.ee_grip_scale) if getattr(rc, "ee_grip_scale", None) is not None else float(scale[gripper])
-    return TargetResidual(pos, rot, grip, axes=str(rc.target_axes),
-                          gripper=bool(rc.residual_gripper), rotation=str(rc.target_rotation), clip=clip)
 
 
 def full_action_transform(base_action_slice: slice, scale: torch.Tensor, steps_per_chunk: int = 1):
@@ -260,87 +239,44 @@ def full_action_transform(base_action_slice: slice, scale: torch.Tensor, steps_p
 
 class SideInputTransform:
     """``(critic_inputs, r, side) -> critic action`` for ``residual.critic_action: full`` with
-    ``residual.critic_state: observation``: the critics observe the observation and nothing else (Policy Decorator's
-    critic), and the executed action is rebuilt from the raw base action(s) the env publishes as the side input
-    :data:`SIDE_INPUT` (``side_inputs``, stored per transition, never a critic input). ``absolute``: ``a_base + scale *
-    r`` per row, the agent's width; ``side_scale`` (``residual.phase_scales``): each transition's own scale, the side
-    input's second ``base_width`` columns. ``target``: the chunk's executed targets ``TargetResidual.step(a_base_j,
-    r_j)``, ``k x 10`` wide (``critic_action_width``)."""
+    ``residual.critic_state: observation`` on the per-dim space: the critics observe the observation and nothing else
+    (Policy Decorator's critic), and the executed action ``a_base + scale * r`` (per row of a chunk) is rebuilt from the
+    raw base action(s) the env publishes as the side input :data:`SIDE_INPUT` (``side_inputs``, stored per transition,
+    never a critic input). ``side_scale`` (``residual.phase_scales``): each transition's own scale, the side input's
+    second ``base_width`` columns."""
 
-    def __init__(self, steps_per_chunk: int, base_width: int, scale=None, target=None, ee_rel=None,
-                 accumulate_reach: Optional[int] = None, side_scale: bool = False) -> None:
+    def __init__(self, steps_per_chunk: int, base_width: int, scale=None, side_scale: bool = False) -> None:
         self.side_scale = bool(side_scale)
-        if self.side_scale and (target is not None or ee_rel is not None or scale is not None or int(steps_per_chunk) != 1):
-            raise ValueError("side_scale is the absolute frame's per-phase scale: no target, ee_rel or fixed scale, one step")
+        if self.side_scale and (scale is not None or int(steps_per_chunk) != 1):
+            raise ValueError("side_scale is the per-dim space's per-phase scale: no fixed scale, one step")
         self.k = int(steps_per_chunk)
         self.base_width = int(base_width)
         self.scale = None if scale is None else scale.repeat(self.k)
-        self.target = target
-        #: ``residual.ee_relative_actions``: the executed targets in the EE-relative command form, against the raw EE
-        #: pose the side input carries after the base actions (``k x 7``, the agent's own width)
-        self.ee_rel = ee_rel
-        if ee_rel is not None and target is None:
-            raise ValueError("ee_relative_actions rebuilds the target-frame residual's executed targets: it needs target")
-        #: residual.target_accumulate: the side input carries the offset before this step (its observation, 6) after the
-        #: base action, over this many steps of reach
-        self.accumulate_reach = accumulate_reach
-        if accumulate_reach is not None and (target is None or ee_rel is not None or self.k != 1):
-            raise ValueError("the accumulating target residual's critic action needs target, no ee_relative_actions, one step")
-        self.side_inputs = {SIDE_INPUT: self.k * self.base_width + (9 if ee_rel is not None else 0) + (6 if accumulate_reach else 0)
-                            + (self.base_width if self.side_scale else 0)}
-        if ee_rel is not None:
-            self.critic_action_width = self.k * 7
-        elif target is not None:
-            self.critic_action_width = self.k * self.base_width
+        self.side_inputs = {SIDE_INPUT: self.k * self.base_width + (self.base_width if self.side_scale else 0)}
 
     def __call__(self, critic_inputs: torch.Tensor, actions: torch.Tensor, side) -> torch.Tensor:
         base = side[SIDE_INPUT]
         if self.side_scale:
             width = self.base_width
             return torch.cat((base[..., :width] + base[..., width : 2 * width] * actions[..., :width], actions[..., width:]), dim=-1)
-        if self.target is None:
-            width = self.k * self.base_width
-            return torch.cat((base + self.scale * actions[..., :width], actions[..., width:]), dim=-1)
-        n = actions.shape[0]
         width = self.k * self.base_width
-        chunk = base[..., :width].reshape(n, self.k, self.base_width)
-        if self.accumulate_reach is not None:
-            off_pos, off_rot = self.target.from_offset_obs(base[..., width:width + 6], self.accumulate_reach)
-            sent, _, _ = self.target.accumulate(chunk[:, 0], actions, off_pos, off_rot)
-            return sent.reshape(n, -1)
-        sent = self.target.step(chunk, actions.reshape(n, self.k, -1))
-        if self.ee_rel is not None:
-            return self.ee_rel(sent, base[..., width:])
-        return sent.reshape(n, -1)
+        return torch.cat((base + self.scale * actions[..., :width], actions[..., width:]), dim=-1)
 
 
-class MultiplySideInput:
-    """``(critic_inputs, r, side) -> critic action`` for ``residual.action_frame: multiply``
-    (:meth:`~my_project.residual_multiply.MultiplyResidual.critic_action`): the resulting target relative to the EE and
-    the gripper (7), rebuilt from the side input :data:`SIDE_INPUT`."""
+class PoseSideInput:
+    """``(critic_inputs, r, side) -> critic action`` for ``residual.action_space: pose``
+    (:meth:`~my_project.pose_residual.PoseResidual.critic_action`): the resulting target relative to the EE and the
+    gripper (7), rebuilt from the side input :data:`SIDE_INPUT`."""
 
-    def __init__(self, multiply) -> None:
-        from my_project.residual_multiply import CRITIC_ACTION_WIDTH
+    def __init__(self, pose) -> None:
+        from my_project.pose_residual import CRITIC_ACTION_WIDTH
 
-        self.multiply = multiply
-        self.side_inputs = {SIDE_INPUT: multiply.side_width}
+        self.pose = pose
+        self.side_inputs = {SIDE_INPUT: pose.side_width}
         self.critic_action_width = CRITIC_ACTION_WIDTH
 
     def __call__(self, critic_inputs: torch.Tensor, actions: torch.Tensor, side) -> torch.Tensor:
-        return self.multiply.critic_action(side[SIDE_INPUT], actions)
-
-
-def target_full_transform(base_slice: slice, steps_per_chunk: int, base_width: int, target):
-    """``(critic_state, r) -> critic action`` for ``critic_action: full`` with ``action_frame: target`` and the
-    residual's critic state: :class:`SideInputTransform`'s target map, the base action(s) read at
-    ``base_slice`` of the critic state."""
-    inner = SideInputTransform(steps_per_chunk, base_width, target=target)
-
-    def transform(critic: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
-        return inner(critic, actions, {SIDE_INPUT: critic[..., base_slice]})
-
-    transform.critic_action_width = inner.critic_action_width
-    return transform
+        return self.pose.critic_action(side[SIDE_INPUT], actions)
 
 
 def find_residual(env: Any) -> "ResidualPolicyWrapper":
@@ -356,55 +292,28 @@ def find_residual(env: Any) -> "ResidualPolicyWrapper":
 
 def residual_critic_action(cfg: Any, env: Any):
     """The package's ``register_critic_action`` builder (scripts/train.py's ``setup``): with
-    ``residual.enabled`` and ``residual.critic_action: full``, the SAC critics take the executed
-    action (:func:`full_action_transform`); otherwise None, and they take ``r``."""
+    ``residual.enabled`` and ``residual.critic_action: full``, the Q critics take the executed
+    action; otherwise None, and they take ``r``."""
     rc = getattr(cfg, "residual", None)
     if rc is None or not rc.enabled or rc.critic_action != "full":
         return None
     wrapper = find_residual(env)
-    critic_mode, target = getattr(wrapper, "critic_mode", "residual"), getattr(wrapper, "target", None)
-    if critic_mode == "observation" or target is not None:
-        k, base_width = wrapper.steps_per_chunk, wrapper.base_action.shape[-1]
-    if critic_mode == "observation":
-        if getattr(wrapper, "multiply", None) is not None:
-            print("[residual] action_frame: multiply: the critics observe the observation part and take the resulting target "
-                  "relative to the EE and the gripper, rebuilt from the side input", flush=True)
-            return MultiplySideInput(wrapper.multiply)
-        ee_rel = getattr(wrapper, "ee_rel", None)
+    if wrapper.pose is not None:
+        print("[residual] action_space: pose: the critics observe the observation part (and the current target) and take "
+              "the resulting target relative to the EE and the gripper, rebuilt from the side input", flush=True)
+        return PoseSideInput(wrapper.pose)
+    k, base_width = wrapper.steps_per_chunk, wrapper.base_action.shape[-1]
+    if wrapper.critic_mode == "observation":
         print(
-            "[residual] critics observe the observation alone (residual.critic_state: observation) and take "
-            + ("the executed targets of the target-frame residual" if target is not None else "a_base + scale * r")
-            + (f" in the EE-relative command form ({k} x 7)" if ee_rel is not None else "")
-            + f", the base action(s) a side input ({k} x {base_width}{' + the EE pose' if ee_rel is not None else ''})",
+            f"[residual] critics observe the observation alone (residual.critic_state: observation) and take a_base + scale * r, "
+            f"the base action(s) a side input ({k} x {base_width})",
             flush=True,
         )
         if getattr(wrapper, "phase_tables", None) is not None:
             print("[residual] residual.phase_scales: each transition's scale from r to the executed action is its phase's, "
                   "carried in the side input after the base action", flush=True)
             return SideInputTransform(k, base_width, side_scale=True)
-        return SideInputTransform(
-            k, base_width,
-            scale=None if target is not None else wrapper.scale, target=target,
-            ee_rel=getattr(wrapper, "ee_rel", None),
-            accumulate_reach=wrapper.t_reach if getattr(wrapper, "t_acc", False) else None,
-        )
-    if target is not None:
-        print("[residual] critics take the executed targets of the target-frame residual, a_base in their state", flush=True)
-        return target_full_transform(wrapper.critic_base_slice, k, base_width, target)
-    if wrapper.ee is not None:
-        if wrapper.steps_per_chunk > 1:
-            raise NotImplementedError(
-                f"residual.critic_action: full with action_frame: ee and residual.steps_per_chunk {wrapper.steps_per_chunk}: "
-                "the EE frame the correction is expressed in turns between the chunk's sub-steps, so the offsets "
-                "executed after the first sub-step are not determined by the chunk's observation"
-            )
-        print(
-            f"[residual] critics take the executed correction: the EE-frame offset after the step "
-            f"({rc.ee_pos_scale} m, {rc.ee_rot_scale_deg} deg per unit{', accumulated over the chunk' if rc.accumulate else ''}), "
-            "with a_base in their state",
-            flush=True,
-        )
-        return ee_full_action_transform(wrapper)
+        return SideInputTransform(k, base_width, scale=wrapper.scale)
     print(
         f"[residual] critics take the executed action: a_base + "
         f"{[round(g, 5) for g in wrapper.scale.tolist()]} * r"
@@ -412,6 +321,27 @@ def residual_critic_action(cfg: Any, env: Any):
         flush=True,
     )
     return full_action_transform(wrapper.critic_base_slice, wrapper.scale, wrapper.steps_per_chunk)
+
+
+def residual_exploration_scale(cfg: Any, env: Any):
+    """The package's ``register_exploration_scale`` builder (every training script's ``setup``): with
+    ``residual.enabled``, ``() -> (num_envs, A)``, the base's motion in r units at the current step (the action space's
+    ``motion_scale``), DDPG's ``exploration_std_mode: adaptive`` factor; otherwise None."""
+    rc = getattr(cfg, "residual", None)
+    if rc is None or not rc.enabled:
+        return None
+    wrapper = find_residual(env)
+
+    def scale() -> torch.Tensor:
+        step = wrapper.space_step
+        if step is None:
+            raise RuntimeError("the residual's exploration scale was read before the env built its first observation")
+        if wrapper.steps_per_chunk > 1:
+            raise NotImplementedError("exploration_std_mode: adaptive with residual.steps_per_chunk > 1: the chunk's rows "
+                                      "have no per-row motion scale")
+        return step["motion_scale"]
+
+    return scale
 
 
 def observation_keep(width: int, drop, device=None) -> Optional[torch.Tensor]:
@@ -509,7 +439,6 @@ class ResidualPolicyWrapper(gym.Wrapper):
         self.env_critic = hooks.has_critic()
         critic_head = hooks.critic_width() if self.env_critic else kept_width
         self.critic_base_slice = slice(critic_head, critic_head + self.steps_per_chunk * policy.action_dim)
-        self.critic_offset_slice = None
         self.base_action = torch.zeros((hooks.num_envs, policy.action_dim), device=hooks.device)
         self.layout = action_layout(cfg.task_name)
         self.obs_width = obs_width
@@ -518,35 +447,6 @@ class ResidualPolicyWrapper(gym.Wrapper):
         #: those up to and including the one it ended on): what an episode's length counts
         self.counted = torch.ones((hooks.num_envs,), dtype=torch.long, device=hooks.device)
         base_width = self.steps_per_chunk * policy.action_dim
-        #: residual.ee_relative_actions: the observed base action and the critics' action in Policy Decorator's
-        #: EE-relative command form (my_project/residual_target.py EERelative), 7 per step
-        self.ee_rel = None
-        if rc.ee_relative_actions:
-            from my_project.residual_target import EERelative
-
-            self.ee_rel = EERelative(self.layout["gripper"])
-        #: residual.action_frame: multiply -- r multiplies the base's motion (my_project/residual_multiply.py); per
-        #: std_label_names label whether it has a residual (route_labels), and the chain's state per env
-        self.multiply = None
-        if rc.action_frame == "multiply":
-            from my_project.residual_multiply import multiply_from
-
-            self.multiply = multiply_from(rc, self.layout["gripper"])
-            # the phases with a residual: the routed ones, or every phase with one residual for all (no route_labels)
-            routes = list(section.route_labels) or list(self.phase_names)
-            self.m_routed = torch.tensor([name in routes for name in self.phase_names], dtype=torch.bool, device=hooks.device)
-            n = hooks.num_envs
-            self.m_env_routed = torch.zeros((n,), dtype=torch.bool, device=hooks.device)
-            self.m_increment = self.multiply.reference == "increment"
-        observed_width = self.steps_per_chunk * 7 if self.ee_rel is not None else base_width
-        if self.multiply is not None:
-            from my_project.residual_multiply import CURRENT_WIDTH, OBSERVED_WIDTH
-
-            # the base's motion, then (increment) the current target relative to the EE
-            observed_width = OBSERVED_WIDTH + (CURRENT_WIDTH if self.m_increment else 0)
-        extra_width = observed_width if self.observe_base else 0
-        critic_extra = base_width
-
         #: residual.critic_state: "residual" (the critic group below) or "observation" (none: the critics see the
         #: agent's observation; the base action(s) go out as the side input SIDE_INPUT)
         self.critic_mode = str(rc.critic_state)
@@ -566,60 +466,45 @@ class ResidualPolicyWrapper(gym.Wrapper):
         self._label_mismatch = None
         self._label_mismatch_pair = None
         self._label_checks = 0
-        #: the normalized base action(s) the agent's last observation was made with (the side input), then with
-        #: ee_relative_actions the raw EE pose (9) the chunk's targets are taken against
-        self.side = torch.zeros((hooks.num_envs, base_width + (9 if self.ee_rel is not None else 0)), device=hooks.device)
-        if self.multiply is not None:
-            self.side = torch.zeros((hooks.num_envs, self.multiply.side_width), device=hooks.device)
-        # residual.action_frame: target -- Policy Decorator's relative pose on the base's target (my_project/residual_target.py)
-        self.target = None
-        if rc.action_frame == "target":
-            from my_project.residual_target import TargetResidual
 
-            self.target = target_residual(rc, self.scale, policy.normalizer, self.layout["gripper"])
-        #: residual.target_accumulate: each env's offset on the base's targets (m, rotation), reset when the base replans;
-        #: it is observed (after the base action) by the agent and the critics, and the critics' side input carries it
-        self.t_acc = bool(getattr(rc, "target_accumulate", False)) and self.target is not None
-        self.t_reach = int(policy.action_horizon)
-        if self.t_acc:
-            extra_width += 6
-            self.side = torch.zeros((hooks.num_envs, base_width + 6), device=hooks.device)
-        # residual.action_frame: ee -- the agent's 6-d EE-frame correction (my_project/residual_ee.py)
-        self.ee = None
-        self.offset_slice = None
+        #: residual.action_space: pose -- r acts on the base's pose targets (my_project/pose_residual.py); per
+        #: std_label_names label whether it has a residual (route_labels), so a phase without one sends the base
+        self.pose = None
         #: the per-step residual width A: the agent's action is (steps_per_chunk x A)
         self.width = policy.action_dim
-        if rc.action_frame == "ee":
-            from my_project.residual_ee import OFFSET_WIDTH, WIDTH, EEResidual
+        extra_width = base_width if self.observe_base else 0
+        critic_extra = base_width
+        if rc.action_space == "pose":
+            from my_project.pose_residual import pose_from
 
-            self.ee = EEResidual(rc.ee_pos_scale, rc.ee_rot_scale_deg, rc.accumulate, policy.action_horizon)
-            if rc.accumulate:  # the offset follows the base action in the observation and the critic state
-                start = kept_width + extra_width
-                self.offset_slice = slice(start, start + OFFSET_WIDTH)
-                self.critic_offset_slice = slice(self.critic_base_slice.stop, self.critic_base_slice.stop + OFFSET_WIDTH)
-                extra_width += OFFSET_WIDTH
-                critic_extra += OFFSET_WIDTH
-            self.width = WIDTH
-        if self.target is not None:
-            self.width = self.target.width
-        if self.multiply is not None:
-            from my_project.residual_multiply import WIDTH as MULTIPLY_WIDTH  # noqa: N811
-
-            self.width = MULTIPLY_WIDTH
-        if self.ee is not None or self.target is not None or self.multiply is not None or self.steps_per_chunk > 1:
+            r_range = tuple(float(v) for v in section.action_range) if hasattr(section, "action_range") else None
+            self.pose = pose_from(rc, r_range, self.layout["gripper"])
+            # the phases with a residual: the routed ones, or every phase with one residual for all (no route_labels);
+            # without phase labels every step is the residual's
+            routes = list(getattr(section, "route_labels", None) or []) or list(self.phase_names)
+            self.routed_rows = torch.tensor([name in routes for name in self.phase_names], dtype=torch.bool, device=hooks.device)
+            self.env_routed = torch.ones((hooks.num_envs,), dtype=torch.bool, device=hooks.device)
+            self.width = self.pose.width
+            # the agent's additions: the base's motion and gripper, then (target) the current target
+            extra_width = self.pose.observed_width + self.pose.current_width
+            hooks.set_agent_action_width(self.width)
+        elif self.steps_per_chunk > 1:
             hooks.set_agent_action_width(self.steps_per_chunk * self.width)
+        #: the normalized base action(s) the agent's last observation was made with: the critics' side input
+        self.side = torch.zeros((hooks.num_envs, self.pose.side_width if self.pose is not None else base_width), device=hooks.device)
         #: the action space (my_project/action_spaces.py): one definition of a step's inputs, its sent action and its
-        #: inverse, shared with the demo loader; its per-env state (offsets, the chain's current target)
+        #: inverse, shared with the demo loader; its per-env state (the chain's current target, the chunk's EE pose)
         self.space = action_space_of(self, policy.action_dim)
         self.space_state = self.space.initial_state(hooks.num_envs, hooks.device)
         self.space_step = None
 
         # the agent's observation gains what the flags ask for; the critic state is the residual's own, or none
         if self.critic_mode == "observation":
-            if extra_width or dropped:
+            critic_width = kept_width + (self.pose.current_width if self.pose is not None else 0)
+            if extra_width or dropped or critic_width != obs_width:
                 # the critics keep the observation without the agent's additions (Policy Decorator's critic input),
-                # plus the accumulated offset (state) with target_accumulate
-                hooks.create_critic(kept_width + (6 if self.t_acc else 0))
+                # plus the current target with action_target: target (state)
+                hooks.create_critic(critic_width)
                 hooks.widen(extra_width - dropped, 0)
         elif self.env_critic:
             hooks.widen(extra_width - dropped, critic_extra)
@@ -630,34 +515,30 @@ class ResidualPolicyWrapper(gym.Wrapper):
         self.action_space = hooks.action_space
         self._hooks = hooks
         hooks.hook_observations(self._observations)
+        pose = self.pose
         print(
             f"[residual] base {source}/{rc.base_checkpoint} (step {getattr(policy, 'checkpoint_step', -1)}, "
             f"best success rate {getattr(policy, 'checkpoint_success_rate', float('nan')):.3f}; executes "
-            f"{policy.action_horizon} of {policy.horizon}, {policy.cfg.inference_steps} DDIM steps); "
-            f"scale {self.scale.tolist()}"
+            f"{policy.action_horizon} of {policy.horizon}, {policy.cfg.inference_steps} DDIM steps)"
+            + (f"; per-dim residual, scale {self.scale.tolist()}" if pose is None else "")
             + (f"; {self.steps_per_chunk} env steps per agent action ({self.steps_per_chunk} x {self.width})"
                if self.steps_per_chunk > 1 else "")
-            + "; raw inputs (the learner's state_preprocessor normalizes them)"
+            + "; raw inputs"
             + ("" if self.observe_base else "; base action not observed")
             + (f"; observation columns {list(rc.observation_drop)} dropped ({kept_width} of {obs_width} kept)" if dropped else "")
-            + ("; gripper left to the base" if self.target is not None and not rc.residual_gripper else "")
-            + (f"; target-frame residual ({rc.target_axes} axes, {rc.target_rotation}), "
-               f"{[round(v, 5) for v in self.target.pos_scale.tolist()] if isinstance(self.target.pos_scale, torch.Tensor) else self.target.pos_scale} m / "
-               f"{[round(v, 3) for v in torch.rad2deg(self.target.rot_scale).tolist()] if isinstance(self.target.rot_scale, torch.Tensor) else rc.ee_rot_scale_deg} deg / {self.target.grip_scale:.5f} gripper per unit"
-               + (f", accumulated into an offset that resets when the base replans (every {self.t_reach} steps)" if self.t_acc else "")
-               + (f", sent position and gripper clamped to the base's normalized +-{rc.executed_clip}" if rc.executed_clip is not None else "")
-               if self.target is not None else "")
+            + (f"; sent per-dim action clamped to the base's normalized +-{rc.executed_clip}" if pose is None and rc.executed_clip is not None else "")
             + ("; critics observe the observation alone" if self.critic_mode == "observation" else "")
-            + ("; base action and critic action EE-relative (m, rad)" if self.ee_rel is not None else "")
-            + (f"; multiply residual: the base's {'planned step (robot-base frame, chained on the current target, the EE at a chunk start)' if self.m_increment else 'EE-relative pose target'} times m in [{rc.multiply_min}, {rc.multiply_max}] per dim "
-               f"(m = 1 at r = {self.multiply.neutral:.4f}), the gripper the base's, the observation EE-relative, the critics' action "
-               f"the resulting target relative to the EE, residuals in {[n for n, on in zip(self.phase_names, self.m_routed.tolist()) if on]}"
-               if self.multiply is not None else ""),
+            + (f"; pose residual: action frame {pose.action_frame} ({pose.action_rotation} rotation), {pose.param}, "
+               f"{pose.combine}{' with a chained target (the EE at each chunk start)' if pose.target else ''}"
+               + (f", {pose.scale_pos} m / {rc.step_scale_rot_deg} deg per unit r" if pose.combine == "add" else "")
+               + f"; observation in the {pose.observation_frame} frame ({pose.observation_rotation} rotation); the gripper "
+               f"the base's; residuals in {[n for n, on in zip(self.phase_names, self.routed_rows.tolist()) if on]}"
+               if pose is not None else ""),
             flush=True,
         )
 
     def _phase_rows(self, n: int) -> None:
-        """The envs' current phases' rows (residual.phase_scales' scale, the multiply residual's routed flag), from the
+        """The envs' current phases' rows (residual.phase_scales' scale, the pose residual's routed flag), from the
         env's phase tracker, which already holds the phase of the observation being built (it updates with the
         terminations and resets with the envs, both before it). The label used is kept (``obs_label``): :meth:`step`
         checks it is the one the env then publishes for the learner (``eval_state/phase/id``) -- one source of truth."""
@@ -668,18 +549,18 @@ class ResidualPolicyWrapper(gym.Wrapper):
         self.obs_label = phase.clone()
         if self.phase_tables is not None:
             self.phase_scale = self.phase_tables["scale"][phase]
-        if self.multiply is not None:
-            self.m_env_routed = self.m_routed[phase]
+        if self.pose is not None:
+            self.env_routed = self.routed_rows[phase]
 
     def _observations(self, observations):
         obs = observations["policy"]
-        if self.phase_tables is not None or self.multiply is not None:
+        if self.phase_tables is not None or (self.pose is not None and self.phase_names):
             self._phase_rows(obs.shape[0])
         fresh = self._hooks.fresh()
-        # the envs whose base starts a new chunk this step (ChunkedBase.actions replans those): where an accumulating
-        # space's offset, and the multiply chain's increment, start over
+        # the envs whose base starts a new chunk this step (ChunkedBase.actions replans those): where the pose space's
+        # chained target and chunk frame start over
         new_chunk = None
-        if (self.ee is not None and self.ee.accumulate) or self.t_acc or (self.multiply is not None and self.m_increment):
+        if self.pose is not None:
             new_chunk = fresh.to(torch.bool).reshape(-1) | (self.base.index >= self.base.policy.action_horizon)
         self.base_action = self.base.actions(obs, fresh)
         # the observed base action: this step's, or the chunk's k (at a chunk boundary, the next k)
@@ -687,7 +568,7 @@ class ResidualPolicyWrapper(gym.Wrapper):
         step, self.space_state = self.space.observe(
             obs, self.base_action, self.space_state, observed=observed,
             env_critic_obs=observations.get("critic") if self.env_critic else None, fresh=fresh, new_chunk=new_chunk,
-            routed=self.m_env_routed if self.multiply is not None else None,
+            routed=self.env_routed if self.pose is not None else None,
             scale_rows=self.phase_scale if self.phase_tables is not None else None,
         )
         observations["policy"] = step["policy"]
@@ -696,11 +577,6 @@ class ResidualPolicyWrapper(gym.Wrapper):
         self.side = step["side"]
         self.space_step = step
         return observations
-
-    @property
-    def R_ee(self) -> torch.Tensor:
-        """``action_frame: ee``: the EE orientation of each env's current observation."""
-        return self.space_state["R_ee"]
 
     def step(self, action):
         action = action.to(self.scale.device)
@@ -823,24 +699,27 @@ class ResidualPolicyWrapper(gym.Wrapper):
 
     def _step_once(self, action):
         """One env step: ``action`` is the agent's per-step action (``width`` plus the hybrid dims)."""
-        if self.ee is not None:
-            return self._step_ee(action)
-        if self.target is not None:
-            return self._step_target(action)
-        if self.multiply is not None:
-            return self._step_multiply(action)
         width = self.base_action.shape[-1]
         base = self.base_action  # env.step's observation hook replaces it with the next step's
-        # base + scale x r (residual.phase_scales: the observation's phase's scale), clamped by residual.executed_clip
-        # (the critics take the unclamped one)
-        sent, self.space_state = self.space.send(action, self.space_step, self.space_state)
-        correction = self.space_step["correction"]
+        step = self.space_step
+        # the space's sent action (per_dim: base + scale x r, clamped by residual.executed_clip -- the critics take the
+        # unclamped one; pose: the target the step's pose gives, the base's where the phase has no residual)
+        sent, self.space_state = self.space.send(action, step, self.space_state)
         if self.extra_dims:
             sent = torch.cat((sent, action[:, width:]), dim=-1)
         observations, rewards, terminated, truncated, infos = self.env.step(sent)
         self._track_phase(infos)
         if isinstance(infos, dict):
             metrics = infos.setdefault("metrics_to_log", {})
+            if self.pose is not None:
+                metrics["residual/position_mm"] = (sent[:, 0:3] - base[:, 0:3]).norm(dim=-1) * 1000.0
+                metrics["residual/rot_deg"] = rot6d_angle_deg(base[:, 3:9], sent[:, 3:9])
+                if self.pose.combine == "multiply":
+                    # the mean multiplier over the pose dims (1 where the phase has no residual)
+                    r = action[:, : self.width]
+                    metrics["residual/multiplier"] = torch.where(step["routed"].reshape(-1, 1), r, torch.ones_like(r)).mean(dim=-1)
+                return observations, rewards, terminated, truncated, infos
+            correction = step["correction"]
             # an action in controller units (robosuite's OSC_POSE inputs) is scaled to metres / radians first
             metrics["residual/position_mm"] = correction[:, self.layout["pos"]].norm(dim=-1) * (1000.0 * self.layout.get("pos_m_per_unit", 1.0))
             if "axis_angle" in self.layout:
@@ -855,33 +734,6 @@ class ResidualPolicyWrapper(gym.Wrapper):
             else:  # a quaternion delta's size: the angle of the correction's rotation part
                 q = correction[:, self.layout["quat_xyzw"]]
                 metrics["residual/rot_deg"] = 2.0 * torch.atan2(q[:, 0:3].norm(dim=-1), q[:, 3].abs()) * (180.0 / torch.pi)
-        return observations, rewards, terminated, truncated, infos
-
-    def _step_target(self, action):
-        base = self.base_action  # env.step's observation hook replaces it with the next step's
-        sent, self.space_state = self.space.send(action, self.space_step, self.space_state)
-        observations, rewards, terminated, truncated, infos = self.env.step(sent)
-        self._track_phase(infos)
-        if isinstance(infos, dict):
-            metrics = infos.setdefault("metrics_to_log", {})
-            metrics["residual/position_mm"] = (sent[:, 0:3] - base[:, 0:3]).norm(dim=-1) * 1000.0
-            metrics["residual/rot_deg"] = rot6d_angle_deg(base[:, 3:9], sent[:, 3:9])
-        return observations, rewards, terminated, truncated, infos
-
-    def _step_multiply(self, action):
-        # env.step's observation hook replaces the base action, the EE pose and the routed rows with the next step's
-        base, routed = self.base_action, self.space_step["routed"]
-        r = action[:, : self.width]
-        # increment: the chain's state for the next step's observation (built inside env.step)
-        sent, self.space_state = self.space.send(action, self.space_step, self.space_state)
-        observations, rewards, terminated, truncated, infos = self.env.step(sent)
-        if isinstance(infos, dict):
-            metrics = infos.setdefault("metrics_to_log", {})
-            metrics["residual/position_mm"] = (sent[:, 0:3] - base[:, 0:3]).norm(dim=-1) * 1000.0
-            metrics["residual/rot_deg"] = rot6d_angle_deg(base[:, 3:9], sent[:, 3:9])
-            # the mean multiplier over the pose dims (1 where the phase has no residual)
-            m = torch.where(routed.reshape(-1, 1), self.multiply.multiplier(r), torch.ones_like(r))
-            metrics["residual/multiplier"] = m.mean(dim=-1)
         return observations, rewards, terminated, truncated, infos
 
     def _phase_metrics(self, infos, acted_in) -> None:
@@ -954,62 +806,17 @@ class ResidualPolicyWrapper(gym.Wrapper):
             )
         self.phase = torch.as_tensor(phase, device=self.phase.device).reshape(-1).round().long()
 
-    def _step_ee(self, action):
-        base = self.base_action  # env.step's observation hook replaces it (and R_ee, the offset)
-        sent, self.space_state = self.space.send(action, self.space_step, self.space_state)
-        observations, rewards, terminated, truncated, infos = self.env.step(sent)
-        self._track_phase(infos)
-        if isinstance(infos, dict):
-            metrics = infos.setdefault("metrics_to_log", {})
-            metrics["residual/position_mm"] = (sent[:, 0:3] - base[:, 0:3]).norm(dim=-1) * 1000.0
-            metrics["residual/rot_deg"] = rot6d_angle_deg(base[:, 3:9], sent[:, 3:9])
-        return observations, rewards, terminated, truncated, infos
-
-
 def action_space_of(source: Any, action_dim: int):
     """The action space (``my_project/action_spaces.py``) of a wrapper -- or of anything holding its attributes
-    (``multiply``, ``ee``, ``target``, ``t_acc``, ``t_reach``, ``scale``, ``abs_clip``, ``phase_tables``, ``keep``,
-    ``observe_base``, ``critic_mode``, ``env_critic``, ``ee_rel``, ``steps_per_chunk``)."""
-    from my_project.action_spaces import AbsoluteSpace, EESpace, MultiplySpace, TargetSpace
+    (``pose``, ``scale``, ``abs_clip``, ``phase_tables``, ``keep``, ``observe_base``, ``critic_mode``, ``env_critic``,
+    ``steps_per_chunk``)."""
+    from my_project.action_spaces import PerDimSpace, PoseSpace
 
     common = dict(keep=source.keep, observe_base=source.observe_base, critic_mode=source.critic_mode,
-                  env_critic=source.env_critic, ee_rel=source.ee_rel, steps_per_chunk=source.steps_per_chunk)
-    if source.multiply is not None:
-        return MultiplySpace(source.multiply, action_dim, **common)
-    if source.ee is not None:
-        return EESpace(source.ee, **common)
-    if source.target is not None:
-        return TargetSpace(source.target, accumulate=source.t_acc, reach=source.t_reach, **common)
-    return AbsoluteSpace(source.scale, clip=source.abs_clip, phase_scales=source.phase_tables is not None, **common)
-
-
-def ee_full_action_transform(wrapper: "ResidualPolicyWrapper"):
-    """``(observations, r) -> critic action`` for ``residual.critic_action: full`` with ``action_frame: ee``: the
-    executed correction, the offset after the step (:meth:`EEResidual.offset_obs`, 6 like ``r``), rebuilt from
-    the critic state -- the EE orientation (its normalized base observation) and the offset before the step
-    (``accumulate``) -- through the env's own map (:meth:`EEResidual.step`). With ``normalize(a_base)`` in the
-    critic state it determines the executed target."""
-    from my_project.residual_ee import ee_rotation
-
-    ee, base_slice, offset_slice = wrapper.ee, wrapper.critic_base_slice, wrapper.critic_offset_slice
-    obs_width = wrapper.obs_width
-    if wrapper.env_critic:
-        raise NotImplementedError(
-            "residual.critic_action: full with action_frame: ee reads the EE pose from the critic state's normalized "
-            "base observation, which an env with its own critic state does not put there"
-        )
-
-    def transform(critic: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
-        base = critic[..., base_slice]
-        R_ee = ee_rotation(critic[..., :obs_width])
-        if offset_slice is not None:
-            o, O = ee.from_offset_obs(R_ee, critic[..., offset_slice])
-        else:
-            o, O = ee.identity(critic.shape[0], critic.device)
-        _, o, O = ee.step(base, R_ee, o, O, actions[..., :6])
-        return ee.offset_obs(R_ee, o, O)
-
-    return transform
+                  env_critic=source.env_critic, steps_per_chunk=source.steps_per_chunk)
+    if source.pose is not None:
+        return PoseSpace(source.pose, action_dim, **common)
+    return PerDimSpace(source.scale, clip=source.abs_clip, phase_scales=source.phase_tables is not None, **common)
 
 
 def _rot6d_to_mat(d6: torch.Tensor) -> torch.Tensor:

@@ -1,46 +1,36 @@
 # ResFiT (the leading _ keeps launch_train from submitting this file on its own): Ankile et al. 2025,
-# arXiv:2509.19301, "Residual Off-Policy RL for Finetuning Behavior Cloning Policies", with the learning settings of
-# its official code (github.com/amazon-far/residual-offpolicy-rl) on our frozen base physic_aligned_evalHappy_a0.
-# Only the learning is ResFiT's: the task, its timing (10 Hz) and its episodes are fb_one_leg.yaml's.
+# arXiv:2509.19301, "Residual Off-Policy RL for Finetuning Behavior Cloning Policies", on one_leg with our frozen base
+# physic_aligned_evalHappy_a0. The method is configs/methods/resfit.yaml, unchanged (its residual, learner, memory and
+# networks); this file adds one_leg (configs/base/fb_one_leg.yaml: the task, its 10 Hz timing and its episodes) and
+# the values one_leg needs on top.
 #
-# The learner is the package's ddpg (learners/ddpg.py): a deterministic residual actor 0.1 tanh(mu(s, a_base)) with
-# fixed Gaussian noise (std 0.025, unclipped), a target actor, 10 critics with the target's min over a random 2 and
-# the actor on their mean (REDQ), TD3's target smoothing (clip 0.3), 5-step returns, 4 critic updates and 1 actor
-# update per env step, a 10k-update critic warm-up, uniform warm-up actions, and half of every batch from the demos
-# (the actor on that same mixed batch).
+# The residual is ResFiT's arithmetic on our action: the base's absolute target [pos 3, rot6d 6, gripper 1] plus
+# 1.1 x max(demo half range, 0.05) x r per dim, clamped to the widened range (action_space: per_dim). The rot6d numbers
+# are added as numbers, as ResFiT adds to whatever its env's action holds; the env turns them back into a rotation.
 #
-# one_leg runs one residual per bottleneck phase (ddpg.route_labels: insert, screw), each with its own actor,
-# critics, optimizers, replay memory and clock (route_clock): each counts its learning start, critic warm-up and
-# updates in its own phase's steps, so the screw residual starts when screw has given it 10k rows, not after 10k
-# env steps. Each is rewarded sparsely and locally: 1 when its phase is passed (insert: the leg held inserted for
-# 5 steps, furniture.phase_hold_steps; screw: assembled), its attempt then over.
-#
-# The residual: r in the base's normalized action units, 7-dof (position 3, Euler roll-pitch-yaw 3, gripper 1),
-# added to the base's absolute target in the robot-base frame, the sent position and gripper clamped to the base's
-# normalized range widened 10% (ResFiT's action scaler and clamp). The actor sees the observation (without the 3
-# unused legs and the fixed obstacle) and the base action; the critics see that observation and the executed
-# action (normalized), never the base action itself.
+# one_leg runs one residual per bottleneck phase (ddpg.route_labels: insert, screw), each with its own actor, critics,
+# optimizers, replay memory and clock (route_clock): each counts its learning start, critic warm-up and updates in its
+# own phase's steps, so the screw residual starts when screw has given it 10k rows, not after 10k env steps. Each is
+# rewarded sparsely and locally: 1 when its phase is passed (insert: the leg held inserted for 5 steps,
+# furniture.phase_hold_steps; screw: assembled), its attempt then over.
 #
 # Not ResFiT's (our setup has no equivalent, or none is possible here):
-#  * the observation is the base's min-max normalization (residual.normalize_observation), not a standardization;
-#  * the rotation: ResFiT adds 0.1 to its normalized rotation; ours is Euler RPY at 1 rad per unit r (57.3 deg), so
-#    0.1 tanh reaches 5.7 deg per step, about what 0.1 of a unit rot6d component is;
+#  * the input normalization is the model's (ddpg.state_preprocessor, the learner's default: none); theirs standardizes
+#    with the demos' mean and std, the std floored at 0.1;
 #  * the base plans every chunk cold (residual.base_warm_start: false): the per-phase demos measure each demo
 #    residual against a cold base plan, so the env's base must plan the same way;
 #  * their critics share one encoder; ours are separate MLPs (the same widths);
 #  * images: their tasks are image-based, ours is state-based.
-base: ../../base/fb_one_leg.yaml
-
+base:
+  - ../../base/fb_one_leg.yaml
+  - ../../methods/resfit.yaml
 experiment:
   seed: 42
-
 wandb:
   entity: hur
   project: hybrid_demo_furniture_residual
-
 trainer:
   best_by: success
-
 task:
   cfg:
     furniture:
@@ -50,84 +40,27 @@ task:
       # steps the later phase's residual gets, and the per-phase residuals are already short of data
       stall_steps_insert: 0
       stall_steps_screw: 0
-
 residual:
   base_project: hybrid_demo_furniture
   base_run_name: physic_aligned_evalHappy_a0
   base_warm_start: false
-  steps_per_chunk: 1
-  # r in the base's normalized units: the absolute frame's scale is the base's whole half range per dim
-  action_scale: null
-  action_scale_fraction: 1.0
-  action_frame: target
-  target_axes: base
-  target_rotation: euler
-  target_scale_from_base: true
-  ee_rot_scale_deg: 57.29577951308232
-  residual_gripper: true
-  executed_clip: 1.1
-  normalize_observation: true
-  observe_base_action: true
-  # the actor observes the observation and the base action; the critics the observation and the executed action
-  critic_state: observation
-  critic_action: full
-  # the smallest half range per kind of observation column in the residual's own normalization, about 10% of each
-  # kind's median per-column half range over the 300 demos (physic_aligned_300: position 12.7 cm, rot6d 0.79,
-  # linear velocity 0.53 m/s, angular velocity 2.1 rad/s, finger width 3.6 cm); lifts the top's height (0.15 mm half
-  # range in the base's stats) and its near-zero rot6d entries (0.0006 - 0.0014) off float-noise scale
-  observation_floors:
-    pos: 0.0125
-    rot6d: 0.08
-    lin_vel: 0.05
-    ang_vel: 0.2
-    finger_width: 0.004
   # legs 1-3 (never touched in one_leg) and the front obstacle (fixed on every reset)
   observation_drop:
     - - 25
       - 52
     - - 61
       - 63
-
 ddpg:
-  # the Coffee / CanSorting paper runs' (the code's defaults: 0.99, 3-step)
+  # the Coffee / CanSorting paper runs' (the code's defaults: 0.99, 3-step), exploration N(0, 0.025)
   discount_factor: 0.995
   n_step: 5
-  batch_size: 256
-  polyak: 0.005
-  # AdamW, weight decay 0.01, gradient norm clipped at 1
-  actor_lr: 1.0e-6
-  critic_lr: 1.0e-4
-  weight_decay: 0.01
-  grad_norm_clip: 1.0
-  # 10 critics (REDQ): the target's min over a random 2, the actor on their mean; the critic loss (mean_k |Q_k - y|)^2
-  num_critics: 10
-  critic_subset: 2
-  actor_q_reduction: mean
-  critic_loss: mean_abs_squared
-  # 4 critic updates per env step, the actor on the 4th
-  gradient_steps: 4
-  update_every: 1
-  policy_delay: 4
-  # per residual: no update before its phase has given it 10k rows; meanwhile it acts uniformly in +-0.2 around the
-  # base; then 10k critic-only updates at once, then the actor
-  learning_starts_rows: 10000
-  random_action_scale: 0.2
-  critic_warmup_updates: 10000
-  # the residual 0.1 tanh(mu); exploration N(0, 0.025) unclipped (the Coffee / CanSorting paper runs'; the code's
-  # default 0.05); target smoothing with the same std, clipped at 0.3
-  actor_action_scale: 0.1
   exploration_std: 0.025
-  target_actor: true
-  target_policy_noise: true
-  target_noise_clip: 0.3
-  action_clip: 1.0
   # half of every batch from the phase's demos (scripts/make_phase_demos.py), the actor on the same batch
   demo_transitions: data/ResFiT/demos_{route}.pt
   demo_storage: sample
   demo_sampling_start: 0
   demo_sampling_end: 1000000000
   demo_batch_shared: true
-  normalize_observations: false
   # one residual per phase, each counting its own steps
   route_labels:
     - insert
@@ -144,25 +77,6 @@ ddpg:
     - residual/position_mm
     - residual/rot_deg
   cuda_graph: true
-
 # 300k transitions per residual (the Coffee / CanSorting paper runs'; the code's default 200k)
 memory:
   memory_size: 300000
-
-# 2 x 1024 ReLU MLPs with LayerNorm, PyTorch's default init; the actor's last layer zero (r = 0 at the start)
-model:
-  architecture: mlp
-  actor:
-    hidden_size: 1024
-    num_layers: 2
-    activation: ReLU
-    layer_norm: true
-    init: default
-    output_init_scale: 0.0
-    squash: true
-  critic:
-    hidden_size: 1024
-    num_layers: 2
-    activation: ReLU
-    layer_norm: true
-    init: default

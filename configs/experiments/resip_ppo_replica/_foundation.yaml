@@ -21,7 +21,6 @@ residual:
   action_scale_fraction: 0.1
   critic_action: residual
   steps_per_chunk: 1
-  normalize_observation: true
   observe_base_action: true
 
 ppo:
@@ -49,7 +48,9 @@ ppo:
   normalize_values: false
   normalize_rewards: true
   reward_clip: 5.0
-  normalize_observations: false
+  # no running normalizer. The residual's own min-max of the observation (the base's normalizer, ResiP's) no longer
+  # exists: the networks get the raw observation and base action
+  state_preprocessor: none
   # truncation_as_done: true
   time_limit_bootstrap: false
   reset_every_iteration: true

@@ -44,31 +44,10 @@ residual:
   base_run: runs/hybrid_demo_furniture/obs-fix_true-jacobian_50demos/obs-fix_true-jacobian_50demos_a0
   base_project: null
   base_run_name: null
-  # ResFiT's action sizing as Coffee v2 ran it: the executed action is the base's plus scale x r per dim, scale =
-  # (1 + actor_action_scale) x max(the demos' half range, 0.05) (their ActionScaler: (1 + action_scale) x max(half range,
-  # min_action_range / 2)), every dim (position, rot6d, gripper), no accumulation, no clamp of the executed action
-  action_frame: absolute
   action_scale: null
   action_scale_fraction: 1.04
   action_half_range_floor: 0.05
   executed_clip: null
-  residual_gripper: true
-  # the foundation's target-frame fields back to their defaults (the absolute frame has none)
-  target_axes: target
-  target_rotation: rotvec
-  target_scale_from_base: false
-  target_pos_scale: null
-  target_rot_scale_deg: null
-  target_accumulate: false
-  # ResFiT's StateStandardizer for the residual's observation inputs (v3's), the foundation's min-max floors off
-  observation_normalization: standardize
-  observation_std_floor: 0.1
-  observation_floors:
-    pos: null
-    rot6d: null
-    lin_vel: null
-    ang_vel: null
-    finger_width: null
 
 ddpg:
   # timeouts end the target as a termination does (ResFiT's done = terminated | truncated; Coffee v2's)
@@ -78,7 +57,9 @@ ddpg:
   # Exploration N(0, 0.0075) r: the median |noise| (0.67 std, ~1.4 mm in x, y) about the median x, y demo correction
   # (1.2-1.4 mm), a quarter of z's (4.5 mm); reach : noise ~5 : 1 (Coffee's 4 : 1). The uniform warm-up actions the same
   # 0.0075 r (Coffee's +-reach would be +-11 mm per step here)
-  actor_action_scale: 0.04
+  action_range:
+    - -0.04
+    - 0.04
   exploration_std: 0.0075
   random_action_scale: 0.0075
   # one residual for the whole task: no routing (the foundation's route_labels), every env step its own

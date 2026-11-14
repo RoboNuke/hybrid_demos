@@ -40,37 +40,15 @@ residual:
   base_run: runs/hybrid_demo_furniture/obs-fix_true-jacobian_50demos/obs-fix_true-jacobian_50demos_a0
   base_project: null
   base_run_name: null
-  # ResFiT's action sizing: the executed action is the base's plus scale x r per dim, scale = 1.1 x max(the demos' half
-  # range, 0.05) (their ActionScaler: (1 + action_scale) x max(half range, min_action_range / 2), action_scale 0.1),
-  # every dim (position, rot6d, gripper), no accumulation, the executed action clamped to center +- 1.1 x half range
-  action_frame: absolute
   action_scale: null
   action_scale_fraction: 1.1
   action_half_range_floor: 0.05
   executed_clip: 1.1
-  residual_gripper: true
-  # the foundation's target-frame fields back to their defaults (the absolute frame has none)
-  target_axes: target
-  target_rotation: rotvec
-  target_scale_from_base: false
-  target_pos_scale: null
-  target_rot_scale_deg: null
-  target_accumulate: false
-  # ResFiT's StateStandardizer for the residual's observation inputs (v3's), the foundation's min-max floors off
-  observation_normalization: standardize
-  observation_std_floor: 0.1
-  observation_floors:
-    pos: null
-    rot6d: null
-    lin_vel: null
-    ang_vel: null
-    finger_width: null
 
 ddpg:
   # the actor's reach 0.1 r (covers the demos' 95th-percentile corrections, 0.06-0.13 r); exploration N(0, 0.0025) r,
   # about 1/4 of a typical demo correction (median |a_demo - a_base| 0.005 r in x, y: 0.7 mm of noise per step), and
   # the uniform warm-up actions the same size (0.2 would be +-57 mm per step in x)
-  actor_action_scale: 0.1
   exploration_std: 0.0025
   random_action_scale: 0.0025
   # one residual for the whole task: no routing (the foundation's route_labels), every env step its own

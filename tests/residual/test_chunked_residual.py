@@ -297,8 +297,8 @@ def test_the_chunk_config_is_validated():
     with pytest.raises(ValueError, match="multiple of"):
         ResidualCfg(steps_per_chunk=4, base_action_horizon=6).validate(None)
     ResidualCfg(steps_per_chunk=2, critic_action="full").validate(None)
-    with pytest.raises(NotImplementedError, match="action_frame: ee"):
-        ResidualCfg(steps_per_chunk=2, critic_action="full", action_frame="ee").validate(None)
+    with pytest.raises(ValueError, match="steps_per_chunk: 1"):  # the pose space acts every env step
+        ResidualCfg(steps_per_chunk=2, critic_action="full", critic_state="observation", action_space="pose").validate(None)
     # the critics read the base action from their own state: full is fine whatever the agent observes
     ResidualCfg(critic_action="full", observe_base_action=False).validate(None)
     ResidualCfg(steps_per_chunk=4, base_action_horizon=4, base_inference_steps=4, observe_base_action=False).validate(None)
@@ -307,7 +307,7 @@ def test_the_chunk_config_is_validated():
         ResidualCfg(enabled=True, base_run="r", steps_per_chunk=2).validate(hybrid)
 
 
-def test_critic_action_full_works_whatever_the_agent_observes_and_is_refused_on_a_chunked_ee_one(monkeypatch):
+def test_critic_action_full_works_whatever_the_agent_observes(monkeypatch):
     """The critic's input does not depend on the agent's observation: a wrapper whose agent does not see the base action
     still gives the critics the executed chunk."""
     policy = ScriptedPolicy()
@@ -325,10 +325,6 @@ def test_critic_action_full_works_whatever_the_agent_observes_and_is_refused_on_
     env.step(r)
     for j, sent in enumerate(env.unwrapped.sent[-2:]):
         assert torch.allclose(critic_action[:, j * ACT : (j + 1) * ACT], sent, atol=1e-5)
-    stub = ResidualPolicyWrapper.__new__(ResidualPolicyWrapper)
-    stub.ee, stub.steps_per_chunk = object(), 2
-    with pytest.raises(NotImplementedError, match="action_frame: ee and residual.steps_per_chunk 2"):
-        residual_mod.residual_critic_action(SimpleNamespace(residual=SimpleNamespace(enabled=True, critic_action="full")), stub)
 
 
 def test_direct_hooks_announce_the_agents_action_width_and_keep_forges_buffer():
@@ -384,31 +380,6 @@ def test_the_wrapper_can_leave_the_base_action_out_and_the_observation_raw(monke
     raw = torch.tensor([[0.0, 1.0, 2.0, 3.0, 4.0]]).expand(N, -1)
     assert torch.allclose(obs["policy"][:, :OBS], raw)
     assert torch.allclose(obs["policy"][:, OBS:], wrapped.base_action)
-
-
-def test_the_ee_critic_action_reads_the_critic_state_whatever_the_agent_observes(monkeypatch):
-    from tests.residual.test_residual_ee import FakePoseEnv
-    from my_project.models.cfg import DiffusionUnetActorCfg
-    from my_project.models.diffusion_policy import DiffusionPolicy
-
-    torch.manual_seed(0)
-    actor = DiffusionUnetActorCfg(horizon=8, n_obs_steps=1, action_horizon=4, down_dims=[16, 32], diffusion_step_embed_dim=16,
-                                  n_groups=4, inference_steps=2, num_diffusion_iters=10, warm_start=False)
-    policy = DiffusionPolicy(actor, 61, 10)
-    policy.normalizer.fit("obs", torch.cat([torch.randn(20, 61), FakePoseEnv().obs]))
-    policy.normalizer.fit("action", torch.randn(20, 10))
-    monkeypatch.setattr(residual_mod, "load_base_policy", lambda *a, **k: policy.eval())
-    rc = ResidualCfg(enabled=True, base_run="r", base_checkpoint="c", action_frame="ee", critic_action="full")
-    cfg = SimpleNamespace(task_name="Isaac-Furniture-OneLeg-FBAbs-ResiP-v0", residual=rc, hybrid=SimpleNamespace(enabled=False))
-    env = ResidualPolicyWrapper(FakePoseEnv(), cfg)
-    obs, _ = env.reset()
-    transform = residual_mod.residual_critic_action(cfg, env)
-    r = torch.tensor([[1.0, 0, 0, 0, 0, 0.5], [0.0, -0.5, 0.2, 0.3, 0, 0]])
-    critic_action = transform(obs["critic"], r)
-    base, R_ee = env.base_action.clone(), env.R_ee.clone()
-    env.step(r)
-    o, _ = env.ee.from_offset_obs(R_ee, critic_action)
-    assert torch.allclose(base[:, 0:3] + o, env.env.sent[:, 0:3], atol=1e-5)
 
 
 class PhaseEnv(ChunkEnv):

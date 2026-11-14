@@ -57,7 +57,11 @@ Never create a new conda env; never vendor a copy of the package into this repo.
   base's input never changes. `my_project/residual_demos.py` (`scripts/make_demo_transitions.py`)
   converts recorded demo frames offline (no sim) into an experiment's `sac.demo_transitions`, reusing `residual_observation` and `HistoryBuffer`, and
   `project_env_wrappers` refuses a file whose fingerprint is another setup's. The critic is
-  asymmetric (Forge's `state_order`: privileged sim state).
+  asymmetric (Forge's `state_order`: privileged sim state). What r does is `residual.action_space`:
+  `my_project/action_spaces.py` (`PerDimSpace`, `PoseSpace`: observe / send / invert, shared by the wrapper and the
+  demo loader) and `my_project/pose_residual.py` (the pose axes: frame, rotation, rotation parametrisation, add or
+  multiply, chained target). A new action variation is a value of one of those axes, never a new frame module; r's
+  range, start and exploration belong to the learner (`ddpg.action_range`, `model.actor.output_bias`).
 * `my_project/demos/` — hand-teleoperated demos: `teleop.py` (velocity → Forge action),
   `gamepad.py`, `writer.py` (LeRobot-style dataset), `state.py` (episode start snapshot /
   restore), `record.py` and `replay.py` (run by `scripts/record_demos.py` /
@@ -69,7 +73,11 @@ Never create a new conda env; never vendor a copy of the package into this repo.
     physics; chained onto `base/hpc.yaml`.
   * `eval/` — only what one test changes on top of the trained run's config (more friction, a
     recording); chained onto `base/hpc.yaml` for the eval launcher's resources.
-  * `experiments/<group>/` — `_foundation.yaml` (based on a `base/` task) holds what all of the
+  * `methods/<method>.yaml` — a published method with no task (`resfit.yaml`): residual, learner, memory, networks.
+    A foundation chains it after its task, `base: [../../base/<task>.yaml, ../../methods/<method>.yaml]`, and adds
+    only the task's own values, so the method is the same file on every task.
+  * `experiments/<group>/` — `_foundation.yaml` (based on a `base/` task, and a `methods/` file when the group runs a
+    published method) holds what all of the
     group's trainings share: seed, wandb entity, every learning parameter (`bc.*`, `sac.*`,
     `residual.*`, `history.*`, ...); one launch config per training, named type first
     (`bc_<group>.yaml`, `residual_<group>.yaml`), sets its learner (`trainer`), its `model`, its

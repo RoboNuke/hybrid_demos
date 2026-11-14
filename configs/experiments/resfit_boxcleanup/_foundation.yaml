@@ -8,7 +8,9 @@
 # 1, tau 0.005, 10 critics (the target's min over a random 2, the actor on their mean), loss (mean_k |Q_k - y|)^2, 4
 # critic updates per env step and the actor on every 4th, 10k env steps of the base plus uniform +-0.2 residuals, then
 # 10k critic-only updates, batch 256 half from the demos, timeouts terminal, one env per agent.
-base: ../../base/robosuite_boxcleanup.yaml
+base:
+  - ../../base/robosuite_boxcleanup.yaml
+  - ../../methods/resfit.yaml
 
 experiment:
   seed: 42
@@ -48,51 +50,16 @@ eval:
   save_state: false
   record: false
 
+# the task's own values over the method file's (configs/methods/resfit.yaml)
 residual:
+  # the base plans every chunk cold, as the demo residuals were measured
   base_warm_start: false
-  steps_per_chunk: 1
-  # ResFiT's form: the executed action is the base's plus 1.2 x half range x r per dim (their action normalization's
-  # x(1 + action_scale) widening), every dim
-  action_frame: absolute
-  action_scale: null
+  # action_scale 0.2: the range widened by 1 + 0.2, the clamp at the widened range
   action_scale_fraction: 1.2
-  normalize_observation: true
-  observe_base_action: true
-  # the actor observes the observation and the base action; the critics the observation and the executed action
-  critic_state: observation
-  critic_action: full
-
+  executed_clip: 1.2
 ddpg:
-  discount_factor: 0.99
-  n_step: 3
-  batch_size: 256
-  polyak: 0.005
   actor_lr: 5.0e-6
-  critic_lr: 1.0e-4
-  weight_decay: 0.01
-  grad_norm_clip: 1.0
-  num_critics: 10
-  critic_subset: 2
-  actor_q_reduction: mean
-  critic_loss: mean_abs_squared
-  gradient_steps: 4
-  update_every: 1
-  policy_delay: 4
-  learning_starts_rows: 10000
-  random_action_scale: 0.2
-  critic_warmup_updates: 10000
-  actor_action_scale: 0.2
-  exploration_std: 0.05
-  target_actor: true
-  target_policy_noise: true
-  target_noise_clip: 0.3
-  action_clip: 1.0
-  # timeouts end the target as a termination does (theirs: done = terminated | truncated)
-  bootstrap_time_limits: false
-  normalize_observations: false
-  route_labels: []
-  route_clock: false
+  action_range:
+    - -0.2
+    - 0.2
   cuda_graph: true
-
-memory:
-  memory_size: 200000

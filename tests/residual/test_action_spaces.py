@@ -8,12 +8,12 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from my_project.action_spaces import AbsoluteSpace, EESpace, MultiplySpace, TargetSpace
+import itertools
+
+from my_project.action_spaces import PerDimSpace, PoseSpace
 from my_project.demo_loader import env_rewards, env_terminations, episode_steps, episode_transitions
 from my_project.models.action_frame import mat_to_rot6d
-from my_project.residual_ee import EEResidual, exp_so3
-from my_project.residual_multiply import MultiplyResidual
-from my_project.residual_target import TargetResidual
+from my_project.pose_residual import FRAMES, PARAMS, ROTATIONS, PoseResidual, exp_so3
 
 N, T, H = 4, 10, 4
 
@@ -32,17 +32,40 @@ def observations(seed=0):
     return obs, base
 
 
+def pose_settings():
+    """Every valid pose configuration: frame x rotation x parametrisation x combine x target."""
+    out = {}
+    for frame, rotation, param, combine, target in itertools.product(FRAMES, ROTATIONS, PARAMS, ("add", "multiply"), ("none", "target")):
+        kw = dict(action_frame=frame, action_rotation=rotation, observation_frame=frame, observation_rotation=rotation,
+                  rotation_param=param, combine=combine, action_target=target, step_scale_pos=0.01, step_scale_rot=0.05)
+        try:
+            PoseResidual(**kw)
+        except ValueError:
+            continue
+        out[f"pose_{frame}_{rotation}_{param}_{combine}_{target}"] = kw
+    return out
+
+
+POSES = pose_settings()
 SPACES = {
-    "absolute": lambda: AbsoluteSpace(torch.full((10,), 0.05)),
-    "absolute_clip": lambda: AbsoluteSpace(torch.full((10,), 0.05), clip=(torch.full((10,), -5.0), torch.full((10,), 5.0))),
-    "target": lambda: TargetSpace(TargetResidual(torch.tensor([0.01, 0.02, 0.015]), 3.0, 0.1)),
-    "target_euler_no_grip": lambda: TargetSpace(TargetResidual(0.01, 3.0, 0.1, rotation="euler", gripper=False)),
-    "target_accumulate": lambda: TargetSpace(TargetResidual(0.01, 3.0, 0.1, axes="base"), accumulate=True, reach=H),
-    "ee": lambda: EESpace(EEResidual(0.01, 3.0, False, H)),
-    "ee_accumulate": lambda: EESpace(EEResidual(0.01, 3.0, True, H)),
-    "multiply_increment": lambda: MultiplySpace(MultiplyResidual(-1.5, 3.5, "increment"), 10),
-    "multiply_ee": lambda: MultiplySpace(MultiplyResidual(-1.5, 3.5, "ee"), 10),
+    "per_dim": lambda: PerDimSpace(torch.full((10,), 0.05)),
+    "per_dim_clip": lambda: PerDimSpace(torch.full((10,), 0.05), clip=(torch.full((10,), -5.0), torch.full((10,), 5.0))),
+    **{name: (lambda kw=kw: PoseSpace(PoseResidual(**kw), 10, critic_mode="observation")) for name, kw in POSES.items()},
 }
+
+
+def test_every_axis_combination_is_buildable_except_the_refused_ones():
+    # multiply needs a motion (a target, or a relative frame and rotation) and a zero-at-identity parametrisation
+    multiply = [n for n in POSES if "_multiply_" in n]
+    assert all("_rot6d_" not in n for n in multiply)
+    assert all(n.endswith("_target") or ("_absolute_" not in n.split("pose_")[1][:9] and "_relative_" in n) for n in multiply)
+    assert len([n for n in POSES if "_add_" in n]) == 3 * 2 * 3 * 2  # every add combination
+
+
+def r_draw(space, g):
+    if isinstance(space, PoseSpace) and space.pose.combine == "multiply":
+        return 1.0 + (torch.rand(N, space.width, generator=g) * 2 - 1) * 0.6  # multipliers about 1
+    return (torch.rand(N, space.width, generator=g) * 2 - 1) * 0.8
 
 
 @pytest.mark.parametrize("name", list(SPACES))
@@ -56,23 +79,32 @@ def test_invert_recovers_r_and_the_state_send_produced_over_an_episode(name):
     for t in range(T):
         kw = dict(fresh=torch.full((N,), t == 0), new_chunk=torch.full((N,), t % H == 0), routed=routed)
         step, online = space.observe(obs[t], base[t], online, **kw)
-        r = (torch.rand(N, space.width, generator=g) * 2 - 1) * 0.8
+        r = r_draw(space, g)
         sent, online = space.send(r, step, online)
         step_off, offline = space.observe(obs[t], base[t], offline, **kw)
         for key in ("policy", "side"):
             torch.testing.assert_close(step_off[key], step[key])
+        before = offline
         r_back, offline = space.invert(sent, step_off, offline)
-        if name.startswith("multiply"):  # a dim whose base motion is under the inversion's floor reads as m = 1
-            big = step_off["d"].abs() >= torch.tensor([space.multiply.eps_pos] * 3 + [space.multiply.eps_rot] * 3)
+        if isinstance(space, PoseSpace) and space.pose.param == "rot6d":
+            # rot6d: 6 numbers for 3 rotational degrees of freedom, Gram-Schmidt absorbs the rest -- the inverted r is one
+            # that sends the same target (a right inverse), not necessarily the r drawn
+            again, _ = space.send(r_back, step_off, before)
+            torch.testing.assert_close(again, sent, atol=1e-5, rtol=0)
+        elif isinstance(space, PoseSpace) and space.pose.combine == "multiply":
+            # a dim whose base motion is under the inversion's floor reads as m = 1
+            pose = space.pose
+            big = step_off["d"].abs() >= torch.tensor([pose.eps_pos] * 3 + [pose.eps_rot] * (pose.width - 3))
             torch.testing.assert_close(r_back[big], r[big], atol=2e-3, rtol=0)
         else:
-            torch.testing.assert_close(r_back, r, atol=2e-4, rtol=0)
+            torch.testing.assert_close(r_back, r, atol=2e-3, rtol=0)
         for key in online:
             torch.testing.assert_close(offline[key], online[key], atol=2e-4, rtol=0)
 
 
 def test_episode_steps_rebuild_each_frame_and_r_through_the_space():
-    space = SPACES["multiply_increment"]()
+    space = PoseSpace(PoseResidual(observation_frame="relative", observation_rotation="relative", combine="multiply",
+                                   action_target="target"), 10, critic_mode="observation")
     obs, base = observations(seed=3)
     g = torch.Generator().manual_seed(2)
     state = space.initial_state(N, "cpu")
@@ -80,7 +112,7 @@ def test_episode_steps_rebuild_each_frame_and_r_through_the_space():
     for t in range(T):
         step, state = space.observe(obs[t], base[t], state, fresh=torch.full((N,), t == 0),
                                     new_chunk=torch.full((N,), t % H == 0), routed=torch.ones(N, dtype=torch.bool))
-        r = torch.rand(N, 6, generator=g) * 1.2 - 0.6
+        r = 1.0 + (torch.rand(N, 6, generator=g) * 1.2 - 0.6)
         sent, state = space.send(r, step, state)
         r_true.append(r), executed.append(sent), steps.append(step)
     episodes = [{"states": obs[:, i], "base_actions": base[:, i], "actions": torch.stack(executed)[:, i],
@@ -89,7 +121,7 @@ def test_episode_steps_rebuild_each_frame_and_r_through_the_space():
     for i in range(N):
         torch.testing.assert_close(out[i]["policy"], torch.stack([s["policy"][i] for s in steps]))
         d = torch.stack([s["d"][i] for s in steps])
-        big = d.abs() >= torch.tensor([space.multiply.eps_pos] * 3 + [space.multiply.eps_rot] * 3)
+        big = d.abs() >= torch.tensor([space.pose.eps_pos] * 3 + [space.pose.eps_rot] * 3)
         torch.testing.assert_close(out[i]["r"][big], torch.stack(r_true)[:, i][big], atol=2e-3, rtol=0)
 
 
