@@ -55,6 +55,12 @@ def setup() -> None:
 
     register_exploration_scale(residual_exploration_scale)  # ddpg noise blocks' adaptive (the base's motion in r units)
 
+    from robonuke_rl_core.learners.sac import register_neutral_action
+
+    from my_project.residual import residual_neutral_action
+
+    register_neutral_action(residual_neutral_action)  # the base alone: r = 1 for multiply, else 0
+
     from robonuke_rl_core.learners.sac import register_demo_loader
 
     from my_project.demo_loader import residual_demo_loader

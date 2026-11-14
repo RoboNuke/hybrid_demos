@@ -9,8 +9,9 @@ import pytest
 import torch
 
 from my_project.action_spaces import PoseSpace
-from my_project.pose_residual import SIDE_WIDTH, PoseResidual, ee_frame
-from tests.residual.test_action_spaces import POSES, H, N, T, observations
+from my_project.models.action_frame import mat_to_rot6d, rot6d_to_mat
+from my_project.pose_residual import SIDE_WIDTH, PoseResidual, ee_frame, exp_so3
+from tests.residual.test_action_spaces import POSES, H, N, T, observations, scale_for
 
 
 def neutral(pose, n):
@@ -62,7 +63,7 @@ def test_the_critics_action_is_the_sent_target_and_the_base_where_the_phase_has_
 
 def test_the_chunk_frame_is_the_ee_where_the_chunk_began_and_moves_only_at_a_chunk_start():
     pose = PoseResidual(action_frame="chunk", action_rotation="relative", observation_frame="chunk",
-                        observation_rotation="relative")
+                        observation_rotation="relative", step_scale=scale_for("rotvec"))
     space = PoseSpace(pose, 10, critic_mode="observation")
     rows = episode(space, lambda t: neutral(pose, N))
     for t, (obs, _, _, _, _, state) in enumerate(rows):
@@ -81,16 +82,16 @@ def test_the_chained_target_starts_at_the_ee_and_holds_when_the_multiplier_is_ze
 
 def test_the_actor_observes_the_motion_and_the_current_target_and_the_critics_the_target_too():
     for param, width in (("rotvec", 6), ("euler", 6), ("rot6d", 9)):
-        pose = PoseResidual(rotation_param=param, action_target="target")
+        pose = PoseResidual(rotation_param=param, action_target="target", step_scale=scale_for(param))
         assert pose.width == width and pose.observed_width == width + 1 and pose.current_width == width
         space = PoseSpace(pose, 10, critic_mode="observation")
         obs, base, step, _, _, _ = episode(space, lambda t: neutral(pose, N))[1]
         assert step["policy"].shape == (N, 63 + width + 1 + width)
         assert step["critic"].shape == (N, 63 + width)
         torch.testing.assert_close(step["critic"][:, 63:], step["policy"][:, -width:])
-    plain = PoseResidual()
+    plain = PoseResidual(step_scale=scale_for("rotvec"))
     assert plain.current_width == 0
-    hidden = PoseResidual(action_target="target", critic_observes_target=False)
+    hidden = PoseResidual(action_target="target", critic_observes_target=False, step_scale=scale_for("rotvec"))
     space = PoseSpace(hidden, 10, critic_mode="observation")
     obs, base, step, _, _, _ = episode(space, lambda t: neutral(hidden, N))[1]
     assert hidden.critic_current_width == 0 and step["policy"].shape == (N, 63 + 6 + 1 + 6)
@@ -98,8 +99,8 @@ def test_the_actor_observes_the_motion_and_the_current_target_and_the_critics_th
 
 
 def test_the_adaptive_factor_is_the_bases_motion_in_r_units_read_from_the_agents_observation():
-    pose = PoseResidual(action_frame="relative", action_rotation="relative", step_scale_pos=0.02,
-                        step_scale_rot=math.radians(4.0))
+    pose = PoseResidual(action_frame="relative", action_rotation="relative",
+                        step_scale=scale_for("rotvec", 0.02, math.radians(4.0)))
     space = PoseSpace(pose, 10, critic_mode="observation")
     _, _, step, _, _, _ = episode(space, lambda t: neutral(pose, N))[2]
     expected = step["d"].abs() / torch.tensor([0.02] * 3 + [math.radians(4.0)] * 3)
@@ -112,25 +113,69 @@ def test_the_adaptive_factor_is_the_bases_motion_in_r_units_read_from_the_agents
     torch.testing.assert_close(mspace.motion_factor(mstep["policy"], 63), torch.ones(N, 6))  # r = 1: the base's motion
 
 
-def test_multiplying_a_pose_or_rot6d_numbers_is_refused():
+def test_multiplying_a_pose_is_refused():
     with pytest.raises(ValueError, match="scales a motion"):
         PoseResidual(combine="multiply")  # the absolute frame without a target: a pose
     with pytest.raises(ValueError, match="scales a motion"):
         PoseResidual(combine="multiply", action_frame="relative", action_rotation="absolute")
-    with pytest.raises(ValueError, match="rot6d"):
-        PoseResidual(combine="multiply", action_target="target", rotation_param="rot6d")
     with pytest.raises(ValueError, match="must be one of"):
-        PoseResidual(action_frame="ee")
+        PoseResidual(action_frame="ee", step_scale=scale_for("rotvec"))
+
+
+def test_the_step_scale_is_one_number_per_r_dim_for_add_and_none_for_multiply():
+    pose = PoseResidual(step_scale=[0.01, 0.02, 0.03, 0.1, 0.2, 0.3])  # per axis, m and rad
+    d = torch.zeros(1, 6)
+    torch.testing.assert_close(pose.step(d, torch.ones(1, 6)), torch.tensor([[0.01, 0.02, 0.03, 0.1, 0.2, 0.3]]))
+    for bad in (None, [0.01] * 5, [0.01] * 3 + [0.0] * 3):
+        with pytest.raises(ValueError, match="step_scale"):
+            PoseResidual(step_scale=bad)
+    assert PoseResidual(rotation_param="rot6d", step_scale=[0.01] * 9).width == 9
+    with pytest.raises(ValueError, match="multiply has none"):
+        PoseResidual(combine="multiply", action_target="target", step_scale=[0.01] * 6)
+
+
+def test_multiplied_rot6d_turns_the_vectors_and_a_collapsed_vector_is_the_bases():
+    pose = PoseResidual(combine="multiply", action_target="target", rotation_param="rot6d")
+    g = torch.Generator().manual_seed(3)
+    R = exp_so3(torch.randn(N, 3, generator=g) * 0.3)
+    d = torch.cat((torch.randn(N, 3, generator=g), mat_to_rot6d(R)), dim=-1)
+    r = 1.0 + 0.3 * torch.randn(N, 9, generator=g)  # each number its own multiplier
+    turned = pose.step(d, r)
+    torch.testing.assert_close(turned, r * d)  # no collapse: exactly the per-number product
+    zero = torch.ones(N, 9)
+    zero[:, 3:6] = 0.0  # the first vector shrunk to nothing
+    torch.testing.assert_close(pose.step(d, zero)[:, 3:6], d[:, 3:6])
+    ratio = torch.ones(N, 9)
+    ratio[:, 6:9] = d[:, 3:6] / d[:, 6:9]  # the second vector made the first (parallel to it)
+    torch.testing.assert_close(pose.step(d, ratio)[:, 6:9], d[:, 6:9])
+    R_out = rot6d_to_mat(pose.step(d, zero)[:, 3:9])
+    torch.testing.assert_close(R_out @ R_out.transpose(-1, -2), torch.eye(3).expand(N, 3, 3), atol=1e-5, rtol=0)
+
+
+def test_ee_relative_actions_observes_the_bases_target_relative_to_the_ee():
+    pose = PoseResidual(action_target="target", step_scale=scale_for("rotvec"), ee_relative_actions=True)
+    assert pose.observed_width == 7
+    space = PoseSpace(pose, 10, critic_mode="observation")
+    obs, base = observations(seed=4)
+    step, _ = space.observe(obs[0], base[0], space.initial_state(N, "cpu"), fresh=torch.ones(N, dtype=torch.bool),
+                            new_chunk=torch.ones(N, dtype=torch.bool), routed=torch.ones(N, dtype=torch.bool))
+    torch.testing.assert_close(step["policy"][:, 63:69], ee_frame(base[0], obs[0][:, 0:9]))
+    torch.testing.assert_close(step["policy"][:, 69:70], base[0][:, 9:10])
+    assert step["policy"].shape == (N, 63 + 7 + 6)  # then the current target
+    with pytest.raises(NotImplementedError, match="ee_relative_actions"):
+        space.motion_factor(step["policy"], 63)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device for the sync-debug mode")
-@pytest.mark.parametrize("combine, target", [("add", "target"), ("multiply", "target"), ("add", "none")])
-def test_a_pose_step_never_synchronizes_with_the_host(combine, target):
+@pytest.mark.parametrize("combine, target, param", [("add", "target", "rotvec"), ("multiply", "target", "rotvec"),
+                                                   ("add", "none", "rotvec"), ("multiply", "target", "rot6d")])
+def test_a_pose_step_never_synchronizes_with_the_host(combine, target, param):
     """The per-step path (observe, send, the critics' rebuilt action, the exploration scale) stays on the device: no
     tensor from a Python list, no host read (the critics' action also runs inside a captured CUDA graph)."""
     pose = PoseResidual(combine=combine, action_target=target, observation_frame="relative", observation_rotation="relative",
                         action_frame="absolute" if target == "target" else "relative",
-                        action_rotation="absolute" if target == "target" else "relative")
+                        action_rotation="absolute" if target == "target" else "relative", rotation_param=param,
+                        step_scale=scale_for(param) if combine == "add" else None)
     space = PoseSpace(pose, 10, critic_mode="observation")
     obs, base = (x.cuda() for x in observations(seed=5))
     state = {k: v.cuda() for k, v in space.initial_state(N, "cpu").items()}

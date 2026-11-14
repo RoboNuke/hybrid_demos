@@ -171,6 +171,10 @@ class PoseSpace(ActionSpace):
 
     def motion_factor(self, policy, kept_width):
         """The observed base motion ``d`` in r units (:meth:`PoseResidual.motion_scale`)."""
+        if self.pose.ee_relative_actions:
+            raise NotImplementedError("the adaptive noise factor reads the observed base motion d; with "
+                                      "residual.ee_relative_actions the agent observes the base's target relative to the "
+                                      "EE instead")
         return self.pose.motion_scale(policy[..., kept_width : kept_width + self.width])
 
     def send(self, r, step, state):

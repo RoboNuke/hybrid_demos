@@ -3,6 +3,7 @@ FurnitureBench branch of the demo conversion, on CPU fakes -- no Isaac Sim, no F
 
 from __future__ import annotations
 
+import math
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -536,8 +537,8 @@ def test_the_chained_additive_target_persists_until_the_base_replans(monkeypatch
     cfg = SimpleNamespace(
         task_name="Isaac-Furniture-OneLeg-FBAbs-ResiP-v0",
         residual=ResidualCfg(base_run="r", base_checkpoint="c", action_space="pose", combine="add", action_target="target",
-                             rotation_param="euler", critic_state="observation", critic_action="full", step_scale_pos=0.02,
-                             step_scale_rot_deg=6.0),
+                             rotation_param="euler", critic_state="observation", critic_action="full",
+                             step_scale=[0.02] * 3 + [math.radians(6.0)] * 3),
         hybrid=SimpleNamespace(extra_dims=0, enabled=False),
     )
     env = residual_mod.ResidualPolicyWrapper(FakePoseAbsEnv(), cfg)
@@ -553,3 +554,18 @@ def test_the_chained_additive_target_persists_until_the_base_replans(monkeypatch
         offsets.append(float((env.env.sent[0, 0] - base[0, 0]) * 1000))
     # steps 1-4 add up within the base's 4-step chunk; the replan at step 5 starts the chain over at the EE
     assert offsets == pytest.approx([20.0, 40.0, 60.0, 80.0, 20.0, 40.0], abs=1e-3)
+
+
+def test_the_base_alone_r_is_1_for_a_multiplied_pose_and_0_otherwise_and_the_learner_gets_it():
+    """``base_alone_r``: the one definition of "no residual" (eval base round, active_from_phase, the learner's
+    neutral action for base_only_episodes and switched-off steps)."""
+    from types import SimpleNamespace
+
+    from my_project.residual import base_alone_r, residual_neutral_action
+
+    assert base_alone_r(SimpleNamespace(action_space="pose", combine="multiply")) == 1.0
+    assert base_alone_r(SimpleNamespace(action_space="pose", combine="add")) == 0.0
+    assert base_alone_r(SimpleNamespace(action_space="per_dim", combine="add")) == 0.0
+    on = SimpleNamespace(residual=SimpleNamespace(enabled=True, action_space="pose", combine="multiply"))
+    assert residual_neutral_action(on, None) == 1.0
+    assert residual_neutral_action(SimpleNamespace(residual=SimpleNamespace(enabled=False)), None) is None

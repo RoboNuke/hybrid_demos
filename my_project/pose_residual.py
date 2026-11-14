@@ -17,12 +17,16 @@ FBAbs ResiP one (63). Everything here is set by independent config axes:
   ``advance(prev_sent, step; A)``. So ``r`` at its neutral value (0 for add, 1 for multiply) sends the base's own target.
 
 The gripper is always the base's. ``r`` is ``3 + 3`` wide (``3 + 6`` with ``rot6d``) and comes from the learner raw
-(its ``action_range`` sets what r can be). A frame transform is ``express(X; F, A) = (A^T (p_X - p_F), A^T R_X)``; an
+(its ``action_range`` sets what r can be). ``add``'s scale is one number per r dim (``residual.step_scale``: m on the
+position dims, rad -- per component with ``rot6d`` -- on the rotation dims). ``multiply`` on ``rot6d`` scales each of the
+6 numbers on its own, which turns the vectors (Gram-Schmidt makes them a rotation again); a vector the multipliers
+shrink to nothing, or a second one they make parallel to the first, is the base's own. A frame transform is ``express(X; F, A) = (A^T (p_X - p_F), A^T R_X)``; an
 increment ``(A^T (p_1 - p_0), A^T R_1 R_0^T A)``.
 
 The agent observes the env observation re-expressed in the observation frame (``residual.observation_drop`` then
-removes columns), the base's ``d`` and gripper, and -- ``target`` -- the current target expressed in the observation
-frame (parametrised). The critics observe the observation part (and the current target) and take the resulting target
+removes columns), the base's ``d`` (``ee_relative_actions``: instead, Policy Decorator's command form, the base's target
+relative to the EE in the EE's frame, ``[R_ee^T (p - p_ee), log(R_ee^T R)]``) and gripper, and -- ``target`` -- the
+current target expressed in the observation frame (parametrised). The critics observe the observation part (and the current target) and take the resulting target
 relative to the EE and the gripper (7), rebuilt from a fixed side input (:data:`SIDE_WIDTH`). Plain torch, gradients
 finite (``log_so3`` / ``exp_so3``): the critics' action goes through it. :meth:`PoseResidual.step_inputs` is the one
 definition of a step's inputs, for the env wrapper and the demo loader.
@@ -31,7 +35,7 @@ definition of a step's inputs, for the env wrapper and the demo loader.
 from __future__ import annotations
 
 import math
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 import torch
 
@@ -57,6 +61,8 @@ CRITIC_ACTION_WIDTH = 7
 
 #: inside the square roots below: keeps every gradient finite at the identity (a norm's is 0 / 0 there)
 _EPS = 1e-12
+#: a multiplied rot6d vector this short (or a second one this close to parallel) is the base's own
+_COLLAPSED = 1e-6
 
 
 # ------------------------------------------------------------------ rotations
@@ -195,22 +201,23 @@ def pose_from(rc, r_range=None, gripper: int = 9) -> "PoseResidual":
         action_frame=str(rc.action_frame), action_rotation=str(rc.action_rotation),
         observation_frame=str(rc.observation_frame), observation_rotation=str(rc.observation_rotation),
         rotation_param=str(rc.rotation_param), combine=str(rc.combine), action_target=str(rc.action_target),
-        step_scale_pos=float(rc.step_scale_pos), step_scale_rot=math.radians(float(rc.step_scale_rot_deg)),
-        critic_observes_target=bool(rc.critic_observes_target), r_range=r_range, gripper=gripper,
+        step_scale=None if rc.step_scale is None else [float(v) for v in rc.step_scale],
+        critic_observes_target=bool(rc.critic_observes_target), ee_relative_actions=bool(rc.ee_relative_actions),
+        r_range=r_range, gripper=gripper,
     )
 
 
 class PoseResidual:
-    """See the module docstring. ``step_scale_pos`` m and ``step_scale_rot`` (rad; with ``rot6d`` the same number per
-    rot6d component) per unit ``r`` for ``add``; ``r_range`` ``(lo, hi)`` the bounds a demo's inverted multiplier is
+    """See the module docstring. ``step_scale`` (``add``): one number per r dim, m on the position dims, rad on the
+    rotation dims (per component with ``rot6d``); ``r_range`` ``(lo, hi)`` the bounds a demo's inverted multiplier is
     clamped to (``multiply``); ``gripper`` the action's gripper dim; ``eps_pos`` m / ``eps_rot`` rad: a demo's base
     motion this small on a dim gives no ratio (the multiplier 1)."""
 
     def __init__(self, *, action_frame: str = "absolute", action_rotation: str = "absolute",
                  observation_frame: str = "absolute", observation_rotation: str = "absolute",
                  rotation_param: str = "rotvec", combine: str = "add", action_target: str = "none",
-                 step_scale_pos: float = 0.01, step_scale_rot: float = math.radians(5.0),
-                 critic_observes_target: bool = True, r_range: Optional[Tuple[float, float]] = None, gripper: int = 9,
+                 step_scale: Optional[Sequence[float]] = None, critic_observes_target: bool = True,
+                 ee_relative_actions: bool = False, r_range: Optional[Tuple[float, float]] = None, gripper: int = 9,
                  eps_pos: float = 5e-4, eps_rot: float = math.radians(0.5)) -> None:
         for name, value, allowed in (("action_frame", action_frame, FRAMES), ("action_rotation", action_rotation, ROTATIONS),
                                      ("observation_frame", observation_frame, FRAMES),
@@ -229,19 +236,23 @@ class PoseResidual:
                 raise ValueError("residual.combine: multiply scales a motion; without action_target: target the base's "
                                  "target expressed in this frame is a pose, not a motion: use action_target: target, or "
                                  "action_frame chunk / relative with action_rotation: relative")
-            if rotation_param == "rot6d":
-                raise ValueError("residual.combine: multiply scales each number of the motion; rot6d's identity is not "
-                                 "zero, so its numbers are no motion: use rotation_param rotvec or euler")
-        self.scale_pos, self.scale_rot = float(step_scale_pos), float(step_scale_rot)
-        if combine == "add" and (self.scale_pos <= 0 or self.scale_rot <= 0):
-            raise ValueError("residual.step_scale_pos and step_scale_rot_deg must be > 0 for combine: add")
+        width = 3 + param_width(rotation_param)
+        if combine == "add":
+            if step_scale is None or len(step_scale) != width or any(float(v) <= 0 for v in step_scale):
+                raise ValueError(f"residual.step_scale: combine: add takes one number > 0 per r dim, {width} with "
+                                 f"rotation_param {rotation_param} (m on the 3 position dims, rad on the rotation dims), "
+                                 f"got {None if step_scale is None else list(step_scale)}")
+        elif step_scale is not None:
+            raise ValueError("residual.step_scale is add's scale; combine: multiply has none (r is the multiplier): leave it null")
+        self.step_scale = None if step_scale is None else [float(v) for v in step_scale]
+        self.ee_relative_actions = bool(ee_relative_actions)
         self.r_range = None if r_range is None else (float(r_range[0]), float(r_range[1]))
         self.gripper = int(gripper)
         self.eps_pos, self.eps_rot = float(eps_pos), float(eps_rot)
         #: the agent's per-step action: position 3, rotation in the parametrisation
         self.width = 3 + param_width(rotation_param)
-        #: the observed base motion: d and the base's gripper command
-        self.observed_width = self.width + 1
+        #: the observed base: d (ee_relative_actions: the target relative to the EE, 6) and the base's gripper command
+        self.observed_width = (6 if self.ee_relative_actions else self.width) + 1
         #: target: the current target expressed in the observation frame, parametrised (the agent's)
         self.current_width = self.width if self.target else 0
         #: the critics' copy of it: ``critic_observes_target`` false leaves it out (a critic trained before they saw it)
@@ -268,7 +279,8 @@ class PoseResidual:
 
     @property
     def scale(self):
-        return [self.scale_pos] * 3 + [self.scale_rot] * param_width(self.param)
+        """add's per-dim scale; multiply has none (ones: r itself)."""
+        return self.step_scale if self.step_scale is not None else [1.0] * self.width
 
     def _constant(self, like: torch.Tensor) -> Dict[str, torch.Tensor]:
         key = (like.device, like.dtype)
@@ -304,10 +316,22 @@ class PoseResidual:
         return torch.cat((dp, to_param(dR, self.param)), dim=-1), anchor, A
 
     def step(self, d: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
-        """The parametrised step: ``d + scale * r`` (add) or ``r * d`` (multiply), per dim."""
+        """The parametrised step: ``d + scale * r`` (add) or ``r * d`` (multiply), per dim. Multiplied rot6d: a vector
+        shrunk to nothing, or a second vector made parallel to the first, is the base's own (no rotation otherwise)."""
         if r.shape[-1] != self.width:
             raise ValueError(f"the pose residual is {self.width} per step, got {r.shape[-1]}")
-        return d + self._scale(d) * r if self.combine == "add" else r * d
+        if self.combine == "add":
+            return d + self._scale(d) * r
+        step = r * d
+        if self.param != "rot6d":
+            return step
+        a1, a2 = step[..., 3:6], step[..., 6:9]
+        a1 = torch.where(a1.norm(dim=-1, keepdim=True) < _COLLAPSED, d[..., 3:6], a1)
+        b1 = torch.nn.functional.normalize(a1, dim=-1)
+        rest = a2 - (b1 * a2).sum(-1, keepdim=True) * b1
+        a2 = torch.where(rest.norm(dim=-1, keepdim=True) < _COLLAPSED * a2.norm(dim=-1, keepdim=True).clamp(min=1.0),
+                         d[..., 6:9], a2)
+        return torch.cat((step[..., 0:3], a1, a2), dim=-1)
 
     def pose_of(self, step: torch.Tensor, anchor: torch.Tensor, A: torch.Tensor) -> torch.Tensor:
         """A parametrised step taken back to a pose ``(N, 9)`` from its anchor."""
@@ -335,8 +359,42 @@ class PoseResidual:
         if self.combine == "add":
             return (d_x - d) / self._scale(d)
         big = d.abs() >= self._constant(d)["eps"]
-        ratio = torch.where(big, d_x / torch.where(big, d, torch.ones_like(d)), torch.ones_like(d))
+        safe = torch.where(big, d, torch.ones_like(d))
+        ratio = torch.where(big, d_x / safe, torch.ones_like(d))
+        if self.param == "rot6d":
+            ratio = torch.cat((ratio[..., 0:3], self._rot6d_ratio(d, d_x, big, safe)), dim=-1)
         return ratio if self.r_range is None else ratio.clamp(*self.r_range)
+
+    @staticmethod
+    def _rot6d_ratio(d, d_x, big, safe) -> torch.Tensor:
+        """Multiplied rot6d's inverse: Gram-Schmidt ignores each vector's length, and the second vector's part along
+        the first, so the target needs ``r1 d1 = l1 x1`` and ``r2 d2 = l2 x2 + m x1`` -- on a number whose base motion is
+        under the floor r stays 1, so ``l1`` (and ``l2``, ``m``) are fitted to those numbers by least squares, and the
+        others solved exactly from them."""
+        d1, d2, x1, x2 = d[..., 3:6], d[..., 6:9], d_x[..., 3:6], d_x[..., 6:9]
+        s1, s2 = (~big[..., 3:6]).to(d.dtype), (~big[..., 6:9]).to(d.dtype)
+        den = (s1 * x1 * x1).sum(-1, keepdim=True)
+        l1 = torch.where(den > 1e-12, (s1 * d1 * x1).sum(-1, keepdim=True) / den.clamp(min=1e-12), torch.ones_like(den))
+        # second vector: [l2, m] = argmin over the floored numbers of |d2 - l2 x2 - m x1|^2 (ridge-free 2 x 2 normal eqs)
+        a, b = s2 * x2, s2 * x1
+        aa, bb, ab = (a * a).sum(-1), (b * b).sum(-1), (a * b).sum(-1)
+        ad, bd = (a * d2).sum(-1), (b * d2).sum(-1)
+        det = aa * bb - ab * ab
+        ok = det.abs() > 1e-12
+        only = aa > 1e-12
+        l2 = torch.where(ok, (bb * ad - ab * bd) / torch.where(ok, det, torch.ones_like(det)),
+                         torch.where(only, ad / aa.clamp(min=1e-12), torch.ones_like(aa)))
+        m = torch.where(ok, (aa * bd - ab * ad) / torch.where(ok, det, torch.ones_like(det)), torch.zeros_like(aa))
+        # a length must stay positive (a negative one turns the vector around): a fit that is not keeps the floor's 1
+        l1 = torch.where(l1 > 0, l1, torch.ones_like(l1))
+        flip = l2 <= 0
+        l2 = torch.where(flip, torch.ones_like(l2), l2)
+        m = torch.where(flip, torch.zeros_like(m), m)
+        t1 = l1 * x1
+        t2 = l2.unsqueeze(-1) * x2 + m.unsqueeze(-1) * x1
+        r1 = torch.where(big[..., 3:6], t1 / safe[..., 3:6], torch.ones_like(d1))
+        r2 = torch.where(big[..., 6:9], t2 / safe[..., 6:9], torch.ones_like(d2))
+        return torch.cat((r1, r2), dim=-1)
 
     def motion_scale(self, d: torch.Tensor) -> torch.Tensor:
         """The base's motion in r units per dim (DDPG's adaptive noise factor): ``|d - identity| / scale`` for
@@ -358,7 +416,9 @@ class PoseResidual:
             part = part[..., keep]
         d, anchor, A = self.motion(base, ee, ee_chunk, prev_sent, prev_base, chunk_start)
         grip = base[..., self.gripper : self.gripper + 1]
-        policy, critic = torch.cat((part, d, grip), dim=-1), part
+        # the observed base: d, or Policy Decorator's command form (the base's target relative to the EE)
+        seen = ee_frame(base, ee) if self.ee_relative_actions else d
+        policy, critic = torch.cat((part, seen, grip), dim=-1), part
         if self.target:
             F, A_obs = self._frame(self.observation_frame, self.observation_rotation, ee, ee_chunk)
             cp, cR = express(anchor, F, A_obs)

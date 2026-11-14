@@ -347,10 +347,13 @@ class ResidualCfg:
     #: pose, action_target: target: the critics observe the current target too. False: the agent alone does -- the
     #: critics' input as before they saw it (smol2's and every earlier multiply-chain run's checkpoints)
     critic_observes_target: bool = True
-    #: pose, combine: add: m per unit r on the position dims
-    step_scale_pos: float = 0.01
-    #: pose, combine: add: deg per unit r on the rotation dims (rot6d: the same number in radians per rot6d component)
-    step_scale_rot_deg: float = 5.0
+    #: pose, combine: add: the scale per r dim, one number each -- m on the 3 position dims, rad on the rotation dims (3,
+    #: or 6 rot6d components): 6 numbers (9 with rot6d). Required for add; null for multiply (r is the multiplier)
+    step_scale: Optional[List[float]] = None
+    #: pose: the agent observes the base's target in Policy Decorator's command form -- relative to the EE, in the
+    #: EE's frame, ``[R_ee^T (p - p_ee), log(R_ee^T R)]`` and the gripper (7) -- instead of ``d`` (the critics' action
+    #: is this form already)
+    ee_relative_actions: bool = False
     #: env steps per agent action (Policy Decorator's residual chunk). 1: the agent acts every env
     #: step. k > 1: it acts once every k env steps with a (k x A)-wide action, step-major (row j
     #: is sub-step j's residual, A the per-step width); the wrapper runs the k env steps, each
@@ -379,9 +382,9 @@ class ResidualCfg:
     #: override the base run's ``model.actor.warm_start`` (null keeps it): false plans every chunk from pure noise
     base_warm_start: Optional[bool] = None
     #: one_leg's task phase (``furniture.track_phases``: corner, grasp, insert, screw) from which the residual acts:
-    #: an agent step whose observation's phase is earlier (or an episode-end code) runs the base alone, the agent's
-    #: action zeroed, and ``infos["residual_active"]`` (1 / 0 per env) says which steps used it (set
-    #: ``sac.executed_action_mask: residual_active`` so the memory stores the executed zeros, or ``sac.store_labels`` to
+    #: an agent step whose observation's phase is earlier (or an episode-end code) runs the base alone (r = 1 for
+    #: combine: multiply, 0 otherwise), and ``infos["residual_active"]`` (1 / 0 per env) says which steps used it (set
+    #: ``sac.executed_action_mask: residual_active`` so the memory stores that r, or ``sac.store_labels`` to
     #: store only the phases it acts in). "insert": only after the leg is grasped. Train and eval alike. None: every step
     active_from_phase: Optional[str] = None
     #: columns of the base's observation the residual never sees, as ``[start, stop)`` pairs: removed from the agent's
@@ -423,20 +426,18 @@ class ResidualCfg:
     #: the pose axes and their defaults: a per_dim run must leave them alone (they would do nothing)
     POSE_FIELDS = {"action_frame": "absolute", "action_rotation": "absolute", "observation_frame": "absolute",
                    "observation_rotation": "absolute", "rotation_param": "rotvec", "combine": "add", "action_target": "none",
-                   "critic_observes_target": True, "step_scale_pos": 0.01, "step_scale_rot_deg": 5.0}
+                   "critic_observes_target": True, "step_scale": None, "ee_relative_actions": False}
     CRITIC_STATES = ("residual", "observation")
     PHASES = ("corner", "grasp", "insert", "screw")
 
     def _validate_pose(self, cfg: Any) -> None:
         """action_space: pose: the axes (checked by the map itself), and what the pose space is built for."""
-        import math
-
         from my_project.pose_residual import PoseResidual
 
         PoseResidual(action_frame=self.action_frame, action_rotation=self.action_rotation,
                      observation_frame=self.observation_frame, observation_rotation=self.observation_rotation,
                      rotation_param=self.rotation_param, combine=self.combine, action_target=self.action_target,
-                     step_scale_pos=self.step_scale_pos, step_scale_rot=math.radians(self.step_scale_rot_deg))
+                     step_scale=self.step_scale, ee_relative_actions=self.ee_relative_actions)
         if not self.critic_observes_target and self.action_target != "target":
             raise ValueError("residual.critic_observes_target: false leaves the current target out of the critics' input; "
                              "without action_target: target there is none")
@@ -445,8 +446,6 @@ class ResidualCfg:
                  "no phase_scales (a per_dim scale)": not self.phase_scales, "no executed_clip (a per_dim clamp)": self.executed_clip is None,
                  "action_scale: null (a per_dim scale)": self.action_scale is None,
                  "no action_half_range_floor (a per_dim scale)": self.action_half_range_floor is None}
-        if self.combine == "multiply":
-            needs["no active_from_phase (its zeroed r holds the target, it does not run the base)"] = self.active_from_phase is None
         missing = [k for k, ok in needs.items() if not ok]
         if missing:
             raise ValueError(f"residual.action_space: pose needs {missing}")
@@ -459,17 +458,9 @@ class ResidualCfg:
         if cfg.hybrid.enabled:
             raise ValueError("residual.action_space: pose has no hybrid blocks; switch hybrid off")
         if self.combine == "multiply":
-            sec = q_section(cfg)
             if cfg.trainer.learner != "ddpg":
                 raise ValueError("residual.combine: multiply reads r as the multiplier itself: trainer.learner: ddpg, whose "
                                  "action_range sets what it can be")
-            if int(getattr(sec, "warmup_episodes", 0)) > 0:
-                raise ValueError("residual.combine: multiply: ddpg.warmup_episodes acts with zero actions, the multiplier 0, "
-                                 "which freezes the target instead of running the base alone: leave it 0")
-            lo, hi = (float(v) for v in sec.action_range)
-            if not lo < 1.0 < hi:
-                raise ValueError(f"residual.combine: multiply: ddpg.action_range {list(sec.action_range)} must hold 1 (the "
-                                 "base's own motion) inside")
 
     def validate(self, cfg: Any) -> None:
         if self.critic_action not in self.CRITIC_ACTIONS:

@@ -807,10 +807,12 @@ def _evaluate_all(env, cfg, ckpt_dirs: Sequence[Path], sinks: Sequence[_AgentSin
                 sink.record(step, label, result)
 
     if any(0 not in sink.done for sink in sinks) and not getattr(args, "skip_base", False):
-        # the base alone: the neutral r, 1 for combine: multiply (a zero multiplier would freeze the target), else 0; no
-        # checkpoint needed; the same policy for every agent
+        # the base alone: r = 1 for combine: multiply (a zero multiplier would freeze the target), else 0 (base_alone_r);
+        # no checkpoint needed; the same policy for every agent
+        from my_project.residual import base_alone_r
+
         width = int(env.action_space.shape[-1])
-        fill = 1.0 if cfg.residual.combine == "multiply" else 0.0
+        fill = base_alone_r(cfg.residual)
         neutral = lambda observations, states: torch.full((observations.shape[0], width), fill, device=observations.device)
         record_all(0, "base only", evaluate_agents(env, neutral, seed, "base only", num_rollouts, num_agents))
 

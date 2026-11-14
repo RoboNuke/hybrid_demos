@@ -12,7 +12,7 @@ import itertools
 
 from my_project.action_spaces import PerDimSpace, PoseSpace
 from my_project.demo_loader import env_rewards, env_terminations, episode_steps, episode_transitions
-from my_project.models.action_frame import mat_to_rot6d
+from my_project.models.action_frame import mat_to_rot6d, rot6d_to_mat
 from my_project.pose_residual import FRAMES, PARAMS, ROTATIONS, PoseResidual, exp_so3
 
 N, T, H = 4, 10, 4
@@ -32,12 +32,18 @@ def observations(seed=0):
     return obs, base
 
 
+def scale_for(param, pos=0.01, rot=0.05):
+    """add's step_scale: one number per r dim (m, rad)."""
+    return [pos] * 3 + [rot] * (6 if param == "rot6d" else 3)
+
+
 def pose_settings():
     """Every valid pose configuration: frame x rotation x parametrisation x combine x target."""
     out = {}
     for frame, rotation, param, combine, target in itertools.product(FRAMES, ROTATIONS, PARAMS, ("add", "multiply"), ("none", "target")):
         kw = dict(action_frame=frame, action_rotation=rotation, observation_frame=frame, observation_rotation=rotation,
-                  rotation_param=param, combine=combine, action_target=target, step_scale_pos=0.01, step_scale_rot=0.05)
+                  rotation_param=param, combine=combine, action_target=target,
+                  step_scale=scale_for(param) if combine == "add" else None)
         try:
             PoseResidual(**kw)
         except ValueError:
@@ -55,9 +61,9 @@ SPACES = {
 
 
 def test_every_axis_combination_is_buildable_except_the_refused_ones():
-    # multiply needs a motion (a target, or a relative frame and rotation) and a zero-at-identity parametrisation
+    # multiply needs a motion (a target, or a relative frame and rotation); rot6d included
     multiply = [n for n in POSES if "_multiply_" in n]
-    assert all("_rot6d_" not in n for n in multiply)
+    assert any("_rot6d_" in n for n in multiply)
     assert all(n.endswith("_target") or ("_absolute_" not in n.split("pose_")[1][:9] and "_relative_" in n) for n in multiply)
     assert len([n for n in POSES if "_add_" in n]) == 3 * 2 * 3 * 2  # every add combination
 
@@ -86,7 +92,15 @@ def test_invert_recovers_r_and_the_state_send_produced_over_an_episode(name):
             torch.testing.assert_close(step_off[key], step[key])
         before = offline
         r_back, offline = space.invert(sent, step_off, offline)
-        if isinstance(space, PoseSpace) and space.pose.param == "rot6d":
+        if isinstance(space, PoseSpace) and space.pose.param == "rot6d" and space.pose.combine == "multiply":
+            # multiplied rot6d: a number whose base motion is under the floor keeps r = 1, so the re-sent target is close,
+            # not exact -- within the position floor and about a degree of rotation (the free lengths fitted)
+            again, _ = space.send(r_back, step_off, before)
+            assert float((again[:, 0:3] - sent[:, 0:3]).norm(dim=-1).max()) <= space.pose.eps_pos
+            Ra, Rs = rot6d_to_mat(again[:, 3:9]), rot6d_to_mat(sent[:, 3:9])
+            cos = ((Ra.transpose(-1, -2) @ Rs).diagonal(dim1=-2, dim2=-1).sum(-1) - 1) / 2
+            assert float(torch.rad2deg(torch.arccos(cos.clamp(-1, 1))).max()) <= 1.5
+        elif isinstance(space, PoseSpace) and space.pose.param == "rot6d":
             # rot6d: 6 numbers for 3 rotational degrees of freedom, Gram-Schmidt absorbs the rest -- the inverted r is one
             # that sends the same target (a right inverse), not necessarily the r drawn
             again, _ = space.send(r_back, step_off, before)

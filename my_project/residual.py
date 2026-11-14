@@ -55,7 +55,7 @@ import torch
 __all__ = [
     "load_base_policy", "base_run_dir", "base_source", "override_base", "ResidualPolicyWrapper", "residual_scale",
     "residual_observation", "critic_state", "find_residual", "full_action_transform", "residual_scale_and_clip",
-    "residual_critic_action", "residual_exploration_scale",
+    "residual_critic_action", "residual_exploration_scale", "base_alone_r", "residual_neutral_action",
     "SideInputTransform", "PoseSideInput", "SIDE_INPUT",
 ]
 
@@ -324,6 +324,22 @@ def residual_critic_action(cfg: Any, env: Any):
     return full_action_transform(wrapper.critic_base_slice, wrapper.scale, wrapper.steps_per_chunk)
 
 
+def base_alone_r(rc: Any) -> float:
+    """The r that sends the base's own action: 1 for ``residual.combine: multiply`` (r is the multiplier), else 0 -- the one
+    definition of "no residual", for the eval's base-alone round, ``active_from_phase`` and the learner's neutral
+    action (``base_only_episodes``, the stored action of a switched-off step)."""
+    return 1.0 if rc.action_space == "pose" and rc.combine == "multiply" else 0.0
+
+
+def residual_neutral_action(cfg: Any, env: Any):
+    """The package's ``register_neutral_action`` builder (the training script's ``setup``): :func:`base_alone_r` with
+    ``residual.enabled``; otherwise None (the learner's default 0)."""
+    rc = getattr(cfg, "residual", None)
+    if rc is None or not rc.enabled:
+        return None
+    return base_alone_r(rc)
+
+
 def residual_exploration_scale(cfg: Any, env: Any):
     """The package's ``register_exploration_scale`` builder (every training script's ``setup``): with
     ``residual.enabled``, ``observations -> (rows, A)``, the base's motion in r units read back out of agent
@@ -456,6 +472,8 @@ class ResidualPolicyWrapper(gym.Wrapper):
         from my_project.cfg import ResidualCfg
 
         self.active_from = None if rc.active_from_phase is None else ResidualCfg.PHASES.index(rc.active_from_phase)
+        #: the r that sends the base's own action (base_alone_r): active_from_phase's switched-off steps
+        self.base_alone = base_alone_r(rc)
         self.phase = torch.zeros((hooks.num_envs,), dtype=torch.long, device=hooks.device)
         #: the task phase of each env's current observation, whenever the env publishes it (infos eval_state phase/id,
         #: furniture.track_phases), for the per-phase correction sizes (:meth:`_phase_metrics`); None until it has
@@ -529,7 +547,8 @@ class ResidualPolicyWrapper(gym.Wrapper):
             + ("; critics observe the observation alone" if self.critic_mode == "observation" else "")
             + (f"; pose residual: action frame {pose.action_frame} ({pose.action_rotation} rotation), {pose.param}, "
                f"{pose.combine}{' with a chained target (the EE at each chunk start)' if pose.target else ''}"
-               + (f", {pose.scale_pos} m / {rc.step_scale_rot_deg} deg per unit r" if pose.combine == "add" else "")
+               + (f", step scale {pose.step_scale} (m, rad) per unit r" if pose.combine == "add" else "")
+               + ("; the base observed relative to the EE" if pose.ee_relative_actions else "")
                + f"; observation in the {pose.observation_frame} frame ({pose.observation_rotation} rotation); the gripper "
                f"the base's; residuals in {[n for n, on in zip(self.phase_names, self.routed_rows.tolist()) if on]}"
                if pose is not None else ""),
@@ -584,7 +603,8 @@ class ResidualPolicyWrapper(gym.Wrapper):
         if self.active_from is not None:
             # the residual acts only from phase active_from on (phase ids 4-6: an episode's end, never)
             active = (self.phase >= self.active_from) & (self.phase < len(PHASE_NAMES))
-            action = action * active.unsqueeze(-1).to(action.dtype)
+            # before it, the base alone: r = 1 for multiply, 0 otherwise (base_alone_r)
+            action = torch.where(active.unsqueeze(-1), action, torch.full_like(action, self.base_alone))
         acted_in = self.obs_phase  # the phase of the observation this action was chosen for
         out = self._step_chunk(action) if self.steps_per_chunk > 1 else self._step_once(action)
         self._count_episode(out)

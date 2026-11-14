@@ -46,6 +46,12 @@ def setup() -> None:
 
     register_critic_action(residual_critic_action)  # residual.critic_action: full (the critics are loaded at its width)
 
+    from robonuke_rl_core.learners.sac import register_neutral_action
+
+    from my_project.residual import residual_neutral_action
+
+    register_neutral_action(residual_neutral_action)  # the base alone: r = 1 for multiply, else 0
+
     from robonuke_rl_core.evaluation import register_eval_policy
 
     from my_project.bc.eval_policy import build_bc_eval_policy
