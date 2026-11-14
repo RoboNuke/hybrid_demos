@@ -344,6 +344,9 @@ class ResidualCfg:
     #: start and is moved every step by the base's planned increment combined with r (the current target joins the agent's
     #: and the critics' observation)
     action_target: str = "none"
+    #: pose, action_target: target: the critics observe the current target too. False: the agent alone does -- the
+    #: critics' input as before they saw it (smol2's and every earlier multiply-chain run's checkpoints)
+    critic_observes_target: bool = True
     #: pose, combine: add: m per unit r on the position dims
     step_scale_pos: float = 0.01
     #: pose, combine: add: deg per unit r on the rotation dims (rot6d: the same number in radians per rot6d component)
@@ -420,7 +423,7 @@ class ResidualCfg:
     #: the pose axes and their defaults: a per_dim run must leave them alone (they would do nothing)
     POSE_FIELDS = {"action_frame": "absolute", "action_rotation": "absolute", "observation_frame": "absolute",
                    "observation_rotation": "absolute", "rotation_param": "rotvec", "combine": "add", "action_target": "none",
-                   "step_scale_pos": 0.01, "step_scale_rot_deg": 5.0}
+                   "critic_observes_target": True, "step_scale_pos": 0.01, "step_scale_rot_deg": 5.0}
     CRITIC_STATES = ("residual", "observation")
     PHASES = ("corner", "grasp", "insert", "screw")
 
@@ -434,6 +437,9 @@ class ResidualCfg:
                      observation_frame=self.observation_frame, observation_rotation=self.observation_rotation,
                      rotation_param=self.rotation_param, combine=self.combine, action_target=self.action_target,
                      step_scale_pos=self.step_scale_pos, step_scale_rot=math.radians(self.step_scale_rot_deg))
+        if not self.critic_observes_target and self.action_target != "target":
+            raise ValueError("residual.critic_observes_target: false leaves the current target out of the critics' input; "
+                             "without action_target: target there is none")
         needs = {"critic_state: observation": self.critic_state == "observation", "critic_action: full": self.critic_action == "full",
                  "steps_per_chunk: 1": int(self.steps_per_chunk) == 1, "observe_base_action": bool(self.observe_base_action),
                  "no phase_scales (a per_dim scale)": not self.phase_scales, "no executed_clip (a per_dim clamp)": self.executed_clip is None,

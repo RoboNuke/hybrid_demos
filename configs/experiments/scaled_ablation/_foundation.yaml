@@ -21,7 +21,7 @@
 # Only the learning is ResFiT's: the task, its timing (10 Hz) and its episodes are fb_one_leg.yaml's.
 #
 # The learner is the package's ddpg (learners/ddpg.py): a deterministic residual actor 0.1 tanh(mu(s, a_base)) with
-# fixed Gaussian noise (std 0.025, unclipped), a target actor, 10 critics with the target's min over a random 2 and
+# fixed Gaussian noise (std 0.025, unclipped), a target actor, 5 critics with the target's min over a random 2 and
 # the actor on their mean (REDQ), TD3's target smoothing (clip 0.3), 5-step returns, 4 critic updates and 1 actor
 # update per env step, a 10k-update critic warm-up, uniform warm-up actions, and half of every batch from the demos
 # (the actor on that same mixed batch).
@@ -50,7 +50,8 @@ base: ../../base/fb_one_leg.yaml
 
 experiment:
   seed: 42
-  num_agents: 5
+  # 3 agents x 5 critics (smol2): what fits a 24 h job at a useful step count
+  num_agents: 3
 
 wandb:
   entity: hur
@@ -69,7 +70,7 @@ trainer:
 task:
   cfg:
     scene:
-      num_envs: 5
+      num_envs: 3
     furniture:
       # insert counts as passed after the leg has stayed inserted for 5 steps
       phase_hold_steps: 5
@@ -133,8 +134,8 @@ ddpg:
   critic_lr: 1.0e-4
   weight_decay: 0.01
   grad_norm_clip: 1.0
-  # 10 critics (REDQ): the target's min over a random 2, the actor on their mean; the critic loss (mean_k |Q_k - y|)^2
-  num_critics: 10
+  # 5 critics (REDQ): the target's min over a random 2, the actor on their mean; the critic loss (mean_k |Q_k - y|)^2
+  num_critics: 5
   critic_subset: 2
   actor_q_reduction: mean
   critic_loss: mean_abs_squared
@@ -222,3 +223,9 @@ model:
     activation: ReLU
     layer_norm: true
     init: default
+
+# every training of the group: one job per launch file, 24 h
+hpc:
+  cpus: 8
+  mem: 32G
+  time: 1-00:00:00

@@ -196,7 +196,7 @@ def pose_from(rc, r_range=None, gripper: int = 9) -> "PoseResidual":
         observation_frame=str(rc.observation_frame), observation_rotation=str(rc.observation_rotation),
         rotation_param=str(rc.rotation_param), combine=str(rc.combine), action_target=str(rc.action_target),
         step_scale_pos=float(rc.step_scale_pos), step_scale_rot=math.radians(float(rc.step_scale_rot_deg)),
-        r_range=r_range, gripper=gripper,
+        critic_observes_target=bool(rc.critic_observes_target), r_range=r_range, gripper=gripper,
     )
 
 
@@ -210,7 +210,7 @@ class PoseResidual:
                  observation_frame: str = "absolute", observation_rotation: str = "absolute",
                  rotation_param: str = "rotvec", combine: str = "add", action_target: str = "none",
                  step_scale_pos: float = 0.01, step_scale_rot: float = math.radians(5.0),
-                 r_range: Optional[Tuple[float, float]] = None, gripper: int = 9,
+                 critic_observes_target: bool = True, r_range: Optional[Tuple[float, float]] = None, gripper: int = 9,
                  eps_pos: float = 5e-4, eps_rot: float = math.radians(0.5)) -> None:
         for name, value, allowed in (("action_frame", action_frame, FRAMES), ("action_rotation", action_rotation, ROTATIONS),
                                      ("observation_frame", observation_frame, FRAMES),
@@ -242,8 +242,11 @@ class PoseResidual:
         self.width = 3 + param_width(rotation_param)
         #: the observed base motion: d and the base's gripper command
         self.observed_width = self.width + 1
-        #: target: the current target expressed in the observation frame, parametrised (agent and critics)
+        #: target: the current target expressed in the observation frame, parametrised (the agent's)
         self.current_width = self.width if self.target else 0
+        #: the critics' copy of it: ``critic_observes_target`` false leaves it out (a critic trained before they saw it)
+        self.critic_observes_target = bool(critic_observes_target)
+        self.critic_current_width = self.current_width if self.critic_observes_target else 0
         self.side_width = SIDE_WIDTH
         #: device constants by (device, dtype), made once: a tensor built from a Python list is a host-to-device copy --
         #: a host synchronization every env step, and illegal inside a captured CUDA graph (the critics' update)
@@ -346,7 +349,7 @@ class PoseResidual:
                     chunk_start=None) -> Dict[str, torch.Tensor]:
         """One step's inputs, raw, for the env wrapper and the demo loader: ``policy`` (the re-expressed observation
         part, the base's ``d`` and gripper, then -- target -- the current target), ``critic`` (the observation part and
-        -- target -- the current target), ``side`` (:meth:`critic_action`'s), ``d``, ``anchor``, ``A`` (what
+        -- target, with ``critic_observes_target`` -- the current target), ``side`` (:meth:`critic_action`'s), ``d``, ``anchor``, ``A`` (what
         :meth:`sent` takes) and ``motion_scale``. ``obs`` ``(N, 61 | 63)`` raw, ``base`` ``(N, 10)``, ``keep`` the observation
         columns kept (or None), ``routed`` ``(N,)`` bool."""
         ee = obs[..., 0:9]
@@ -361,7 +364,8 @@ class PoseResidual:
             cp, cR = express(anchor, F, A_obs)
             current = torch.cat((cp, to_param(cR, self.param)), dim=-1)
             policy = torch.cat((policy, current), dim=-1)
-            critic = torch.cat((part, current), dim=-1)
+            if self.critic_observes_target:
+                critic = torch.cat((part, current), dim=-1)
         # the critics' side input; an env whose phase has no residual sends the base itself, which its side input
         # rebuilds whatever r is: without a target the step is d itself; with one the anchor is the base and d no motion
         on = routed.reshape(-1, 1)

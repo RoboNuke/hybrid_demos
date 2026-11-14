@@ -4,7 +4,8 @@ mid-run, steps in unrouted phases). ``multiply_increment_smol2.pt`` is the old `
 ``multiply_reference: increment`` with smol2_1_base's range ``[-1.5, 3.5]`` and observation columns; the old r was a unit
 r in [-1, 1] mapped onto that range, the new r is the multiplier itself. ``absolute.pt`` is the old ``action_frame:
 absolute`` with an executed clip. Observe / send / invert / the critics' action must agree to 1e-5; the one intended
-change is that the critics now also observe the current target (``action_target: target``)."""
+change is that the critics now also observe the current target (``action_target: target``), unless
+``critic_observes_target: false``."""
 
 from pathlib import Path
 
@@ -55,6 +56,18 @@ def test_the_pose_space_reproduces_smol2s_multiply_chain():
     old = data["critic"].shape[-1]
     close(got["critic"][..., :old], data["critic"])
     close(got["critic"][..., old:], data["policy"][..., -6:])  # the current target, the agent's last 6 columns
+
+
+def test_without_the_target_in_the_critic_the_pose_space_is_smol2s_critic_input_exactly():
+    """``critic_observes_target: false``: the critics' input is the old one column for column (smol2's checkpoints load)."""
+    data = torch.load(FIXTURES / "multiply_increment_smol2.pt", weights_only=False)
+    pose = PoseResidual(action_frame="absolute", action_rotation="absolute", observation_frame="relative",
+                        observation_rotation="relative", rotation_param="rotvec", combine="multiply",
+                        action_target="target", critic_observes_target=False, r_range=(data["low"], data["high"]))
+    space = PoseSpace(pose, 10, keep=data["keep"], observe_base=True, critic_mode="observation")
+    got = run(space, data, data["multiplier"], lambda step, r: pose.critic_action(step["side"], r))
+    for name in ("policy", "critic", "sent", "critic_action"):
+        close(got[name], data[name])
 
 
 def test_the_per_dim_space_reproduces_the_absolute_space():

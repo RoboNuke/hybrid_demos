@@ -90,6 +90,11 @@ def test_the_actor_observes_the_motion_and_the_current_target_and_the_critics_th
         torch.testing.assert_close(step["critic"][:, 63:], step["policy"][:, -width:])
     plain = PoseResidual()
     assert plain.current_width == 0
+    hidden = PoseResidual(action_target="target", critic_observes_target=False)
+    space = PoseSpace(hidden, 10, critic_mode="observation")
+    obs, base, step, _, _, _ = episode(space, lambda t: neutral(hidden, N))[1]
+    assert hidden.critic_current_width == 0 and step["policy"].shape == (N, 63 + 6 + 1 + 6)
+    assert step["critic"].shape == (N, 63)  # the agent still sees the current target, the critics do not
 
 
 def test_the_adaptive_scale_is_the_bases_motion_in_r_units():

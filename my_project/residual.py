@@ -299,8 +299,9 @@ def residual_critic_action(cfg: Any, env: Any):
         return None
     wrapper = find_residual(env)
     if wrapper.pose is not None:
-        print("[residual] action_space: pose: the critics observe the observation part (and the current target) and take "
-              "the resulting target relative to the EE and the gripper, rebuilt from the side input", flush=True)
+        seen = "the observation part and the current target" if wrapper.pose.critic_current_width else "the observation part"
+        print(f"[residual] action_space: pose: the critics observe {seen} and take the resulting target relative to the "
+              "EE and the gripper, rebuilt from the side input", flush=True)
         return PoseSideInput(wrapper.pose)
     k, base_width = wrapper.steps_per_chunk, wrapper.base_action.shape[-1]
     if wrapper.critic_mode == "observation":
@@ -500,7 +501,7 @@ class ResidualPolicyWrapper(gym.Wrapper):
 
         # the agent's observation gains what the flags ask for; the critic state is the residual's own, or none
         if self.critic_mode == "observation":
-            critic_width = kept_width + (self.pose.current_width if self.pose is not None else 0)
+            critic_width = kept_width + (self.pose.critic_current_width if self.pose is not None else 0)
             if extra_width or dropped or critic_width != obs_width:
                 # the critics keep the observation without the agent's additions (Policy Decorator's critic input),
                 # plus the current target with action_target: target (state)
