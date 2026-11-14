@@ -22,9 +22,11 @@ ddpg:
   action_range:
     - -1.5
     - 3.5
-  random_action_scale: 0.75
-  exploration_std: 0.1
-  # the target smoothing noise (std = exploration_std) clipped at 0.15 of m
-  target_noise_clip: 0.15
   actor_lr: 1.0e-6
   demo_transitions: data/scaled_residual_v3/raw_demos.pt
+  # the target smoothing noise (std = the training noise's scale) clipped at 0.15 of m, in both phases
+  warmup_noise:
+    scale: 0.75
+    target_scale: 0.1
+  train_noise:
+    scale: 0.1

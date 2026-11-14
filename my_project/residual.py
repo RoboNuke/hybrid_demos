@@ -326,23 +326,19 @@ def residual_critic_action(cfg: Any, env: Any):
 
 def residual_exploration_scale(cfg: Any, env: Any):
     """The package's ``register_exploration_scale`` builder (every training script's ``setup``): with
-    ``residual.enabled``, ``() -> (num_envs, A)``, the base's motion in r units at the current step (the action space's
-    ``motion_scale``), DDPG's ``exploration_std_mode: adaptive`` factor; otherwise None."""
+    ``residual.enabled``, ``observations -> (rows, A)``, the base's motion in r units read back out of agent
+    observations (the action space's ``motion_factor``), DDPG's adaptive noise factor; otherwise None."""
     rc = getattr(cfg, "residual", None)
     if rc is None or not rc.enabled:
         return None
     wrapper = find_residual(env)
 
-    def scale() -> torch.Tensor:
-        step = wrapper.space_step
-        if step is None:
-            raise RuntimeError("the residual's exploration scale was read before the env built its first observation")
-        if wrapper.steps_per_chunk > 1:
-            raise NotImplementedError("exploration_std_mode: adaptive with residual.steps_per_chunk > 1: the chunk's rows "
-                                      "have no per-row motion scale")
-        return step["motion_scale"]
+    space, kept = wrapper.space, int(wrapper.kept_width)
 
-    return scale
+    def factor(observations: torch.Tensor) -> torch.Tensor:
+        return space.motion_factor(observations, kept)
+
+    return factor
 
 
 def observation_keep(width: int, drop, device=None) -> Optional[torch.Tensor]:
@@ -425,6 +421,8 @@ class ResidualPolicyWrapper(gym.Wrapper):
         #: residual.observation_drop: the base observation's columns the agent and the critics see (None: all)
         self.keep = observation_keep(obs_width, list(rc.observation_drop), hooks.device)
         kept_width = obs_width if self.keep is None else int(self.keep.numel())
+        #: the kept observation columns: the agent's observation holds them first, then the base's motion
+        self.kept_width = kept_width
         dropped = obs_width - kept_width
         #: residual.steps_per_chunk: env steps per agent action (override_base checked the base's horizon)
         self.steps_per_chunk = int(rc.steps_per_chunk)

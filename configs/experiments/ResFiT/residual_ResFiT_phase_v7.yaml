@@ -61,12 +61,9 @@ ddpg:
   action_range:
     - -5.0
     - 5.0
-  exploration_std: 0.4
-  random_action_scale: 0.8
   # r unclamped (it was clamped at +-6, the reach plus 3 noise std, before the clamp became the range's own), the target
   # policy's smoothing noise clipped at 2.4 (ResFiT's 6 x its std)
   clip_actions: false
-  target_noise_clip: 2.4
   # each phase's demo residuals, in its own phase's units (scripts/make_phase_demos.py)
   demo_transitions: data/ResFiT_phase_v7/demos_{route}.pt
   save_memory_with_checkpoints: true
@@ -78,3 +75,10 @@ ddpg:
     - grasp
     - insert
     - screw
+  warmup_noise:
+    scale: 0.8
+    target_scale: 0.4
+    target_clip: 2.4
+  train_noise:
+    scale: 0.4
+    target_clip: 2.4

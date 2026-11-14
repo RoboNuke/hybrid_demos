@@ -53,7 +53,7 @@ def setup() -> None:
 
     from my_project.residual import residual_exploration_scale
 
-    register_exploration_scale(residual_exploration_scale)  # ddpg.exploration_std_mode: adaptive (the base's motion in r units)
+    register_exploration_scale(residual_exploration_scale)  # ddpg noise blocks' adaptive (the base's motion in r units)
 
     from robonuke_rl_core.learners.sac import register_demo_loader
 

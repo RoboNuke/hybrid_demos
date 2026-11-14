@@ -647,10 +647,10 @@ task; ResFiT's form, and Policy Decorator's on a delta-action base). `pose` acts
 
 So r at its neutral value (0 for add, 1 for multiply) sends the base's own targets. The agent observes the observation
 re-expressed in its frame (`observation_drop` then removes columns), the base's d and gripper, and with a target the
-current target; the critics the observation part (and the current target) and take the resulting target relative to the
-EE. What r can be, its start and its exploration are the learner's (`ddpg.action_range`, `model.actor.output_bias`,
-`ddpg.exploration_std`, `exploration_std_mode: adaptive` scaling the noise by the base's motion in r units), never the
-residual's. `multiply` needs a motion to scale (`action_target: target`, or a `chunk` / `relative` frame with relative
+current target; the critics the observation part (and the current target, unless `critic_observes_target: false`) and
+take the resulting target relative to the EE. What r can be, its start and its exploration are the learner's
+(`ddpg.action_range`, `model.actor.output_bias`, `ddpg.warmup_noise` / `ddpg.train_noise`, whose `adaptive` scales the
+noise by the base's motion in r units, read from the observation), never the residual's. `multiply` needs a motion to scale (`action_target: target`, or a `chunk` / `relative` frame with relative
 rotation) and `rotvec` or `euler`; with `rot6d` the inverted demo r is one that sends the same target (6 numbers, 3
 degrees of freedom). Three examples:
 
@@ -724,7 +724,7 @@ ddpg:
 | `residual.action_half_range_floor` | float or null | `null` | `per_dim` with `action_scale: null`: the residual's per-dim scale is `action_scale_fraction x max(half range, floor)`, the half range the base's demo dataset's own (ResFiT's ActionScaler floor, `min_action_range / 2` = 0.05). Null: the base normalizer's half range, 1 for a dim constant in the demos (Coffee's idle fingers: 1.2 rad per unit r instead of ResFiT's 0.06). Robosuite and furniture tasks |
 | `residual.phase_scales` | bool | `false` | every routed phase (the learner's `route_labels`) its own action scale, read from `phase_stats`. The env wrapper reads each env's phase from the env's phase tracker while it builds the observation and applies that phase's scale; a phase without a residual gets no correction. The critics' scale from r to the executed action rides in their side input, per transition. Needs `action_space: per_dim`, `critic_state: observation`, `critic_action: full`, `steps_per_chunk: 1`, no `executed_clip`; furniture tasks |
 | `residual.phase_stats` | str or null | `null` | `phase_scales`' file: each routed phase's action scale |
-| `residual.action_scale_source` | `half_range` or `median_correction` | `half_range` | `phase_scales`: what one unit of r is per action dim. `half_range`: ResFiT's `action_scale_fraction x max(the phase's demo half range, action_half_range_floor or 0.05)`. `median_correction`: the phase's median demo correction `\|a_demo - a_base\|` (the base run along the demos), so r is in multiples of a typical correction on every dim, and the r knobs (`ddpg.actor_action_scale`, `exploration_std`, `random_action_scale`, `action_clip`, `target_noise_clip`) mean the same on every dim and phase |
+| `residual.action_scale_source` | `half_range` or `median_correction` | `half_range` | `phase_scales`: what one unit of r is per action dim. `half_range`: ResFiT's `action_scale_fraction x max(the phase's demo half range, action_half_range_floor or 0.05)`. `median_correction`: the phase's median demo correction `\|a_demo - a_base\|` (the base run along the demos), so r is in multiples of a typical correction on every dim, and the r knobs (`ddpg.action_range`, the `warmup_noise` / `train_noise` scales and clips, `clip_actions`) mean the same on every dim and phase |
 | `residual.scale_zero_below` | float | `1e-6` | `action_scale_source: median_correction`: a dim whose median correction is at most this gets scale 0, no correction (one the demos never correct, e.g. the gripper) |
 | `residual.executed_clip` | float or null | `null` | `per_dim`: clamp every sent dim to `center ± executed_clip ×` the residual scale's half range (`action_half_range_floor`'s floored one when set), ResFiT's clamp of the combined action to its widened range with `executed_clip` = `action_scale_fraction`; the critics take the unclamped action. Null: no clamp |
 

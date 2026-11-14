@@ -4,4 +4,7 @@ wandb:
 
 # the online exploration std in multiplier units (the foundation: 0.05)
 ddpg:
-  exploration_std: 0.1
+  warmup_noise:
+    target_scale: 0.1
+  train_noise:
+    scale: 0.1

@@ -10,8 +10,8 @@ block of envs, exactly the split training used. The env is the run's own (its re
 with ``--eval_config`` on top (required: the eval conditions, e.g. the env count, which must divide
 by the agent count), built through the same project wrappers training uses. Then:
 
-1. **Step 0, the base alone**, right at startup: a residual of exactly zero, so the frozen
-   diffusion policy acts by itself (no checkpoint needed). The same policy for every agent, so
+1. **Step 0, the base alone**, right at startup: the neutral residual, ``r = 1`` for ``residual.combine:
+   multiply`` and ``r = 0`` otherwise, so the frozen diffusion policy acts by itself (no checkpoint needed). The same policy for every agent, so
    it runs once and is recorded for each.
 2. **Every numbered checkpoint** (``ckpt_<step>.ckpt``) not yet evaluated, oldest first, once
    every agent has written its file of that step, with the residual on, the SAC policy
@@ -807,10 +807,12 @@ def _evaluate_all(env, cfg, ckpt_dirs: Sequence[Path], sinks: Sequence[_AgentSin
                 sink.record(step, label, result)
 
     if any(0 not in sink.done for sink in sinks) and not getattr(args, "skip_base", False):
-        # the base alone: a residual of exactly zero, no checkpoint needed; the same policy for every agent
+        # the base alone: the neutral r, 1 for combine: multiply (a zero multiplier would freeze the target), else 0; no
+        # checkpoint needed; the same policy for every agent
         width = int(env.action_space.shape[-1])
-        zero = lambda observations, states: torch.zeros((observations.shape[0], width), device=observations.device)
-        record_all(0, "base only", evaluate_agents(env, zero, seed, "base only", num_rollouts, num_agents))
+        fill = 1.0 if cfg.residual.combine == "multiply" else 0.0
+        neutral = lambda observations, states: torch.full((observations.shape[0], width), fill, device=observations.device)
+        record_all(0, "base only", evaluate_agents(env, neutral, seed, "base only", num_rollouts, num_agents))
 
     policy = learner = critic = None
     waiting = False

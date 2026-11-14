@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 import my_project.residual_eval as residual_eval
@@ -87,6 +88,29 @@ def test_the_round_hands_a_routed_policy_each_steps_infos(monkeypatch):
     assert policy.seen == [[2.0, 1.0], [3.0, 1.0], [5.0, 1.0]]
 
 
+@pytest.mark.parametrize("combine, fill", [("multiply", 1.0), ("add", 0.0)])
+def test_the_base_alone_round_acts_with_the_neutral_r_1_for_multiply_else_0(monkeypatch, tmp_path, combine, fill):
+    from types import SimpleNamespace
+
+    env = SimpleNamespace(action_space=SimpleNamespace(shape=(1, 6)))
+    cfg = SimpleNamespace(trainer=SimpleNamespace(total_timesteps=10), eval=SimpleNamespace(num_rollouts=4),
+                          residual=SimpleNamespace(combine=combine))
+    acted = []
+    monkeypatch.setattr(residual_eval, "evaluate_agents",
+                        lambda env, policy, seed, label, num_rollouts, num_agents:
+                        acted.append(policy(torch.zeros(3, 5), None)) or [{"success_rate": 0.0}])
+
+    class Sink:
+        done = set()
+
+        def record(self, step, label, result):
+            self.done.add(step)
+
+    args = SimpleNamespace(steps=[], once=True, poll_seconds=0.0, stochastic=False, skip_base=False)
+    residual_eval._evaluate_all(env, cfg, [tmp_path], [Sink()], 0, args)
+    torch.testing.assert_close(acted[0], torch.full((3, 6), fill))  # a zero multiplier would freeze the target
+
+
 def test_skip_base_leaves_out_the_base_alone_round(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
@@ -94,7 +118,8 @@ def test_skip_base_leaves_out_the_base_alone_round(monkeypatch, tmp_path):
     monkeypatch.setattr(residual_eval, "evaluate",
                         lambda env, policy, seed, label, episodes=None: calls.append(label) or {"success_rate": 0.0})
     env = SimpleNamespace(action_space=SimpleNamespace(shape=(1, 28)))
-    cfg = SimpleNamespace(trainer=SimpleNamespace(total_timesteps=10), eval=SimpleNamespace(num_rollouts=4))
+    cfg = SimpleNamespace(trainer=SimpleNamespace(total_timesteps=10), eval=SimpleNamespace(num_rollouts=4),
+                          residual=SimpleNamespace(combine="add"))
 
     class Sink:
         def __init__(self):
@@ -117,7 +142,8 @@ def test_the_base_alone_round_is_recorded_only_for_agents_that_lack_it(monkeypat
     from types import SimpleNamespace
 
     env = SimpleNamespace(action_space=SimpleNamespace(shape=(1, 4)))
-    cfg = SimpleNamespace(trainer=SimpleNamespace(total_timesteps=10), eval=SimpleNamespace(num_rollouts=4))
+    cfg = SimpleNamespace(trainer=SimpleNamespace(total_timesteps=10), eval=SimpleNamespace(num_rollouts=4),
+                          residual=SimpleNamespace(combine="add"))
     rounds = []
     monkeypatch.setattr(residual_eval, "evaluate_agents",
                         lambda env, policy, seed, label, num_rollouts, num_agents: rounds.append(label)

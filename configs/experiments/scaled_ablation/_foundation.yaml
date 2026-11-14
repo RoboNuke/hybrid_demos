@@ -150,18 +150,11 @@ ddpg:
   # until the agents start learning, every env's row in a phase goes to every agent's memory: the 10k rows arrive
   # num_agents x sooner and the critic warm-up runs once per phase for all agents together
   shared_warmup: true
-  # r = the multiplier, 1 + 2.5 tanh(mu) in [-1.5, 3.5]; the warm-up N(0, 0.5) about the actor's own action (r = 1
-  # at the start), the online exploration N(0, 0.05), both unclipped but r clamped to the range; the target smoothing
-  # with the exploration's std, clipped at 0.15
+  # r = the multiplier, 1 + 2.5 tanh(mu) in [-1.5, 3.5] (r = 1 at the start), clamped to the range
   action_range:
     - -1.5
     - 3.5
-  random_action_mode: actor_gaussian
-  random_action_scale: 0.5
-  exploration_std: 0.05
   target_actor: true
-  target_policy_noise: true
-  target_noise_clip: 0.15
   # half of every batch from the phase's demos -- raw demo episodes (scripts/make_raw_demos.py, from the 300 demos of
   # Robonuke_Furniture_Bench datasets/physic_aligned_tcp_300_envdata, collected with phase_hold_steps 5) turned into each
   # learner's transitions when it loads them (my_project/demo_loader.py) -- the actor on the same batch
@@ -200,6 +193,17 @@ ddpg:
     - grasp
     - insert
     - screw
+  # the noise in multiplier units: the warm-up N(0, 0.5) about the actor's own action, then N(0, 0.05), both unclipped;
+  # TD3's target smoothing in both phases (the critic warm-up burst's too) with std 0.05, clipped at 0.15
+  warmup_noise:
+    scale: 0.5
+    target_smoothing: true
+    target_scale: 0.05
+    target_clip: 0.15
+  train_noise:
+    scale: 0.05
+    target_smoothing: true
+    target_clip: 0.15
 
 # 300k transitions per residual (the Coffee / CanSorting paper runs'; the code's default 200k)
 memory:

@@ -5,11 +5,14 @@ Every space maps one step the same three ways:
 
 * :meth:`ActionSpace.observe` -- the raw env observation (and the base's action this step) to what the agent and the
   critics see (``policy``, ``critic``: None leaves the env's own) and the critics' side input (``side``), from the
-  space's per-env state (the chain's current target, the chunk's EE pose) as it stands before the step; also
-  ``motion_scale``, the base's motion in r units (DDPG's ``exploration_std_mode: adaptive``);
+  space's per-env state (the chain's current target, the chunk's EE pose) as it stands before the step;
 * :meth:`ActionSpace.send` -- the agent's ``r`` to the action the env executes, and the state after the step;
 * :meth:`ActionSpace.invert` -- an executed action (a demo's) to the ``r`` that sends it, and the state after the step:
   :meth:`send`'s inverse, exact inside the space's range (``forward(invert(x)) == x``).
+
+:meth:`ActionSpace.motion_factor` reads the base's motion in r units back out of an agent observation (DDPG's adaptive
+noise factor, ``register_exploration_scale``): the base motion sits right after the kept observation columns, so the
+same function serves the env's observation when acting and a replay batch's next observation in target smoothing.
 
 ``per_dim`` (:class:`PerDimSpace`) adds ``scale * r`` per action dim in the env's units (any task); ``pose``
 (:class:`PoseSpace`, :mod:`my_project.pose_residual`) acts on a furniture base's absolute pose targets. The state is a dict
@@ -64,6 +67,12 @@ class ActionSpace:
     def invert(self, executed: torch.Tensor, step: Step, state: State) -> Tuple[torch.Tensor, State]:
         raise NotImplementedError
 
+    def motion_factor(self, policy: torch.Tensor, kept_width: int) -> torch.Tensor:
+        """The base's motion in r units per dim ``(rows, width)``, from agent observations ``policy`` (raw, the base
+        motion at columns ``[kept_width, kept_width + width)``): DDPG's adaptive noise factor. Device ops only (it runs
+        inside a captured critic update)."""
+        raise NotImplementedError
+
 
 class PerDimSpace(ActionSpace):
     """``action_space: per_dim``: ``sent = base + scale * r`` per action dim (``scale_rows`` per env with
@@ -94,11 +103,17 @@ class PerDimSpace(ActionSpace):
         if self.phase_scales:
             # the critics' scale from r to the executed action: this transition's phase's (residual_critic_action)
             side = torch.cat((side, scale_rows), dim=-1)
-        # the base action in r units (exploration_std_mode: adaptive); a dim with no scale gets none
-        safe = torch.where(scale > 0, scale, torch.ones_like(scale))
-        motion = torch.where(scale > 0, base.abs() / safe, torch.zeros_like(base))
-        step = {"policy": policy, "critic": critic, "side": side, "base": base, "scale": scale, "motion_scale": motion}
+        step = {"policy": policy, "critic": critic, "side": side, "base": base, "scale": scale}
         return step, state
+
+    def motion_factor(self, policy, kept_width):
+        """The observed base action in r units, ``|base| / scale`` per dim (a dim with no scale gets none)."""
+        if not self.observe_base or self.steps_per_chunk != 1 or self.phase_scales:
+            raise NotImplementedError("the adaptive noise factor reads the observed base action: per_dim needs "
+                                      "observe_base_action, steps_per_chunk 1 and no phase_scales")
+        base = policy[..., kept_width : kept_width + self.width]
+        on = self.scale > 0
+        return torch.where(on, base.abs() / torch.where(on, self.scale, torch.ones_like(self.scale)), torch.zeros_like(base))
 
     def send(self, r, step, state):
         width = step["base"].shape[-1]
@@ -153,6 +168,10 @@ class PoseSpace(ActionSpace):
                                        prev_sent=state["prev_sent"], prev_base=state["prev_base"], chunk_start=new_chunk)
         step = {**inputs, "base": base, "routed": routed}
         return step, state
+
+    def motion_factor(self, policy, kept_width):
+        """The observed base motion ``d`` in r units (:meth:`PoseResidual.motion_scale`)."""
+        return self.pose.motion_scale(policy[..., kept_width : kept_width + self.width])
 
     def send(self, r, step, state):
         sent = self.pose.sent(step["base"], step["d"], step["anchor"], step["A"], r[:, : self.width], step["routed"])

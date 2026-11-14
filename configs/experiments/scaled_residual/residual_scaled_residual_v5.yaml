@@ -14,8 +14,12 @@ residual:
   action_rotation: absolute
   action_target: target
 ddpg:
-  random_action_scale: 0.5
-  exploration_std: 0.075
-  # the target smoothing noise (std = exploration_std) clipped at 6 of its std
-  target_noise_clip: 0.45
   demo_transitions: data/scaled_residual_v3/raw_demos.pt
+  # the target smoothing noise (std = the training noise's scale) clipped at 6 of its std, in both phases
+  warmup_noise:
+    scale: 0.5
+    target_scale: 0.075
+    target_clip: 0.45
+  train_noise:
+    scale: 0.075
+    target_clip: 0.45

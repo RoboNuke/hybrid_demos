@@ -51,8 +51,6 @@ ddpg:
   action_range:
     - -0.0025
     - 0.0025
-  exploration_std: 0.0025
-  random_action_scale: 0.0025
   # one residual for the whole task: no routing (the foundation's route_labels), every env step its own
   route_labels: []
   route_clock: false
@@ -60,3 +58,8 @@ ddpg:
   demo_transitions: data/ResFiT_single_v4/demos.pt
   # the replay memory beside every numbered checkpoint (memory_<step>.pt), for diagnostics
   save_memory_with_checkpoints: true
+  warmup_noise:
+    scale: 0.0025
+    target_scale: 0.0025
+  train_noise:
+    scale: 0.0025

@@ -177,3 +177,17 @@ def test_the_observation_form_check_takes_raw_episode_files_routed_or_not(tmp_pa
     with pytest.raises(ValueError, match="observation form"):
         check_observation_form_demos(str(other))
     check_observation_form_demos(str(tmp_path / "missing.pt"))  # not a file yet: left to the learner
+
+
+def test_the_per_dim_adaptive_factor_is_the_observed_base_in_r_units_and_none_where_a_dim_has_no_scale():
+    scale = torch.full((10,), 0.05)
+    scale[9] = 0.0  # a dim the residual does not move
+    space = PerDimSpace(scale)
+    obs, base = observations(seed=2)
+    step, _ = space.observe(obs[0], base[0], space.initial_state(N, "cpu"))
+    factor = space.motion_factor(step["policy"], obs.shape[-1])  # the base right after the kept columns
+    torch.testing.assert_close(factor[:, :9], base[0][:, :9].abs() / 0.05)
+    assert float(factor[:, 9].abs().max()) == 0.0
+    with pytest.raises(NotImplementedError, match="phase_scales"):
+        PerDimSpace(scale, phase_scales=True).motion_factor(step["policy"], obs.shape[-1])
+

@@ -32,4 +32,8 @@ residual:
 # the exploration noise N(0, 0.025). ResFiT's +-0.2 of the base's normalized range was 26 mm and 11 deg per insert
 # step, twice the trained actor's largest correction. The critic-only warm-up (ddpg.critic_warmup_updates) stays
 ddpg:
-  random_action_scale: 0.0
+  warmup_noise:
+    center: actor
+    distribution: gaussian
+    scale: 0.025
+    target_scale: null

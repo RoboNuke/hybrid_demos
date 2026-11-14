@@ -339,7 +339,7 @@ class PoseResidual:
         return ratio if self.r_range is None else ratio.clamp(*self.r_range)
 
     def motion_scale(self, d: torch.Tensor) -> torch.Tensor:
-        """The base's motion in r units per dim (``exploration_std_mode: adaptive``): ``|d - identity| / scale`` for
+        """The base's motion in r units per dim (DDPG's adaptive noise factor): ``|d - identity| / scale`` for
         add (the r that would double it), 1 for multiply (r = 1 is the base's own motion)."""
         if self.combine == "multiply":
             return torch.ones_like(d)
@@ -350,7 +350,7 @@ class PoseResidual:
         """One step's inputs, raw, for the env wrapper and the demo loader: ``policy`` (the re-expressed observation
         part, the base's ``d`` and gripper, then -- target -- the current target), ``critic`` (the observation part and
         -- target, with ``critic_observes_target`` -- the current target), ``side`` (:meth:`critic_action`'s), ``d``, ``anchor``, ``A`` (what
-        :meth:`sent` takes) and ``motion_scale``. ``obs`` ``(N, 61 | 63)`` raw, ``base`` ``(N, 10)``, ``keep`` the observation
+        :meth:`sent` takes). ``obs`` ``(N, 61 | 63)`` raw, ``base`` ``(N, 10)``, ``keep`` the observation
         columns kept (or None), ``routed`` ``(N,)`` bool."""
         ee = obs[..., 0:9]
         part = self.observation(obs, ee_chunk)
@@ -378,8 +378,7 @@ class PoseResidual:
         pad = side_d.new_zeros(*side_d.shape[:-1], 9 - self.width)
         flag = routed.to(obs.dtype).reshape(-1, 1)
         side = torch.cat((side_anchor, mat_to_rot6d(side_A), side_d, pad, ee, grip, flag), dim=-1)
-        return {"policy": policy, "critic": critic, "side": side, "d": d, "anchor": anchor, "A": A,
-                "motion_scale": self.motion_scale(d)}
+        return {"policy": policy, "critic": critic, "side": side, "d": d, "anchor": anchor, "A": A}
 
     def critic_action(self, side: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
         """The critics' action ``(N, 7)`` from the side input and ``r``: the resulting target relative to the EE and the

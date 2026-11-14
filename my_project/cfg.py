@@ -463,6 +463,9 @@ class ResidualCfg:
             if cfg.trainer.learner != "ddpg":
                 raise ValueError("residual.combine: multiply reads r as the multiplier itself: trainer.learner: ddpg, whose "
                                  "action_range sets what it can be")
+            if int(getattr(sec, "warmup_episodes", 0)) > 0:
+                raise ValueError("residual.combine: multiply: ddpg.warmup_episodes acts with zero actions, the multiplier 0, "
+                                 "which freezes the target instead of running the base alone: leave it 0")
             lo, hi = (float(v) for v in sec.action_range)
             if not lo < 1.0 < hi:
                 raise ValueError(f"residual.combine: multiply: ddpg.action_range {list(sec.action_range)} must hold 1 (the "

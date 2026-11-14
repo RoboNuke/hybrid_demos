@@ -54,7 +54,6 @@ ddpg:
   # the Coffee / CanSorting paper runs' (the code's defaults: 0.99, 3-step), exploration N(0, 0.025)
   discount_factor: 0.995
   n_step: 5
-  exploration_std: 0.025
   # half of every batch from the phase's demos (scripts/make_phase_demos.py), the actor on the same batch
   demo_transitions: data/ResFiT/demos_{route}.pt
   demo_storage: sample
@@ -77,6 +76,10 @@ ddpg:
     - residual/position_mm
     - residual/rot_deg
   cuda_graph: true
+  warmup_noise:
+    target_scale: 0.025
+  train_noise:
+    scale: 0.025
 # 300k transitions per residual (the Coffee / CanSorting paper runs'; the code's default 200k)
 memory:
   memory_size: 300000

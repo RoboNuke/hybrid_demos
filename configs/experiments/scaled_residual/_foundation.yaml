@@ -14,8 +14,8 @@
 # (demo: fitted once on the demo rows, then frozen) normalizes them all (since 2026-11-06; before, per-phase
 # observation stats, the base's min-max and fixed 2 cm / 0.1 rad units).
 #
-# The noise in multiplier units: the warm-up N(0, 0.05) about the actor's own action (ddpg.random_action_mode:
-# actor_gaussian; uniform about the range's midpoint would be r = 0.6), the online exploration N(0, 0.025), the target
+# The noise in multiplier units: the warm-up N(0, 0.05) about the actor's own action (ddpg.warmup_noise; uniform about
+# the range's midpoint would be r = 0.6), the online exploration N(0, 0.025), the target
 # smoothing's clip 0.15 (6 of its std, v7's ratio), r clamped to the range.
 #
 # ResFiT_phase_v7's comments on the learning (from configs/experiments/ResFiT/_foundation.yaml):
@@ -143,18 +143,11 @@ ddpg:
   # starting point; then 10k critic-only updates at once, then the actor
   learning_starts_rows: 10000
   critic_warmup_updates: 10000
-  # r = the multiplier, 0.6 + 0.65 tanh(mu) in [-0.05, 1.25]; the warm-up N(0, 0.05) about the actor's own action (r =
-  # 1 at the start), the online exploration N(0, 0.025), both unclipped but r clamped to the range; the target smoothing
-  # with the exploration's std, clipped at 0.15 (6 of it, v7's ratio)
+  # r = the multiplier, 0.6 + 0.65 tanh(mu) in [-0.05, 1.25] (r = 1 at the start), clamped to the range
   action_range:
     - -0.05
     - 1.25
-  random_action_mode: actor_gaussian
-  random_action_scale: 0.05
-  exploration_std: 0.025
   target_actor: true
-  target_policy_noise: true
-  target_noise_clip: 0.15
   # half of every batch from the phase's demos -- raw demo episodes (scripts/make_raw_demos.py) turned into each phase's
   # transitions when the learner loads them (my_project/demo_loader.py: each frame's multiplier, the demo's motion over
   # the base's per dim) -- the actor on the same batch; each version sets its file
@@ -193,6 +186,17 @@ ddpg:
     - grasp
     - insert
     - screw
+  # the noise: the warm-up N(0, 0.05) about the actor, then N(0, 0.025); TD3's target smoothing in both phases with
+  # std 0.025, clipped at 0.15 (6 of it, v7's ratio)
+  warmup_noise:
+    scale: 0.05
+    target_smoothing: true
+    target_scale: 0.025
+    target_clip: 0.15
+  train_noise:
+    scale: 0.025
+    target_smoothing: true
+    target_clip: 0.15
 
 # 300k transitions per residual (the Coffee / CanSorting paper runs'; the code's default 200k)
 memory:

@@ -97,16 +97,19 @@ def test_the_actor_observes_the_motion_and_the_current_target_and_the_critics_th
     assert step["critic"].shape == (N, 63)  # the agent still sees the current target, the critics do not
 
 
-def test_the_adaptive_scale_is_the_bases_motion_in_r_units():
+def test_the_adaptive_factor_is_the_bases_motion_in_r_units_read_from_the_agents_observation():
     pose = PoseResidual(action_frame="relative", action_rotation="relative", step_scale_pos=0.02,
                         step_scale_rot=math.radians(4.0))
     space = PoseSpace(pose, 10, critic_mode="observation")
     _, _, step, _, _, _ = episode(space, lambda t: neutral(pose, N))[2]
     expected = step["d"].abs() / torch.tensor([0.02] * 3 + [math.radians(4.0)] * 3)
-    torch.testing.assert_close(step["motion_scale"], expected)
+    torch.testing.assert_close(space.motion_factor(step["policy"], 63), expected)  # d right after the 63 kept columns
+    history = torch.cat((step["policy"], torch.randn(N, 20)), dim=-1)  # the history wrapper appends after: same factor
+    torch.testing.assert_close(space.motion_factor(history, 63), expected)
     mult = PoseResidual(combine="multiply", action_target="target")
-    _, _, mstep, _, _, _ = episode(PoseSpace(mult, 10, critic_mode="observation"), lambda t: neutral(mult, N))[2]
-    torch.testing.assert_close(mstep["motion_scale"], torch.ones(N, 6))  # r = 1 is the base's own motion
+    mspace = PoseSpace(mult, 10, critic_mode="observation")
+    _, _, mstep, _, _, _ = episode(mspace, lambda t: neutral(mult, N))[2]
+    torch.testing.assert_close(mspace.motion_factor(mstep["policy"], 63), torch.ones(N, 6))  # r = 1: the base's motion
 
 
 def test_multiplying_a_pose_or_rot6d_numbers_is_refused():
@@ -141,6 +144,6 @@ def test_a_pose_step_never_synchronizes_with_the_host(combine, target):
             step, state = space.observe(obs[t], base[t], state, fresh=fresh, new_chunk=fresh, routed=routed)
             sent, state = space.send(r, step, state)
             pose.critic_action(step["side"], r)
-            step["motion_scale"].add_(0.0)
+            space.motion_factor(step["policy"], 63).add_(0.0)
         finally:
             torch.cuda.set_sync_debug_mode("default")

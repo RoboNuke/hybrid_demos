@@ -1,7 +1,7 @@
 # residual_ResFiT_single_v3.yaml (one residual over the whole task, the 50-demo base, the residual's demos from all 300,
 # ResFiT's standardized inputs) with ResFiT's action sizing in place of the target frame's fixed per-axis scales:
 # action_frame: absolute, scale = 1.1 x max(demo half range, 0.05) per dim, the executed action clamped at 1.1 x, the
-# gripper corrected too. The actor's reach and the exploration std (ddpg.actor_action_scale, ddpg.exploration_std) are
+# gripper corrected too. The actor's reach and the exploration std (ddpg.action_range, ddpg.train_noise.scale) are
 # set from the demos' corrections (a_demo - a_base) in these units.
 #   python scripts/make_phase_demos.py --config configs/experiments/ResFiT/residual_ResFiT_single_v4.yaml --dataset data/physic_aligned_tcp_300
 #   python scripts/train.py --config configs/experiments/ResFiT/residual_ResFiT_single_v4.yaml --headless
@@ -49,8 +49,6 @@ ddpg:
   # the actor's reach 0.1 r (covers the demos' 95th-percentile corrections, 0.06-0.13 r); exploration N(0, 0.0025) r,
   # about 1/4 of a typical demo correction (median |a_demo - a_base| 0.005 r in x, y: 0.7 mm of noise per step), and
   # the uniform warm-up actions the same size (0.2 would be +-57 mm per step in x)
-  exploration_std: 0.0025
-  random_action_scale: 0.0025
   # one residual for the whole task: no routing (the foundation's route_labels), every env step its own
   route_labels: []
   route_clock: false
@@ -58,3 +56,8 @@ ddpg:
   demo_transitions: data/ResFiT_single_v4/demos.pt
   # the replay memory beside every numbered checkpoint (memory_<step>.pt), for diagnostics
   save_memory_with_checkpoints: true
+  warmup_noise:
+    scale: 0.0025
+    target_scale: 0.0025
+  train_noise:
+    scale: 0.0025

@@ -3,4 +3,7 @@ wandb:
   group: no_target_noise_clip
 
 ddpg:
-  target_noise_clip: 5.0
+  warmup_noise:
+    target_clip: 5.0
+  train_noise:
+    target_clip: 5.0
