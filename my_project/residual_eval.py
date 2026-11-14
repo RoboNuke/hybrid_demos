@@ -48,7 +48,10 @@ and histograms ``eval/force_max_hist`` and ``eval/force_mean_hist``; on a Furnit
 phases, also ``eval/phase_success/<phase>`` (each phase's success among the episodes that reached it, the env's
 ``phase/passed_*``; ``screw`` is ``passed_success``), ``eval/phase_reached/<phase>`` (how many episodes reached it)
 and ``eval/residual_mm/<phase>`` / ``eval/residual_deg/<phase>`` (the mean correction over the agent steps that
-started in that phase). ``--skip_base`` leaves out the base-alone round (step 0), for one-off tests on checkpoints whose reference is already
+started in that phase). For a sac / ddpg run on FurnitureBench, after all of a checkpoint's rollouts, its critics'
+health (``my_project/eval_critic.py``) per learner, ``eval/critic_<phase|all>/<metric>`` on the eval rows and the
+run's demo rows together, ``..._eval`` / ``..._demo`` on each (``<metric>``: ``explained_variance``, ``td_abs_mean``,
+``td_abs_max``, ``mean``, ``rows``); none for the base-alone round. ``--skip_base`` leaves out the base-alone round (step 0), for one-off tests on checkpoints whose reference is already
 known. Each result is also
 appended to ``<agent dir>/eval_watch/results.jsonl``, which is also what a restarted watcher
 resumes from (per agent). Each round shows its progress as a tqdm bar on stderr.
@@ -365,7 +368,7 @@ def _episodes_round(env: Any, policy: Any, seed: int, label: str) -> Dict[str, A
 
 
 # ---------------------------------------------------------------------- FurnitureBench rounds
-def furniture_round(env: Any, policy: Any, seed: int, label: str = "eval") -> Dict[str, Any]:
+def furniture_round(env: Any, policy: Any, seed: int, label: str = "eval", critic: Any = None) -> Dict[str, Any]:
     """One round on every env of a manager-based FurnitureBench env, reset under ``seed``: each env's first
     episode (the env resets an env on its own when it ends). Per env: ``success`` / ``out`` (bool) and ``length``
     (sim steps); per phase outcome (the env's ``phase/passed_*``, NaN for an episode that never reached the phase)
@@ -399,14 +402,21 @@ def furniture_round(env: Any, policy: Any, seed: int, label: str = "eval") -> Di
     passed: Dict[str, List[Any]] = {}  # key -> [(env indices, values)] per step
     correction: Dict[str, List[Any]] = {}
     phase = torch.zeros(n, dtype=torch.long, device=u.device)
+    if critic is not None:  # my_project/eval_critic.py: every agent step kept for the critics' health
+        critic.start_round()
     for _ in range(steps):
         with torch.no_grad():
             actions = policy(observations, states)
-        observations, _, terminated, truncated, infos = env.step(actions)
+        previous, previous_states = observations, states
+        observations, rewards, terminated, truncated, infos = env.step(actions)
         if hasattr(policy, "observe"):
             # a routed policy (sac.route_labels) picks each env's residual from the phase the env just published
             policy.observe(infos)
         states = env_states(env)
+        if critic is not None:
+            critic.step(observations=previous, states=previous_states, actions=actions, rewards=rewards,
+                        next_observations=observations, next_states=states, terminated=terminated, truncated=truncated,
+                        infos=infos, alive=alive.clone(), start_label=phase.clone())
         if isinstance(infos, dict):
             metrics = infos.get("metrics_to_log") or {}
             for key, unit in (("residual/position_mm", "mm"), ("residual/rot_deg", "deg")):
@@ -513,19 +523,26 @@ def split_furniture(rounds: Sequence[Dict[str, Any]], envs: range, num_rollouts:
     return result
 
 
-def evaluate_rounds(env: Any, policy: Any, seed: int, label: str, num_rollouts: Optional[int], num_agents: int = 1) -> List[Dict[str, Any]]:
+def evaluate_rounds(env: Any, policy: Any, seed: int, label: str, num_rollouts: Optional[int], num_agents: int = 1,
+                    critic: Any = None) -> List[Dict[str, Any]]:
     """Every agent's evaluation on a FurnitureBench env, side by side: agent ``i`` owns envs ``[i*E, (i+1)*E)``
     (``E = num_envs / num_agents``, the learner's own split), ``ceil(num_rollouts / E)`` rounds (one when
-    ``num_rollouts`` is None or fits one round), round ``k`` reset under ``seed + k``. One result dict per agent."""
+    ``num_rollouts`` is None or fits one round), round ``k`` reset under ``seed + k``. One result dict per agent.
+    ``critic`` (:class:`~my_project.eval_critic.CriticEval`): once every round is done, each agent's critics' health on
+    all its eval rows and the demo rows joins its result."""
     n = int(env.unwrapped.num_envs)
     num_agents = int(num_agents)
     if num_agents < 1 or n % num_agents:
         raise ValueError(f"{num_agents} agents cannot share {n} envs: each agent owns a contiguous block")
     per_agent = n // num_agents
     rounds = max(1, -(-int(num_rollouts) // per_agent)) if num_rollouts else 1
-    data = [furniture_round(env, policy, seed + k, label if rounds == 1 else f"{label} {k + 1}/{rounds}")
+    data = [furniture_round(env, policy, seed + k, label if rounds == 1 else f"{label} {k + 1}/{rounds}", critic=critic)
             for k in range(rounds)]
-    return [split_furniture(data, range(i * per_agent, (i + 1) * per_agent), num_rollouts) for i in range(num_agents)]
+    results = [split_furniture(data, range(i * per_agent, (i + 1) * per_agent), num_rollouts) for i in range(num_agents)]
+    if critic is not None:  # after every rollout: over all the eval rows and the demo rows
+        for result, health in zip(results, critic.results()):
+            result.update(health)
+    return results
 
 
 def evaluate_furniture(env: Any, policy: Any, seed: int, label: str = "eval") -> Dict[str, Any]:
@@ -534,11 +551,12 @@ def evaluate_furniture(env: Any, policy: Any, seed: int, label: str = "eval") ->
     return split_furniture([furniture_round(env, policy, seed, label)], range(int(env.unwrapped.num_envs)), None)
 
 
-def evaluate_agents(env: Any, policy: Any, seed: int, label: str, num_rollouts: Optional[int], num_agents: int) -> List[Dict[str, Any]]:
+def evaluate_agents(env: Any, policy: Any, seed: int, label: str, num_rollouts: Optional[int], num_agents: int,
+                    critic: Any = None) -> List[Dict[str, Any]]:
     """One result per agent slot: :func:`evaluate_rounds` on a FurnitureBench env; the single-agent paths of
     :func:`evaluate` otherwise (several agents at once are not implemented for a Forge or standalone env)."""
     if _is_furniture(env):
-        return evaluate_rounds(env, policy, seed, label, num_rollouts, num_agents)
+        return evaluate_rounds(env, policy, seed, label, num_rollouts, num_agents, critic=critic)
     if int(num_agents) != 1:
         raise NotImplementedError(
             f"{num_agents} agents side by side: only FurnitureBench envs split their results per agent; evaluate "
@@ -759,6 +777,21 @@ def _watch(args, overrides, setup) -> int:
             sink.finish()
 
 
+def critic_eval_of(cfg: Any, env: Any, policy: Any, learner: Any, num_agents: int) -> Any:
+    """The critics' health collector (:class:`~my_project.eval_critic.CriticEval`) of an eval policy of the package's
+    sac / ddpg (each routed phase's learner, or the one), loading the run's demo rows once; None for any other learner
+    or a non-furniture env."""
+    if not _is_furniture(env):
+        return None
+    parts = ({route: part_learner for route, (_, part_learner) in policy.parts.items()} if hasattr(policy, "parts")
+             else {None: learner})
+    if not all(hasattr(part, "critic_values") for part in parts.values()):
+        return None
+    from my_project.eval_critic import CriticEval
+
+    return CriticEval(cfg, env, parts, num_agents, int(env.unwrapped.num_envs))
+
+
 def _evaluate_all(env, cfg, ckpt_dirs: Sequence[Path], sinks: Sequence[_AgentSink], seed: int, args) -> int:
     import torch
 
@@ -779,7 +812,7 @@ def _evaluate_all(env, cfg, ckpt_dirs: Sequence[Path], sinks: Sequence[_AgentSin
         zero = lambda observations, states: torch.zeros((observations.shape[0], width), device=observations.device)
         record_all(0, "base only", evaluate_agents(env, zero, seed, "base only", num_rollouts, num_agents))
 
-    policy = learner = None
+    policy = learner = critic = None
     waiting = False
     if args.steps is not None:
         on_disk = set.intersection(*(set(_numbered_checkpoints(d)) for d in ckpt_dirs))
@@ -813,10 +846,11 @@ def _evaluate_all(env, cfg, ckpt_dirs: Sequence[Path], sinks: Sequence[_AgentSin
                 policy, learner, _ = build_eval_policy(
                     cfg, env, paths[0], deterministic=not args.stochastic, num_agents=num_agents
                 )
+                critic = critic_eval_of(cfg, env, policy, learner, num_agents)
             for slot, path in enumerate(paths):
                 learner.load_agent(path, slot=slot, with_optimizer=False)
             learner.enable_training_mode(False)
-            record_all(step, name, evaluate_agents(env, policy, seed, name, num_rollouts, num_agents))
+            record_all(step, name, evaluate_agents(env, policy, seed, name, num_rollouts, num_agents, critic=critic))
             if step >= total - 1:
                 print("[watch] reached the run's last checkpoint", flush=True)
                 return 0

@@ -52,6 +52,12 @@ def setup() -> None:
 
     register_critic_action(residual_critic_action)  # residual.critic_action: full (the critics are loaded at its width)
 
+    from robonuke_rl_core.learners.sac import register_demo_loader
+
+    from my_project.demo_loader import residual_demo_loader
+
+    register_demo_loader(residual_demo_loader)  # the critics' eval health on the run's demo rows (my_project/eval_critic.py)
+
     from robonuke_rl_core.evaluation import register_eval_policy
 
     from my_project.bc.eval_policy import build_bc_eval_policy
