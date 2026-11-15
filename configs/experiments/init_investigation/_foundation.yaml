@@ -64,7 +64,7 @@ experiment:
 
 wandb:
   entity: hur
-  project: one_leg_scaled_ablations
+  project: init_explore_residual
 
 trainer:
   best_by: success
