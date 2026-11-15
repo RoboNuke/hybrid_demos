@@ -436,7 +436,7 @@ object observable). Their base configs set `task.simulator: standalone`, so `tra
 
     git clone https://github.com/ARISE-Initiative/robosuite ~/deps/robosuite
     git -C ~/deps/robosuite checkout 77a4751233c29456a5381209e30dd0dbf39a6557
-    pip install --no-deps -e ~/deps/robosuite && pip install mujoco==3.3.2 mink==0.0.7 PyOpenGL glfw etils
+    pip install --no-deps -e ~/deps/robosuite && pip install mujoco==3.3.2 mink==0.0.7 PyOpenGL glfw etils termcolor
     git clone https://github.com/NVlabs/dexmimicgen.git ~/deps/dexmimicgen
     git -C ~/deps/dexmimicgen checkout e606f36a38b1d4ba8f56d06d6c0cd059b20ebbaf
     pip install --no-deps -e ~/deps/dexmimicgen
