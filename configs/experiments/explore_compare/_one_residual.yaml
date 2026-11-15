@@ -1,0 +1,8 @@
+# one learner for every step, every phase (2_one_residual's routing)
+ddpg:
+  route_labels: []
+  route_clock: false
+  phase_logging: false
+  phase_logging_phases: []
+  # keep: the demo loader reads each frame's phase tag from it
+  std_by_label: eval_state/phase/id

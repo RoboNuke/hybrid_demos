@@ -1,0 +1,24 @@
+base:
+  - _foundation.yaml
+  - _additive.yaml
+  - _adaptive.yaml
+wandb:
+  group: add_adaptive_phase
+
+residual:
+  # each phase's own median demo corrections (m on x, y, z; rad on the 3 rotvec dims)
+  step_scale:
+    insert:
+      - 0.000447
+      - 0.000302
+      - 0.0005947
+      - 0.0014383
+      - 0.0019992
+      - 0.0023707
+    screw:
+      - 0.0002298
+      - 0.0002218
+      - 0.0002741
+      - 0.0006172
+      - 0.0011144
+      - 0.0061894

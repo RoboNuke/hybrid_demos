@@ -1,0 +1,14 @@
+# explore_compare (the leading _ keeps launch_train from submitting this file on its own): ResFiT v7's additive residual
+# as the baseline against the scaled (multiplied) residual and an additive one with adaptive exploration, each as one
+# residual per bottleneck phase (insert, screw) and as one residual for every phase. Everything but the action and the
+# noise is init_investigation/exp_std_0-2.yaml's: smol2's learning, the early checkpoints and buffers
+# (data_analysis/early_updates_analysis.ipynb), every critic metric, 1M steps in 48 h jobs off optimus.
+#
+#                 per phase (insert + screw)   one residual
+#   scaled        scaled_phase                 scaled_one          r multiplies the base's increment (exp_std_0-2)
+#   additive      add_fixed_phase              add_fixed_one       v7: r in median demo corrections, fixed noise
+#   adaptive      add_adaptive_phase           add_adaptive_one    the same, every noise times the base's motion
+#
+# _additive.yaml holds the additive action and v7's noise, _adaptive.yaml switches its noise to adaptive,
+# _one_residual.yaml makes one learner for every phase.
+base: ../init_investigation/exp_std_0-2.yaml

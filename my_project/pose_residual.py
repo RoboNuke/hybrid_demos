@@ -18,7 +18,8 @@ FBAbs ResiP one (63). Everything here is set by independent config axes:
 
 The gripper is always the base's. ``r`` is ``3 + 3`` wide (``3 + 6`` with ``rot6d``) and comes from the learner raw
 (its ``action_range`` sets what r can be). ``add``'s scale is one number per r dim (``residual.step_scale``: m on the
-position dims, rad -- per component with ``rot6d`` -- on the rotation dims). ``multiply`` on ``rot6d`` scales each of the
+position dims, rad -- per component with ``rot6d`` -- on the rotation dims), the same for every phase or (a phase -> scales
+mapping) each env's current phase's own, carried to the critics in the side input. ``multiply`` on ``rot6d`` scales each of the
 6 numbers on its own, which turns the vectors (Gram-Schmidt makes them a rotation again); a vector the multipliers
 shrink to nothing, or a second one they make parallel to the first, is the base's own. A frame transform is ``express(X; F, A) = (A^T (p_X - p_F), A^T R_X)``; an
 increment ``(A^T (p_1 - p_0), A^T R_1 R_0^T A)``.
@@ -35,7 +36,7 @@ definition of a step's inputs, for the env wrapper and the demo loader.
 from __future__ import annotations
 
 import math
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 import torch
 
@@ -194,22 +195,24 @@ def _identity_pose(like: torch.Tensor) -> torch.Tensor:
     return torch.cat((like.new_zeros(*like.shape[:-1], 3), eye), dim=-1)
 
 
-def pose_from(rc, r_range=None, gripper: int = 9) -> "PoseResidual":
+def pose_from(rc, r_range=None, gripper: int = 9, phase_names: Optional[Sequence[str]] = None) -> "PoseResidual":
     """The config's map (``residual.action_space: pose``), one definition for the env wrapper and the demo loader.
-    ``r_range`` the learner's ``action_range`` (the multiplier's bounds a demo's inverted r is clamped to)."""
+    ``r_range`` the learner's ``action_range`` (the multiplier's bounds a demo's inverted r is clamped to);
+    ``phase_names`` the phase labels' names (a per-phase ``step_scale``'s rows)."""
     return PoseResidual(
         action_frame=str(rc.action_frame), action_rotation=str(rc.action_rotation),
         observation_frame=str(rc.observation_frame), observation_rotation=str(rc.observation_rotation),
         rotation_param=str(rc.rotation_param), combine=str(rc.combine), action_target=str(rc.action_target),
-        step_scale=None if rc.step_scale is None else [float(v) for v in rc.step_scale],
+        step_scale=rc.step_scale,
         critic_observes_target=bool(rc.critic_observes_target), ee_relative_actions=bool(rc.ee_relative_actions),
-        r_range=r_range, gripper=gripper,
+        r_range=r_range, gripper=gripper, phase_names=phase_names,
     )
 
 
 class PoseResidual:
     """See the module docstring. ``step_scale`` (``add``): one number per r dim, m on the position dims, rad on the
-    rotation dims (per component with ``rot6d``); ``r_range`` ``(lo, hi)`` the bounds a demo's inverted multiplier is
+    rotation dims (per component with ``rot6d``), or a phase name -> such numbers mapping (each row's phase's own, by
+    ``phase_names``: :meth:`scale_rows`; then every scale-dependent call takes the rows' ``scale``); ``r_range`` ``(lo, hi)`` the bounds a demo's inverted multiplier is
     clamped to (``multiply``); ``gripper`` the action's gripper dim; ``eps_pos`` m / ``eps_rot`` rad: a demo's base
     motion this small on a dim gives no ratio (the multiplier 1)."""
 
@@ -218,7 +221,8 @@ class PoseResidual:
                  rotation_param: str = "rotvec", combine: str = "add", action_target: str = "none",
                  step_scale: Optional[Sequence[float]] = None, critic_observes_target: bool = True,
                  ee_relative_actions: bool = False, r_range: Optional[Tuple[float, float]] = None, gripper: int = 9,
-                 eps_pos: float = 5e-4, eps_rot: float = math.radians(0.5)) -> None:
+                 eps_pos: float = 5e-4, eps_rot: float = math.radians(0.5),
+                 phase_names: Optional[Sequence[str]] = None) -> None:
         for name, value, allowed in (("action_frame", action_frame, FRAMES), ("action_rotation", action_rotation, ROTATIONS),
                                      ("observation_frame", observation_frame, FRAMES),
                                      ("observation_rotation", observation_rotation, ROTATIONS),
@@ -237,14 +241,30 @@ class PoseResidual:
                                  "target expressed in this frame is a pose, not a motion: use action_target: target, or "
                                  "action_frame chunk / relative with action_rotation: relative")
         width = 3 + param_width(rotation_param)
-        if combine == "add":
-            if step_scale is None or len(step_scale) != width or any(float(v) <= 0 for v in step_scale):
-                raise ValueError(f"residual.step_scale: combine: add takes one number > 0 per r dim, {width} with "
-                                 f"rotation_param {rotation_param} (m on the 3 position dims, rad on the rotation dims), "
-                                 f"got {None if step_scale is None else list(step_scale)}")
-        elif step_scale is not None:
+
+        def checked(values, where: str):
+            if values is None or isinstance(values, (str, Mapping)) or len(values) != width or any(float(v) <= 0 for v in values):
+                raise ValueError(f"{where}: combine: add takes one number > 0 per r dim, {width} with rotation_param "
+                                 f"{rotation_param} (m on the 3 position dims, rad on the rotation dims), got {values!r}")
+            return [float(v) for v in values]
+
+        if step_scale is not None and combine != "add":
             raise ValueError("residual.step_scale is add's scale; combine: multiply has none (r is the multiplier): leave it null")
-        self.step_scale = None if step_scale is None else [float(v) for v in step_scale]
+        #: per-phase add scales (step_scale a phase -> scales mapping): each row's own phase's
+        self.phase_step_scale: Optional[Dict[str, list]] = None
+        self.phase_names = None if phase_names is None else [str(n) for n in phase_names]
+        if isinstance(step_scale, Mapping):
+            if not step_scale:
+                raise ValueError("residual.step_scale: a per-phase mapping needs at least one phase")
+            self.phase_step_scale = {str(k): checked(v, f"residual.step_scale.{k}") for k, v in step_scale.items()}
+            if self.phase_names is not None:
+                unknown = sorted(set(self.phase_step_scale) - set(self.phase_names))
+                if unknown:
+                    raise ValueError(f"residual.step_scale names phases {unknown} that are not phase labels {self.phase_names}")
+            step_scale = None
+        elif combine == "add":
+            step_scale = checked(step_scale, "residual.step_scale")
+        self.step_scale = step_scale
         self.ee_relative_actions = bool(ee_relative_actions)
         self.r_range = None if r_range is None else (float(r_range[0]), float(r_range[1]))
         self.gripper = int(gripper)
@@ -258,7 +278,8 @@ class PoseResidual:
         #: the critics' copy of it: ``critic_observes_target`` false leaves it out (a critic trained before they saw it)
         self.critic_observes_target = bool(critic_observes_target)
         self.critic_current_width = self.current_width if self.critic_observes_target else 0
-        self.side_width = SIDE_WIDTH
+        #: the critics' side input: a per-phase scale rides at its end (the row's own scale)
+        self.side_width = SIDE_WIDTH + (self.width if self.phase_step_scale is not None else 0)
         #: device constants by (device, dtype), made once: a tensor built from a Python list is a host-to-device copy --
         #: a host synchronization every env step, and illegal inside a captured CUDA graph (the critics' update)
         self._constants: Dict[tuple, Dict[str, torch.Tensor]] = {}
@@ -294,8 +315,41 @@ class PoseResidual:
             self._constants[key] = found
         return found
 
-    def _scale(self, like: torch.Tensor) -> torch.Tensor:
+    def _scale(self, like: torch.Tensor, scale: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """The rows' scale: ``scale`` (a per-phase ``step_scale``'s rows, required then), else the one ``step_scale``."""
+        if scale is not None:
+            return scale
+        if self.phase_step_scale is not None:
+            raise ValueError("residual.step_scale is per phase: pass each row's scale (scale_rows of its phase)")
         return self._constant(like)["scale"]
+
+    def scale_rows(self, phase: torch.Tensor) -> Optional[torch.Tensor]:
+        """A per-phase ``step_scale``'s rows ``(N, width)`` for phase labels ``phase`` ``(N,)`` (a phase without one:
+        ones -- it sends the base, so its scale is never used); None with one ``step_scale`` for every phase."""
+        if self.phase_step_scale is None:
+            return None
+        if self.phase_names is None:
+            raise ValueError("residual.step_scale is per phase: the pose residual needs the phase names (phase_names)")
+        key = ("table", phase.device)
+        table = self._constants.get(key)
+        if table is None:
+            table = torch.tensor([self.phase_step_scale.get(n, [1.0] * self.width) for n in self.phase_names],
+                                 dtype=torch.float32, device=phase.device)
+            self._constants[key] = table
+        return table[phase.long()]
+
+    def phase_scale(self, phase: str, like: torch.Tensor) -> torch.Tensor:
+        """One phase's scale ``(width,)`` (a routed learner's own: its adaptive noise factor)."""
+        if self.phase_step_scale is None:
+            return self._scale(like)
+        if phase not in self.phase_step_scale:
+            raise ValueError(f"residual.step_scale has no scale for phase {phase!r} (it has {sorted(self.phase_step_scale)})")
+        key = ("phase", phase, like.device, like.dtype)
+        found = self._constants.get(key)
+        if found is None:
+            found = torch.tensor(self.phase_step_scale[phase], dtype=like.dtype, device=like.device)
+            self._constants[key] = found
+        return found
 
     def _identity_motion(self, like: torch.Tensor) -> torch.Tensor:
         return self._constant(like)["identity"].expand(*like.shape[:-1], self.width)
@@ -315,13 +369,14 @@ class PoseResidual:
         dp, dR = increment(base, prev, A)
         return torch.cat((dp, to_param(dR, self.param)), dim=-1), anchor, A
 
-    def step(self, d: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
-        """The parametrised step: ``d + scale * r`` (add) or ``r * d`` (multiply), per dim. Multiplied rot6d: a vector
+    def step(self, d: torch.Tensor, r: torch.Tensor, scale: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """The parametrised step: ``d + scale * r`` (add; ``scale`` the rows' own with a per-phase step_scale) or
+        ``r * d`` (multiply), per dim. Multiplied rot6d: a vector
         shrunk to nothing, or a second vector made parallel to the first, is the base's own (no rotation otherwise)."""
         if r.shape[-1] != self.width:
             raise ValueError(f"the pose residual is {self.width} per step, got {r.shape[-1]}")
         if self.combine == "add":
-            return d + self._scale(d) * r
+            return d + self._scale(d, scale) * r
         step = r * d
         if self.param != "rot6d":
             return step
@@ -340,14 +395,14 @@ class PoseResidual:
             return advance(anchor, step[..., 0:3], dR, A)
         return unexpress(step[..., 0:3], dR, anchor, A)
 
-    def sent(self, base, d, anchor, A, r, routed):
+    def sent(self, base, d, anchor, A, r, routed, scale=None):
         """The sent targets ``(N, 10)``: the step's pose and the base's gripper; an env not ``routed`` (``(N,)`` bool: its
         phase has no residual) sends ``base`` itself."""
-        pose = self.pose_of(self.step(d, r), anchor, A)
+        pose = self.pose_of(self.step(d, r, scale), anchor, A)
         out = torch.cat((pose, base[..., self.gripper : self.gripper + 1]), dim=-1)
         return torch.where(routed.reshape(-1, 1), out, base)
 
-    def invert(self, executed, d, anchor, A) -> torch.Tensor:
+    def invert(self, executed, d, anchor, A, scale=None) -> torch.Tensor:
         """A demo frame's ``r`` ``(N, width)``: the executed target's own motion from the anchor ``d_X``, then
         ``(d_X - d) / scale`` (add; not clamped, as the per-dim space stores it) or ``d_X / d`` per dim (multiply; 1
         where the base's motion on a dim is under ``eps_pos`` / ``eps_rot``, clamped to ``r_range``)."""
@@ -357,7 +412,7 @@ class PoseResidual:
             dp, dR = express(executed, anchor, A)
         d_x = torch.cat((dp, to_param(dR, self.param)), dim=-1)
         if self.combine == "add":
-            return (d_x - d) / self._scale(d)
+            return (d_x - d) / self._scale(d, scale)
         big = d.abs() >= self._constant(d)["eps"]
         safe = torch.where(big, d, torch.ones_like(d))
         ratio = torch.where(big, d_x / safe, torch.ones_like(d))
@@ -396,20 +451,23 @@ class PoseResidual:
         r2 = torch.where(big[..., 6:9], t2 / safe[..., 6:9], torch.ones_like(d2))
         return torch.cat((r1, r2), dim=-1)
 
-    def motion_scale(self, d: torch.Tensor) -> torch.Tensor:
+    def motion_scale(self, d: torch.Tensor, scale: Optional[torch.Tensor] = None) -> torch.Tensor:
         """The base's motion in r units per dim (DDPG's adaptive noise factor): ``|d - identity| / scale`` for
         add (the r that would double it), 1 for multiply (r = 1 is the base's own motion)."""
         if self.combine == "multiply":
             return torch.ones_like(d)
-        return (d - self._identity_motion(d)).abs() / self._scale(d)
+        return (d - self._identity_motion(d)).abs() / self._scale(d, scale)
 
     def step_inputs(self, obs, base, keep, routed, ee_chunk=None, prev_sent=None, prev_base=None,
-                    chunk_start=None) -> Dict[str, torch.Tensor]:
+                    chunk_start=None, scale=None) -> Dict[str, torch.Tensor]:
         """One step's inputs, raw, for the env wrapper and the demo loader: ``policy`` (the re-expressed observation
         part, the base's ``d`` and gripper, then -- target -- the current target), ``critic`` (the observation part and
         -- target, with ``critic_observes_target`` -- the current target), ``side`` (:meth:`critic_action`'s), ``d``, ``anchor``, ``A`` (what
         :meth:`sent` takes). ``obs`` ``(N, 61 | 63)`` raw, ``base`` ``(N, 10)``, ``keep`` the observation
-        columns kept (or None), ``routed`` ``(N,)`` bool."""
+        columns kept (or None), ``routed`` ``(N,)`` bool, ``scale`` ``(N, width)`` the rows' scale (a per-phase
+        ``step_scale``'s :meth:`scale_rows`; then it ends the side input)."""
+        if self.phase_step_scale is not None and scale is None:
+            raise ValueError("residual.step_scale is per phase: pass each row's scale (scale_rows of its phase)")
         ee = obs[..., 0:9]
         part = self.observation(obs, ee_chunk)
         if keep is not None:
@@ -437,8 +495,9 @@ class PoseResidual:
             side_d = torch.where(on, d, self._identity_motion(d))
         pad = side_d.new_zeros(*side_d.shape[:-1], 9 - self.width)
         flag = routed.to(obs.dtype).reshape(-1, 1)
-        side = torch.cat((side_anchor, mat_to_rot6d(side_A), side_d, pad, ee, grip, flag), dim=-1)
-        return {"policy": policy, "critic": critic, "side": side, "d": d, "anchor": anchor, "A": A}
+        side = torch.cat((side_anchor, mat_to_rot6d(side_A), side_d, pad, ee, grip, flag)
+                         + ((scale.to(obs.dtype),) if self.phase_step_scale is not None else ()), dim=-1)
+        return {"policy": policy, "critic": critic, "side": side, "d": d, "anchor": anchor, "A": A, "scale": scale}
 
     def critic_action(self, side: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
         """The critics' action ``(N, 7)`` from the side input and ``r``: the resulting target relative to the EE and the
@@ -446,7 +505,8 @@ class PoseResidual:
         anchor, A = side[..., 0:9], rot6d_to_mat(side[..., 9:15])
         d, ee = side[..., 15 : 15 + self.width], side[..., 24:33]
         grip, routed = side[..., 33:34], side[..., 34:35] > 0.5
-        step = torch.where(routed, self.step(d, r[..., : self.width]), d)
+        scale = side[..., SIDE_WIDTH : SIDE_WIDTH + self.width] if self.phase_step_scale is not None else None
+        step = torch.where(routed, self.step(d, r[..., : self.width], scale), d)
         return torch.cat((ee_frame(self.pose_of(step, anchor, A), ee), grip), dim=-1)
 
     # ------------------------------------------------------------ the observation

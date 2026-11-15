@@ -1,0 +1,10 @@
+# every noise adaptive: each draw (the warm-up's, the training's, both target smoothings) times the base's motion in r
+# units per dim, |d| / step_scale -- so the executed noise is 0.4 |d| (0.8 |d| uniform in the warm-up) whatever the
+# scale; a routed residual divides by its own phase's scale
+ddpg:
+  warmup_noise:
+    adaptive: true
+    target_adaptive: true
+  train_noise:
+    adaptive: true
+    target_adaptive: true

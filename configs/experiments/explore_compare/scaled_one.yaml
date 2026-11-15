@@ -1,0 +1,5 @@
+base:
+  - _foundation.yaml
+  - _one_residual.yaml
+wandb:
+  group: scaled_one

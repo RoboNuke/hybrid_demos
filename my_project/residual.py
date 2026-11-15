@@ -349,12 +349,22 @@ def residual_exploration_scale(cfg: Any, env: Any):
         return None
     wrapper = find_residual(env)
 
-    space, kept = wrapper.space, int(wrapper.kept_width)
+    return MotionFactor(wrapper.space, int(wrapper.kept_width))
 
-    def factor(observations: torch.Tensor) -> torch.Tensor:
-        return space.motion_factor(observations, kept)
 
-    return factor
+class MotionFactor:
+    """``observations -> (rows, A)``: the base's motion in r units (the action space's ``motion_factor``), DDPG's adaptive
+    noise factor. :meth:`for_route` binds a routed learner's phase (train.py calls it per learner): a per-phase
+    ``step_scale`` divides by that phase's own."""
+
+    def __init__(self, space: Any, kept: int, route: Optional[str] = None) -> None:
+        self.space, self.kept, self.route = space, int(kept), route
+
+    def for_route(self, route: Optional[str]) -> "MotionFactor":
+        return MotionFactor(self.space, self.kept, route)
+
+    def __call__(self, observations: torch.Tensor) -> torch.Tensor:
+        return self.space.motion_factor(observations, self.kept, self.route)
 
 
 def observation_keep(width: int, drop, device=None) -> Optional[torch.Tensor]:
@@ -495,10 +505,17 @@ class ResidualPolicyWrapper(gym.Wrapper):
             from my_project.pose_residual import pose_from
 
             r_range = tuple(float(v) for v in section.action_range) if hasattr(section, "action_range") else None
-            self.pose = pose_from(rc, r_range, self.layout["gripper"])
+            self.pose = pose_from(rc, r_range, self.layout["gripper"], phase_names=self.phase_names)
             # the phases with a residual: the routed ones, or every phase with one residual for all (no route_labels);
             # without phase labels every step is the residual's
             routes = list(getattr(section, "route_labels", None) or []) or list(self.phase_names)
+            if self.pose.phase_step_scale is not None:
+                if not self.phase_names:
+                    raise ValueError("a per-phase residual.step_scale reads each env's phase: set the learner's std_label_names")
+                unscaled = [n for n in routes if n not in self.pose.phase_step_scale]
+                if unscaled:
+                    raise ValueError(f"residual.step_scale has no scale for the residual's phases {unscaled} "
+                                     f"(it has {sorted(self.pose.phase_step_scale)})")
             self.routed_rows = torch.tensor([name in routes for name in self.phase_names], dtype=torch.bool, device=hooks.device)
             self.env_routed = torch.ones((hooks.num_envs,), dtype=torch.bool, device=hooks.device)
             self.width = self.pose.width
@@ -547,7 +564,8 @@ class ResidualPolicyWrapper(gym.Wrapper):
             + ("; critics observe the observation alone" if self.critic_mode == "observation" else "")
             + (f"; pose residual: action frame {pose.action_frame} ({pose.action_rotation} rotation), {pose.param}, "
                f"{pose.combine}{' with a chained target (the EE at each chunk start)' if pose.target else ''}"
-               + (f", step scale {pose.step_scale} (m, rad) per unit r" if pose.combine == "add" else "")
+               + ((f", step scale {pose.step_scale} (m, rad) per unit r" if pose.phase_step_scale is None
+                   else f", step scale per phase {pose.phase_step_scale} (m, rad) per unit r") if pose.combine == "add" else "")
                + ("; the base observed relative to the EE" if pose.ee_relative_actions else "")
                + f"; observation in the {pose.observation_frame} frame ({pose.observation_rotation} rotation); the gripper "
                f"the base's; residuals in {[n for n, on in zip(self.phase_names, self.routed_rows.tolist()) if on]}"
@@ -570,6 +588,12 @@ class ResidualPolicyWrapper(gym.Wrapper):
         if self.pose is not None:
             self.env_routed = self.routed_rows[phase]
 
+    def _pose_scale_rows(self):
+        """A per-phase ``residual.step_scale``'s rows for the envs' current phases (:meth:`_phase_rows`); None otherwise."""
+        if self.pose is None or self.pose.phase_step_scale is None:
+            return None
+        return self.space.scale_rows_for(self.obs_label)
+
     def _observations(self, observations):
         obs = observations["policy"]
         if self.phase_tables is not None or (self.pose is not None and self.phase_names):
@@ -587,7 +611,7 @@ class ResidualPolicyWrapper(gym.Wrapper):
             obs, self.base_action, self.space_state, observed=observed,
             env_critic_obs=observations.get("critic") if self.env_critic else None, fresh=fresh, new_chunk=new_chunk,
             routed=self.env_routed if self.pose is not None else None,
-            scale_rows=self.phase_scale if self.phase_tables is not None else None,
+            scale_rows=self.phase_scale if self.phase_tables is not None else self._pose_scale_rows(),
         )
         observations["policy"] = step["policy"]
         if step["critic"] is not None:

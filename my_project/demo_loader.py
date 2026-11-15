@@ -77,7 +77,8 @@ def env_terminations(termination_terms: Dict[str, torch.Tensor], terminations_cf
 
 def episode_steps(space: Any, episodes: List[Dict[str, Any]], horizon: int, routed_of, device) -> List[Dict[str, torch.Tensor]]:
     """Every frame's step inputs and ``r`` for every episode, all episodes in lockstep (one row each, as the env's
-    envs): ``space.observe`` then ``space.invert`` of the executed action, the space's state carried on. ``routed_of``
+    envs): ``space.observe`` then ``space.invert`` of the executed action, the space's state carried on (a per-phase
+    scale each frame's phase's, from the episode's ``phase`` labels). ``routed_of``
     maps an episode's ``(T,)`` phase labels to its ``(T,)`` bool rows (the multiply space's routed flag). Returns per
     episode ``{policy, critic, side, r}``, each ``(T, ...)``."""
     n = len(episodes)
@@ -95,7 +96,10 @@ def episode_steps(space: Any, episodes: List[Dict[str, Any]], horizon: int, rout
         fresh = torch.full((n,), t == 0, dtype=torch.bool, device=device)
         new_chunk = torch.full((n,), t % int(horizon) == 0, dtype=torch.bool, device=device)
         routed = torch.stack([rows[min(t, length - 1)] for rows, length in zip(routed_rows, lengths)]).to(device)
-        step, state = space.observe(obs, base, state, fresh=fresh, new_chunk=new_chunk, routed=routed)
+        # a scale read from the phase labels (the pose space's per-phase step_scale): each frame's own phase's
+        phase = torch.stack([e["phase"][min(t, length - 1)] for e, length in zip(episodes, lengths)]).to(device)
+        step, state = space.observe(obs, base, state, fresh=fresh, new_chunk=new_chunk, routed=routed,
+                                    scale_rows=space.scale_rows_for(phase))
         r, state = space.invert(executed, step, state)
         if step["critic"] is None:
             raise NotImplementedError("the demo loader builds the critics' state from the observation: an env critic "

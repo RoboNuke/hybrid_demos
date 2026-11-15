@@ -348,8 +348,11 @@ class ResidualCfg:
     #: critics' input as before they saw it (smol2's and every earlier multiply-chain run's checkpoints)
     critic_observes_target: bool = True
     #: pose, combine: add: the scale per r dim, one number each -- m on the 3 position dims, rad on the rotation dims (3,
-    #: or 6 rot6d components): 6 numbers (9 with rot6d). Required for add; null for multiply (r is the multiplier)
-    step_scale: Optional[List[float]] = None
+    #: or 6 rot6d components): 6 numbers (9 with rot6d), the same in every phase; or a mapping phase name -> those numbers,
+    #: each env's current phase's own (every phase the residual acts in needs one; the critics get it in their side
+    #: input, the demo loader inverts each frame with its phase's). Required for add; null for multiply (r is the
+    #: multiplier)
+    step_scale: Any = None
     #: pose: the agent observes the base's target in Policy Decorator's command form -- relative to the EE, in the
     #: EE's frame, ``[R_ee^T (p - p_ee), log(R_ee^T R)]`` and the gripper (7) -- instead of ``d`` (the critics' action
     #: is this form already)
@@ -434,10 +437,21 @@ class ResidualCfg:
         """action_space: pose: the axes (checked by the map itself), and what the pose space is built for."""
         from my_project.pose_residual import PoseResidual
 
-        PoseResidual(action_frame=self.action_frame, action_rotation=self.action_rotation,
-                     observation_frame=self.observation_frame, observation_rotation=self.observation_rotation,
-                     rotation_param=self.rotation_param, combine=self.combine, action_target=self.action_target,
-                     step_scale=self.step_scale, ee_relative_actions=self.ee_relative_actions)
+        sec = q_section(cfg) if cfg is not None else None
+        names = list(getattr(sec, "std_label_names", None) or []) if sec is not None else []
+        pose = PoseResidual(action_frame=self.action_frame, action_rotation=self.action_rotation,
+                            observation_frame=self.observation_frame, observation_rotation=self.observation_rotation,
+                            rotation_param=self.rotation_param, combine=self.combine, action_target=self.action_target,
+                            step_scale=self.step_scale, ee_relative_actions=self.ee_relative_actions,
+                            phase_names=names or None)
+        if pose.phase_step_scale is not None and sec is not None:
+            if not names:
+                raise ValueError("a per-phase residual.step_scale reads each env's phase: set the learner's std_label_names")
+            acting = list(getattr(sec, "route_labels", None) or []) or names
+            unscaled = [n for n in acting if n not in pose.phase_step_scale]
+            if unscaled:
+                raise ValueError(f"residual.step_scale has no scale for the residual's phases {unscaled} "
+                                 f"(it has {sorted(pose.phase_step_scale)})")
         if not self.critic_observes_target and self.action_target != "target":
             raise ValueError("residual.critic_observes_target: false leaves the current target out of the critics' input; "
                              "without action_target: target there is none")

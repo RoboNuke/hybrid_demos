@@ -67,11 +67,17 @@ class ActionSpace:
     def invert(self, executed: torch.Tensor, step: Step, state: State) -> Tuple[torch.Tensor, State]:
         raise NotImplementedError
 
-    def motion_factor(self, policy: torch.Tensor, kept_width: int) -> torch.Tensor:
+    def motion_factor(self, policy: torch.Tensor, kept_width: int, route: Optional[str] = None) -> torch.Tensor:
         """The base's motion in r units per dim ``(rows, width)``, from agent observations ``policy`` (raw, the base
-        motion at columns ``[kept_width, kept_width + width)``): DDPG's adaptive noise factor. Device ops only (it runs
-        inside a captured critic update)."""
+        motion at columns ``[kept_width, kept_width + width)``): DDPG's adaptive noise factor; ``route`` a routed
+        learner's phase (a per-phase scale's). Device ops only (it runs inside a captured critic update)."""
         raise NotImplementedError
+
+    def scale_rows_for(self, phase: torch.Tensor) -> Optional[torch.Tensor]:
+        """The rows' scale ``(N, width)`` for phase labels ``phase`` ``(N,)`` where the space's scale is per phase and
+        read from the labels (the pose space's per-phase ``step_scale``); None otherwise (the demo loader passes it to
+        :meth:`observe` as ``scale_rows``)."""
+        return None
 
 
 class PerDimSpace(ActionSpace):
@@ -106,7 +112,7 @@ class PerDimSpace(ActionSpace):
         step = {"policy": policy, "critic": critic, "side": side, "base": base, "scale": scale}
         return step, state
 
-    def motion_factor(self, policy, kept_width):
+    def motion_factor(self, policy, kept_width, route=None):
         """The observed base action in r units, ``|base| / scale`` per dim (a dim with no scale gets none)."""
         if not self.observe_base or self.steps_per_chunk != 1 or self.phase_scales:
             raise NotImplementedError("the adaptive noise factor reads the observed base action: per_dim needs "
@@ -165,23 +171,37 @@ class PoseSpace(ActionSpace):
         if routed is None:
             routed = torch.ones(obs.shape[0], dtype=torch.bool, device=obs.device)
         inputs = self.pose.step_inputs(obs, base, self.keep, routed, ee_chunk=state["ee_chunk"],
-                                       prev_sent=state["prev_sent"], prev_base=state["prev_base"], chunk_start=new_chunk)
+                                       prev_sent=state["prev_sent"], prev_base=state["prev_base"], chunk_start=new_chunk,
+                                       scale=scale_rows)
         step = {**inputs, "base": base, "routed": routed}
         return step, state
 
-    def motion_factor(self, policy, kept_width):
-        """The observed base motion ``d`` in r units (:meth:`PoseResidual.motion_scale`)."""
+    def motion_factor(self, policy, kept_width, route=None):
+        """The observed base motion ``d`` in r units (:meth:`PoseResidual.motion_scale`); a per-phase ``step_scale``
+        divides by ``route``'s own (each routed learner acts only in its phase)."""
         if self.pose.ee_relative_actions:
             raise NotImplementedError("the adaptive noise factor reads the observed base motion d; with "
                                       "residual.ee_relative_actions the agent observes the base's target relative to the "
                                       "EE instead")
-        return self.pose.motion_scale(policy[..., kept_width : kept_width + self.width])
+        d = policy[..., kept_width : kept_width + self.width]
+        scale = None
+        if self.pose.phase_step_scale is not None:
+            if route is None:
+                raise NotImplementedError("the adaptive noise factor with a per-phase residual.step_scale needs one residual "
+                                          "per phase (route_labels): one learner's observations do not say which phase's "
+                                          "scale a row has")
+            scale = self.pose.phase_scale(route, d)
+        return self.pose.motion_scale(d, scale)
+
+    def scale_rows_for(self, phase):
+        return self.pose.scale_rows(phase)
 
     def send(self, r, step, state):
-        sent = self.pose.sent(step["base"], step["d"], step["anchor"], step["A"], r[:, : self.width], step["routed"])
+        sent = self.pose.sent(step["base"], step["d"], step["anchor"], step["A"], r[:, : self.width], step["routed"],
+                              step["scale"])
         return sent, dict(state, prev_sent=sent, prev_base=step["base"])
 
     def invert(self, executed, step, state):
-        r = self.pose.invert(executed, step["d"], step["anchor"], step["A"])
+        r = self.pose.invert(executed, step["d"], step["anchor"], step["A"], step["scale"])
         # the chain carries the executed target on (a step in a phase without a residual executed the base)
         return r, dict(state, prev_sent=executed, prev_base=step["base"])
