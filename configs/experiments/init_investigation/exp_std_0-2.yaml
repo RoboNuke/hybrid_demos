@@ -1,0 +1,10 @@
+base: _foundation.yaml
+wandb:
+  group: init_exp_std_0-2
+
+# the online exploration std in multiplier units (the foundation: 0.05)
+ddpg:
+  warmup_noise:
+    target_scale: 0.2
+  train_noise:
+    scale: 0.2

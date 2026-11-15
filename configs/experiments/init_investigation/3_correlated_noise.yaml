@@ -1,0 +1,7 @@
+base: _foundation.yaml
+wandb:
+  group: init_correlated_noise
+
+ddpg:
+  train_noise:
+    repeat: true
