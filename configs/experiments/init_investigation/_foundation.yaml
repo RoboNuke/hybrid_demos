@@ -4,7 +4,8 @@
 #  * the critic warm-up's checkpoint with its replay memory, the demos included (ddpg.save_memory_with_critic_warmup);
 #  * a checkpoint at the end of each of the first 20 rollouts after the warm-up (ddpg.init_rollout_checkpoint_saves),
 #    the last with its replay memory (ddpg.save_memory_with_last_rollout_checkpoint);
-#  * every critic metric, the action slope q/action_grad_norm included (ddpg.log_action_grad).
+#  * every critic metric, the action slope q/action_grad_norm included (ddpg.log_action_grad);
+#  * 1M env steps in a 48 h job, off optimus (eecs2's RTX 6000): smol2's 24 h jobs ended at the walltime short of 750k.
 # Read with data_analysis/early_updates_analysis.ipynb.
 #
 # scaled_ablation (the leading _ keeps launch_train from submitting this file on its own): one residual per bottleneck
@@ -74,7 +75,7 @@ trainer:
   write_interval: 1000
   success_window: 10
   learner: ddpg
-  total_timesteps: 750000
+  total_timesteps: 1000000
 
 task:
   cfg:
@@ -245,8 +246,10 @@ model:
     layer_norm: true
     init: default
 
-# every training of the group: one job per launch file, 24 h
+# every training of the group: one job per launch file, 48 h, never on optimus (eecs2, the RTX 6000s)
 hpc:
   cpus: 8
   mem: 32G
-  time: 1-00:00:00
+  time: 2-00:00:00
+  partitions: dgxh,dgx2,tiamat
+  constraint: vram80g|vram140g|v100|l40s
