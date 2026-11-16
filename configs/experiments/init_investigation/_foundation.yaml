@@ -1,6 +1,6 @@
 # init_investigation (the leading _ keeps launch_train from submitting this file on its own): smol2's setup exactly
 # (scaled_ablation/_foundation.yaml as smol2 ran it: the critics without the current target,
-# residual.critic_observes_target: false), with what the early-training investigation needs on top:
+# target_tracking.target_in_critic: false), with what the early-training investigation needs on top:
 #  * the critic warm-up's checkpoint with its replay memory, the demos included (ddpg.save_memory_with_critic_warmup);
 #  * a checkpoint at the end of each of the first 20 rollouts after the warm-up (ddpg.init_rollout_checkpoint_saves),
 #    the last with its replay memory (ddpg.save_memory_with_last_rollout_checkpoint);
@@ -11,17 +11,17 @@
 # scaled_ablation (the leading _ keeps launch_train from submitting this file on its own): one residual per bottleneck
 # phase, insert and screw, on the 50-demo base, with ResFiT's learning (below) and the multiplied chain:
 #
-# residual.action_space: pose with a chained target (action_target: target) whose motion is multiplied (combine:
-# multiply). The target starts at the EE at each base chunk start and every step moves by the base's planned increment
-# (base_t (-) base_{t-1}, robot-base frame and axes: action_frame / action_rotation absolute, axis-angle) times r per
-# dim; r = 1 is the base's own trajectory, r = 0 holds the target. r is the multiplier itself, in ddpg.action_range
-# [-1.5, 3.5]; the actor starts at its midpoint 1 (output layer zero, output_bias 0). The agent observes the observation
-# re-expressed relative to the EE (observation_frame / observation_rotation relative; the EE's own pose dropped:
-# residual.observation_drop [0, 9]), the base's increment and gripper and the current target; the critics the
-# observation part and the current target, and take the resulting target relative to the EE. The noise is in multiplier
-# units: the warm-up N(0, 0.5) about the actor's own action, the online exploration N(0, 0.05), the target smoothing's
-# clip 0.15, r clamped to the range. Every input raw: the learner's state_preprocessor (demo: fitted once on the demo
-# rows, then frozen) normalizes them all.
+# The residual wrappers (configs below): the base policy; dropped columns (legs 2-4 and the obstacle from the
+# observation, the gripper from the action: the base keeps it); target tracking (the EE's absolute target starts at the
+# EE at each base chunk start and every step moves by the base's planned change, base_t (-) base_{t-1} in the robot-base
+# axes, axis-angle); the observation relative to the EE (its own pose removed); the multiply residual, r the multiplier
+# per dim of that change (r = 1 the base's own trajectory, r = 0 holds the target). r is in ddpg.action_range
+# [-1.5, 3.5]; the actor starts at its midpoint 1 (output layer zero, output_bias 0). The agent observes the
+# EE-relative observation, the current target (relative to the EE) and the base's change; the critics the observation
+# (not the current target, as smol2 ran), and take the sent change (r times the base's). The noise is in multiplier units: the warm-up
+# N(0, 0.5) about the actor's own action, the online exploration N(0, 0.05), the target smoothing's clip 0.15, r clamped
+# to the range. Every input raw: the learner's state_preprocessor (demo: fitted once on the demo rows, then frozen)
+# normalizes them all.
 #
 # ResFiT_phase_v7's comments on the learning (from configs/experiments/ResFiT/_foundation.yaml):
 #
@@ -98,39 +98,81 @@ task:
       insert_done:
         weight: 1.0
 
-residual:
+base_policy:
   enabled: true
-  # the 50-demo base (v7's)
   base_run: runs/hybrid_demo_furniture/obs-fix_true-jacobian_50demos/obs-fix_true-jacobian_50demos_a0
-  base_project: null
-  base_run_name: null
   base_warm_start: false
-  steps_per_chunk: 1
-  # the chained target, its increment multiplied per dim (robot-base frame and axes, axis-angle); the observation
-  # relative to the EE; the gripper the base's. No action scale
-  action_space: pose
-  action_frame: absolute
-  action_rotation: absolute
-  observation_frame: relative
-  observation_rotation: relative
-  rotation_param: rotvec
-  combine: multiply
-  action_target: target
-  observe_base_action: true
-  # the actor observes the observation, the base's motion and the current target; the critics the observation alone
-  # (smol2's: not the current target), and take the resulting target relative to the EE
-  critic_state: observation
-  critic_action: full
-  critic_observes_target: false
-  # the EE's own pose (position 3, rot6d 6: the residual sees everything relative to the EE, its velocities in its own
-  # frame), legs 1-3 (never touched in one_leg) and the front obstacle (fixed on every reset)
-  observation_drop:
-    - - 0
-      - 9
+drop_columns:
+  enabled: true
+  # legs 2-4 and the front obstacle out of the observation; the gripper out of the action (the base keeps it)
+  observation:
     - - 25
       - 52
     - - 61
       - 63
+  action:
+    - 9
+target_tracking:
+  enabled: true
+  # the EE's absolute target: [pos 3, rot6d 6] in the action, the EE's pose [pos 3, rot6d 6] in the observation
+  targets:
+    - action_pos:
+        - 0
+        - 3
+      obs_pos:
+        - 0
+        - 3
+      action_rot:
+        - 3
+        - 9
+      action_rot_param: rot6d
+      obs_rot:
+        - 3
+        - 9
+      obs_rot_param: rot6d
+  reset_at_chunk: true
+  target_in_policy: true
+  target_in_critic: false  # smol2 as it ran: the critics never saw the target
+ee_relative:
+  enabled: true
+  ee_pos:
+    - 0
+    - 3
+  ee_rot:
+    - 3
+    - 9
+  ee_rot_param: rot6d
+  # parts 1 and 5 (columns after the drop) and the EE's linear and angular velocity
+  poses:
+    - pos:
+        - 16
+        - 19
+      rot:
+        - 19
+        - 25
+      param: rot6d
+    - pos:
+        - 25
+        - 28
+      rot:
+        - 28
+        - 34
+      param: rot6d
+  vectors:
+    - - 9
+      - 12
+    - - 12
+      - 15
+multiply_residual:
+  enabled: true
+  # a demo's base motion under 0.5 mm / 0.5 deg on a dim gives no ratio (the multiplier 1)
+  invert_floor:
+    - 0.0005
+    - 0.0005
+    - 0.0005
+    - 0.008726646
+    - 0.008726646
+    - 0.008726646
 
 ddpg:
   # the Coffee / CanSorting paper runs' (the code's defaults: 0.99, 3-step)

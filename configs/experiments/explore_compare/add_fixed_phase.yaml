@@ -4,9 +4,9 @@ base:
 wandb:
   group: add_fixed_phase
 
-residual:
+additive_residual:
   # each phase's own median demo corrections (m on x, y, z; rad on the 3 rotvec dims)
-  step_scale:
+  scale:
     insert:
       - 0.000447
       - 0.000302

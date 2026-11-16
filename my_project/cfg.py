@@ -259,6 +259,12 @@ PHASE_NAMES = ("corner", "grasp", "insert", "screw")
 ROT_PARAMS = ("rotvec", "euler", "rot6d", "quat_xyzw", "quat_wxyz")
 
 
+def _is_mapping(value: Any) -> bool:
+    from omegaconf import DictConfig
+
+    return isinstance(value, (dict, DictConfig))
+
+
 def _span(pair: Any, what: str) -> None:
     if len(pair) != 2 or not 0 <= int(pair[0]) < int(pair[1]):
         raise ValueError(f"{what} is a [start, stop) column pair, got {list(pair)}")
@@ -434,9 +440,11 @@ class AdditiveResidualCfg:
     scale * r`` on every dim of the action space it is given. The critics take the sent action."""
 
     enabled: bool = False
-    #: the scale per action dim; null: ``scale_fraction`` x the base's demo half range per dim (only right above the
-    #: base policy, where the action is the base's own), or the routed phases' scales from ``phase_stats``
-    scale: Optional[List[float]] = None
+    #: the scale per action dim, one number each: the same in every phase, or a mapping phase name -> those numbers (each
+    #: env its current phase's, every phase the residual acts in needs one; the critics get the row's scale in their side
+    #: input, the demos invert each frame with its phase's). Null: ``scale_fraction`` x the base's demo half range per
+    #: dim (only where the action is still the base's own), or the routed phases' scales from ``phase_stats``
+    scale: Any = None
     #: ResFiT's rule: ``scale_fraction x max(half range, half_range_floor)`` of the base's demo actions per dim (the
     #: floor null: the base normalizer's half range)
     scale_fraction: float = 0.1
@@ -451,15 +459,29 @@ class AdditiveResidualCfg:
     def validate(self, cfg: Any) -> None:
         if not self.enabled:
             return
-        if self.scale is not None and (self.phase_stats is not None or any(float(v) < 0 for v in self.scale)):
-            raise ValueError("additive_residual.scale: numbers >= 0, and not with phase_stats")
+        if self.scale is not None:
+            rows = list(self.scale.values()) if _is_mapping(self.scale) else [self.scale]
+            if self.phase_stats is not None or any(float(v) < 0 for row in rows for v in row):
+                raise ValueError("additive_residual.scale: numbers >= 0 (per phase or for every phase), and not with "
+                                 "phase_stats")
+            if cfg is not None and _is_mapping(self.scale):
+                sec = q_section(cfg)
+                names = list(getattr(sec, "std_label_names", None) or [])
+                if not names:
+                    raise ValueError("a per-phase additive_residual.scale reads each env's phase: set the learner's "
+                                     "std_label_names")
+                acting = list(getattr(sec, "route_labels", None) or []) or names
+                unscaled = [n for n in acting if n not in self.scale]
+                if unscaled:
+                    raise ValueError(f"additive_residual.scale has no scale for the residual's phases {unscaled} "
+                                     f"(it has {sorted(self.scale)})")
         if self.scale_fraction <= 0:
             raise ValueError(f"additive_residual.scale_fraction must be > 0, got {self.scale_fraction}")
         if self.half_range_floor is not None and self.half_range_floor <= 0:
             raise ValueError("additive_residual.half_range_floor must be > 0 or null")
         if self.clip is not None and self.clip <= 0:
             raise ValueError("additive_residual.clip must be > 0 or null")
-        if cfg is not None and self.phase_stats is not None and not list(getattr(q_section(cfg), "route_labels", []) or []):
+        if cfg is not None and self.phase_stats is not None and not list(getattr(q_section(cfg), "route_labels", None) or []):
             raise ValueError("additive_residual.phase_stats scales the routed phases: set the learner's route_labels")
 
 

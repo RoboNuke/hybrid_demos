@@ -6,9 +6,9 @@ base:
 wandb:
   group: add_adaptive_one
 
-residual:
+additive_residual:
   # the smaller of insert's and screw's median demo corrections on each dim (screw's, rz insert's; m, rad)
-  step_scale:
+  scale:
     - 0.0002298
     - 0.0002218
     - 0.0002741

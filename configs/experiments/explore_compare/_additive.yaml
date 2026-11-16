@@ -1,15 +1,17 @@
-# ResFiT v7's residual on the chained target: step = d + step_scale * r per dim (residual.combine: add), r in multiples of
+# ResFiT v7's residual on the chained target: sent = d + scale * r per dim (additive_residual), r in multiples of
 # the phase's median demo correction on each dim, and v7's noise in those units.
 #
-# step_scale: v7's rule (action_scale_source: median_correction: the median |demo step - base step| over a phase's demo
+# additive_residual.scale: v7's rule (action_scale_source: median_correction: the median |demo step - base step| over a phase's demo
 # frames, per dim) recomputed in this action space -- the chained target's increments in the robot-base axes, rotvec --
 # on data/scaled_ablation/raw_demos.pt (the 300 demos and the 50-demo base v7 used; 37040 insert / 87153 screw frames,
 # v7's 36509 / 88522). v7's own numbers were in the per-dim space's normalized units (position, rot6d, gripper), which do
 # not carry over. A launch file sets the scale: per phase, or (one residual) the smaller of the two on each dim.
 #   insert: x 0.447 mm, y 0.302 mm, z 0.595 mm, rx 0.082 deg, ry 0.115 deg, rz 0.136 deg
 #   screw:  x 0.230 mm, y 0.222 mm, z 0.274 mm, rx 0.035 deg, ry 0.064 deg, rz 0.355 deg
-residual:
-  combine: add
+multiply_residual:
+  enabled: false
+additive_residual:
+  enabled: true
 
 # v7's: r in [-5, 5] unclamped (the reach 5 covered 80-98% of its corrections per dim), the actor starting at r = 0 (the
 # base's own step: the range's midpoint, output_bias null); the warm-up uniform +-0.8 about 0, then N(0, 0.4) unclipped;

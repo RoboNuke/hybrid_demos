@@ -33,7 +33,7 @@ def close(a, b):
 
 def additive(width, scale, clip=None):
     w = object.__new__(AdditiveResidual)
-    w.action_dim, w.scale, w.clip, w.table = width, scale, clip, None
+    w.action_dim, w.scale, w.clip, w.table, w.phase_names = width, scale, clip, None, []
     return w
 
 
@@ -230,3 +230,23 @@ def test_the_additive_noise_factor_reads_the_base_after_the_observation_columns(
     factor = w.noise_factor()
     observations = torch.tensor([[9.0, 9.0, 9.0, -1.0, 4.0, 7.0, 7.0]])  # 3 columns, the base (2), then a history (2)
     assert factor(observations).tolist() == [[2.0, 0.0]]
+
+
+def test_a_per_phase_additive_scale_steps_each_env_with_its_phase_and_binds_each_routed_learners_noise():
+    w = additive(2, None)
+    w.phase_names = ["corner", "grasp", "insert", "screw"]
+    w.table = torch.tensor([[0.0, 0.0], [0.0, 0.0], [0.5, 0.1], [0.2, 0.4]])
+    w.obs_width = 1
+    base = torch.tensor([[1.0, 1.0], [1.0, 1.0]])
+    side = w.side_of(base, torch.tensor([2, 3]))  # env 0 in insert, env 1 in screw
+    r = torch.ones(2, 2)
+    torch.testing.assert_close(w.combine(r, side), torch.tensor([[1.5, 1.1], [1.2, 1.4]]))
+    torch.testing.assert_close(w.invert(torch.tensor([[1.5, 1.1], [1.2, 1.4]]), side), r)
+    crit = w.critic_action()
+    torch.testing.assert_close(crit(None, r, {SIDE: side}), torch.tensor([[1.5, 1.1], [1.2, 1.4]]))
+    factor = w.noise_factor()
+    observations = torch.tensor([[9.0, 0.4, -0.2]])
+    with pytest.raises(NotImplementedError, match="one residual per phase"):
+        factor(observations)  # unbound: one learner for every phase cannot tell a row's phase
+    torch.testing.assert_close(factor.for_route("insert")(observations), torch.tensor([[0.8, 2.0]]))
+    torch.testing.assert_close(factor.for_route("screw")(observations), torch.tensor([[2.0, 0.5]]))

@@ -1,14 +1,16 @@
 """``additive_residual.*``: the agent's ``r`` added to the base action, ``sent = base + scale * r`` on every dim of the
 action space the wrapper below gives (:class:`AdditiveResidual`).
 
-The scale per dim is ``additive_residual.scale``, or -- where the action is still the base's own (only the base policy,
-dropped dims and the EE-relative observation below) -- one of ResFiT's rules on the base's actions:
+The scale per dim is ``additive_residual.scale`` -- the same in every phase, or per phase (each env its current phase's,
+from the env's tracker) -- or, where the action is still the base's own (only the base policy, dropped dims and the
+EE-relative observation below), one of ResFiT's rules on the base's actions:
 ``scale_fraction x`` the half range per dim (of the base normalizer, or of its demo dataset floored at
 ``half_range_floor``), or per routed phase its own scale from ``phase_stats`` (phase_v7: each phase's median demo
 correction; a phase without a residual gets 0). ``clip`` clamps the sent action to ``center +- clip x half range``.
 
 The critics take the sent action, ``base + scale * r``, rebuilt from the side input (the base action, then each env's
-scale with phase scales). The adaptive noise factor is the base action in r units, ``|base| / scale``, read from the
+scale with phase scales). The adaptive noise factor is the base action in r units, ``|base| / scale`` (per phase: each
+routed learner's own phase's, :class:`NoiseFactor`, bound by the package with ``for_route``), read from the
 agent's observation (the base action right after its observation columns); the neutral action is 0.
 """
 
@@ -84,6 +86,32 @@ class AdditiveCriticAction:
         return base + self.scale.to(actions.device) * actions
 
 
+class NoiseFactor:
+    """``observations -> (rows, A)``: the base action in r units, ``|base| / scale``, read at ``[start, stop)`` of agent
+    observations (DDPG's adaptive noise factor). With per-phase scales (``table`` ``(L, A)``) the package binds each
+    routed learner's phase (:meth:`for_route`, train.py and the eval learner): its own phase's row; unbound, refused."""
+
+    def __init__(self, start: int, stop: int, scale: Optional[torch.Tensor] = None, table: Optional[torch.Tensor] = None,
+                 names=(), route: Optional[str] = None) -> None:
+        self.start, self.stop, self.table, self.names, self.route = start, stop, table, list(names), route
+        if table is not None and route is not None:
+            scale = table[self.names.index(route)]
+        self.scale = scale
+
+    def for_route(self, route: Optional[str]) -> "NoiseFactor":
+        return NoiseFactor(self.start, self.stop, self.scale if self.table is None else None, self.table, self.names, route)
+
+    def __call__(self, observations: torch.Tensor) -> torch.Tensor:
+        if self.scale is None:
+            raise NotImplementedError("the adaptive noise factor with a per-phase additive scale needs one residual per "
+                                      "phase (route_labels): one learner's observations do not say which phase's scale a "
+                                      "row has")
+        on = self.scale > 0
+        safe = torch.where(on, self.scale, torch.ones_like(self.scale))
+        base = observations[..., self.start : self.stop]
+        return torch.where(on, base.abs() / safe, torch.zeros_like(base))
+
+
 class AdditiveResidual(CombineWrapper):
     neutral = 0.0
 
@@ -94,7 +122,18 @@ class AdditiveResidual(CombineWrapper):
         dims = native_dims(self)
         self.table = None
         self.clip = None
-        if ac.scale is not None:
+        if ac.scale is not None and hasattr(ac.scale, "keys"):
+            # per phase: each env its current phase's row (a phase without a residual 0)
+            table = torch.zeros((len(self.phase_names), self.action_dim))
+            for name, row in ac.scale.items():
+                if name not in self.phase_names:
+                    raise ValueError(f"additive_residual.scale names phase {name!r}; the learner's are {self.phase_names}")
+                if len(row) != self.action_dim:
+                    raise ValueError(f"additive_residual.scale.{name} has {len(row)} numbers; the action is {self.action_dim} wide")
+                table[self.phase_names.index(name)] = torch.tensor([float(v) for v in row])
+            self.table = table.to(self.device)
+            self.scale = None
+        elif ac.scale is not None:
             if len(ac.scale) != self.action_dim:
                 raise ValueError(f"additive_residual.scale has {len(ac.scale)} numbers; the action is {self.action_dim} wide")
             self.scale = torch.tensor([float(v) for v in ac.scale], device=self.device)
@@ -120,7 +159,8 @@ class AdditiveResidual(CombineWrapper):
                 table = phase_scale_table(ac.phase_stats, self.phase_names, self.routes, policy.action_dim, self.device)
                 self.table = table.index_select(1, index)
         print(f"[additive_residual] sent = base + scale * r over the {self.action_dim}-wide action"
-              + (f", per routed phase its scale from {ac.phase_stats}" if self.table is not None else f", scale {[round(v, 5) for v in self.scale.tolist()]}")
+              + (f", per phase its scale ({ac.phase_stats or 'additive_residual.scale'})" if self.table is not None
+                 else f", scale {[round(v, 5) for v in self.scale.tolist()]}")
               + (f", clamped to the base's +-{ac.clip} x half range" if self.clip is not None else ""), flush=True)
 
     def uses_phase_rows(self) -> bool:
@@ -151,16 +191,6 @@ class AdditiveResidual(CombineWrapper):
         return AdditiveCriticAction(self.action_dim, None if self.table is not None else self.scale, self.table is not None)
 
     def noise_factor(self):
-        """The base action in r units, ``|base| / scale``, from agent observations (the base action sits right after the
-        observation columns; the history and the wrench, appended later, come after it)."""
-        if self.table is not None:
-            raise NotImplementedError("the adaptive noise factor reads one scale per dim; phase scales change it per env")
-        scale, start, stop = self.scale, self.obs_width, self.obs_width + self.action_dim
-        on = scale > 0
-        safe = torch.where(on, scale, torch.ones_like(scale))
-
-        def factor(observations: torch.Tensor) -> torch.Tensor:
-            base = observations[..., start:stop]
-            return torch.where(on, base.abs() / safe, torch.zeros_like(base))
-
-        return factor
+        """The base action in r units, ``|base| / scale`` (:class:`NoiseFactor`), from agent observations (the base action
+        sits right after the observation columns; the history and the wrench, appended later, come after it)."""
+        return NoiseFactor(self.obs_width, self.obs_width + self.action_dim, self.scale, self.table, self.phase_names)
