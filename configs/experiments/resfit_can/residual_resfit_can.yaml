@@ -1,6 +1,6 @@
 # ResFiT's residual TD3 on robomimic Can (the foundation's settings) on our Can base, one env, 300k env steps, a
 # checkpoint every 10k (ResFiT's eval interval) for the watcher.
-#   python scripts/make_robosuite_demos.py --config configs/experiments/resfit_can/residual_resfit_can.yaml
+#   python scripts/make_raw_demos.py --config configs/experiments/resfit_can/residual_resfit_can.yaml --out data/resfit_can/raw_demos.pt
 #   python scripts/train.py --config configs/experiments/resfit_can/residual_resfit_can.yaml --headless
 #   python scripts/watch_residual_eval.py --headless --run runs/robomimic_can_residual/resfit_can/resfit_can_a0 \
 #     --eval_config configs/eval/residual_watch_can.yaml
@@ -22,15 +22,17 @@ trainer:
   write_interval: 1000
   success_window: 10
 
-residual:
+base_policy:
   enabled: true
   base_run: runs/robomimic_can/bc_resfit_can/bc_resfit_can_a0
-  base_project: null
-  base_run_name: null
+additive_residual:
+  enabled: true
 
 ddpg:
-  # this base's demo residuals (scripts/make_robosuite_demos.py), half of every batch, the actor on the same batch
-  demo_transitions: data/resfit_can/demos.pt
+  # the base's demo episodes (scripts/make_raw_demos.py), converted at load, half of every batch, the actor on the same batch
+  demo_transitions: data/resfit_can/raw_demos.pt
+  # the inputs standardized on the demo rows (theirs: the demos' mean and std)
+  state_preprocessor: demo
   demo_storage: sample
   demo_sampling_start: 0
   demo_sampling_end: 1000000000

@@ -22,18 +22,21 @@ def setup() -> None:
 
     from robonuke_rl_core.learners.cfg import register_learner
 
-    from my_project.cfg import ActionCfg, BC_BEST_CHECKPOINT, BC_LEARNER, BCCfg, DemoCfg, EpisodeCfg, HybridCfg, ForceObsCfg, RecordCfg, HistoryCfg, ForgeV1Cfg, ResidualCfg
+    from my_project.cfg import ActionCfg, BC_BEST_CHECKPOINT, BC_LEARNER, BCCfg, DemoCfg, EpisodeCfg, HybridCfg, ForceObsCfg, RecordCfg, HistoryCfg, ForgeV1Cfg
 
     register_section("demo", DemoCfg)
     register_section("bc", BCCfg)
     register_section("record", RecordCfg)  # scripts/record_demos.py
-    register_section("action", ActionCfg)  # my_project/wrappers.py
-    register_section("residual", ResidualCfg)  # my_project/residual.py
-    register_section("history", HistoryCfg)  # my_project/wrappers.py
-    register_section("episode", EpisodeCfg)  # my_project/wrappers.py
-    register_section("hybrid", HybridCfg)  # my_project/wrappers.py
-    register_section("force_obs", ForceObsCfg)  # my_project/wrappers.py
+    register_section("action", ActionCfg)  # my_project/wrappers/env_wrappers.py
+    register_section("history", HistoryCfg)  # my_project/wrappers/env_wrappers.py
+    register_section("episode", EpisodeCfg)  # my_project/wrappers/env_wrappers.py
+    register_section("hybrid", HybridCfg)  # my_project/wrappers/env_wrappers.py
+    register_section("force_obs", ForceObsCfg)  # my_project/wrappers/env_wrappers.py
     register_section("forge_v1", ForgeV1Cfg)  # scripts/import_forge_v1.py
+
+    from my_project.wrappers.register import register_residual
+
+    register_residual()  # the residual wrappers' sections and package hooks (my_project/wrappers/register.py)
 
     from robonuke_rl_core.envs.build import register_env_wrapper
 

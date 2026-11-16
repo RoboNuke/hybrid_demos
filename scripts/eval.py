@@ -21,36 +21,27 @@ def setup() -> None:
 
     from robonuke_rl_core.learners.cfg import register_learner
 
-    from my_project.cfg import ActionCfg, BC_BEST_CHECKPOINT, BC_LEARNER, BCCfg, DemoCfg, EpisodeCfg, HybridCfg, ForceObsCfg, RecordCfg, HistoryCfg, ForgeV1Cfg, ResidualCfg
+    from my_project.cfg import ActionCfg, BC_BEST_CHECKPOINT, BC_LEARNER, BCCfg, DemoCfg, EpisodeCfg, HybridCfg, ForceObsCfg, RecordCfg, HistoryCfg, ForgeV1Cfg
 
     register_section("demo", DemoCfg)
     register_section("bc", BCCfg)
     register_section("record", RecordCfg)  # scripts/record_demos.py
-    register_section("action", ActionCfg)  # my_project/wrappers.py
-    register_section("residual", ResidualCfg)  # my_project/residual.py
-    register_section("history", HistoryCfg)  # my_project/wrappers.py
-    register_section("episode", EpisodeCfg)  # my_project/wrappers.py
-    register_section("hybrid", HybridCfg)  # my_project/wrappers.py
-    register_section("force_obs", ForceObsCfg)  # my_project/wrappers.py
+    register_section("action", ActionCfg)  # my_project/wrappers/env_wrappers.py
+    register_section("history", HistoryCfg)  # my_project/wrappers/env_wrappers.py
+    register_section("episode", EpisodeCfg)  # my_project/wrappers/env_wrappers.py
+    register_section("hybrid", HybridCfg)  # my_project/wrappers/env_wrappers.py
+    register_section("force_obs", ForceObsCfg)  # my_project/wrappers/env_wrappers.py
     register_section("forge_v1", ForgeV1Cfg)  # scripts/import_forge_v1.py
+
+    from my_project.wrappers.register import register_residual
+
+    register_residual()  # the residual wrappers' sections and package hooks (my_project/wrappers/register.py)
 
     from robonuke_rl_core.envs.build import register_env_wrapper
 
     from my_project.wrappers import project_env_wrappers
 
     register_env_wrapper(project_env_wrappers)  # every env the package builds
-
-    from robonuke_rl_core.learners.sac import register_critic_action
-
-    from my_project.residual import residual_critic_action
-
-    register_critic_action(residual_critic_action)  # residual.critic_action: full (the critics are loaded at its width)
-
-    from robonuke_rl_core.learners.sac import register_exploration_scale
-
-    from my_project.residual import residual_exploration_scale
-
-    register_exploration_scale(residual_exploration_scale)  # the critics' health: their target's adaptive smoothing
 
     from robonuke_rl_core.evaluation import register_eval_policy
 

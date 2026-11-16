@@ -12,21 +12,18 @@
 # demo_batch_shared: true).
 #
 # Not here, on purpose: the input normalization (theirs standardizes with the demos' mean and std, the std floored at
-# 0.1) is the model's choice (ddpg.state_preprocessor); images (theirs) vs states (ours).
+# 0.1) goes with the demo file, in the launch config (ddpg.state_preprocessor: demo); images (theirs) vs states (ours).
 
 # the residual: ResFiT's ActionScaler and residual env wrapper. The executed action is the base's plus
-# action_scale_fraction x max(demo half range, 0.05) x r per action dim (their 1 + action_scale widening of the min-max
+# scale_fraction x max(demo half range, 0.05) x r per action dim (their 1 + action_scale widening of the min-max
 # range with the 0.1 min_action_range floor), clamped to the widened range (their unscale clamp); the actor sees the
 # observation and the base action, the critics the observation and the executed action
-residual:
-  action_space: per_dim
-  action_scale: null
-  action_scale_fraction: 1.1
-  action_half_range_floor: 0.05
-  executed_clip: 1.1
-  observe_base_action: true
-  critic_state: observation
-  critic_action: full
+additive_residual:
+  # ResFiT's action scaler: r in [-1, 1] scaled by 1.1 x max(the base's demo half range, 0.05) per dim, and the sent
+  # action clamped to the base's demo range widened by 1.1 x its half range
+  scale_fraction: 1.1
+  half_range_floor: 0.05
+  clip: 1.1
 trainer:
   learner: ddpg
 ddpg:

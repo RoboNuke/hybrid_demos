@@ -6,13 +6,14 @@ import math
 
 import torch
 
-from my_project.residual import PHASE_NAMES, ResidualPolicyWrapper
+from my_project.cfg import PHASE_NAMES
+from my_project.wrappers.residual_policy.combine import CombineWrapper
 
 
 def a_wrapper(n):
-    w = object.__new__(ResidualPolicyWrapper)
-    w.phase = torch.zeros(n, dtype=torch.long)
+    w = object.__new__(CombineWrapper)
     w.obs_phase = None
+    w.device = torch.device("cpu")
     return w
 
 

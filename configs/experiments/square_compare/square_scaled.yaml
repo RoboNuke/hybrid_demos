@@ -1,0 +1,35 @@
+# Scaled: sent = r * base on the 6 pose dims of the OSC delta (the gripper dropped from the action: the base keeps it),
+# r the multiplier in [-1, 3] starting at 1 (the actor's output bias 0 is the range's midpoint); exploration N(0, 0.2)
+# and a uniform +-0.4 warm-up around 1, target smoothing 0.2 in both phases (multiplier units).
+#   python scripts/train.py --config configs/experiments/square_compare/square_scaled.yaml --headless
+#   python scripts/watch_residual_eval.py --headless --run runs/init_explore_residual/square_scaled/square_scaled_a<i> \
+#     --eval_config configs/eval/residual_watch_robosuite_rounds.yaml
+base: _foundation.yaml
+
+wandb:
+  group: square_scaled
+
+drop_columns:
+  enabled: true
+  action:
+    - 6
+
+multiply_residual:
+  enabled: true
+  # a demo's base command under 0.01 controller units on a dim (0.5 mm, 0.3 deg) gives no ratio (the multiplier 1)
+  invert_floor:
+    - 0.01
+
+ddpg:
+  action_range:
+    - -1.0
+    - 3.0
+  warmup_noise:
+    scale: 0.4
+    target_scale: 0.2
+  train_noise:
+    scale: 0.2
+
+model:
+  actor:
+    output_bias: 0.0

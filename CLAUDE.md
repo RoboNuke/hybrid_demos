@@ -24,7 +24,7 @@ Never create a new conda env; never vendor a copy of the package into this repo.
 * **No host synchronization on the per-step path** (the package rule): the residual wrapper, the
   base policy and the observation terms keep everything on the device. The base policy's one
   read is which envs need a new chunk; the phase-label consistency check is latched on the
-  device and raised every `LABEL_CHECK_EVERY` steps (`my_project/residual.py`).
+  device and raised every `LABEL_CHECK_EVERY` steps (`my_project/wrappers/residual_policy/combine.py`).
 * **Isaac Lab resets an env only through `_reset_idx`.** `env.reset()` through skrl's wrapper is
   a one-shot: after its first call it returns the cached last observation and resets nothing.
   Isaac Lab's own in-step auto-reset calls `_reset_idx` for the envs in `reset_buf`. A true reset
@@ -46,22 +46,27 @@ Never create a new conda env; never vendor a copy of the package into this repo.
   `train.py` (the loop, run by `scripts/train_bc.py`). Its own entry point because the
   package's `train.main` runs only sac / ppo. A field both the policy and the trainer read
   goes in `model.actor`, never also in `bc`.
-* `my_project/wrappers.py` — the policy's action meaning (`action.*`: world-pose actions),
-  applied by the recorder, replay and BC rollouts through `apply_policy_wrappers`.
-  `my_project/obs_terms.py` adds named Factory/Forge observation terms (`hole_estimate`), so
-  the observation layout is `task.cfg.obs_order` config; installed in every script's `setup()`.
-* `my_project/residual.py` — residual RL on a frozen diffusion policy (`residual.*`); its
-  wrapper reaches the package's train / eval / debug through `register_env_wrapper`
-  (`project_env_wrappers` in `my_project/wrappers.py`, registered in every script's `setup()`).
-  `history.*` (`ObservationHistory`, same file) goes on outermost, after the residual, so the
-  base's input never changes. `my_project/residual_demos.py` (`scripts/make_demo_transitions.py`)
-  converts recorded demo frames offline (no sim) into an experiment's `sac.demo_transitions`, reusing `residual_observation` and `HistoryBuffer`, and
-  `project_env_wrappers` refuses a file whose fingerprint is another setup's. The critic is
-  asymmetric (Forge's `state_order`: privileged sim state). What r does is `residual.action_space`:
-  `my_project/action_spaces.py` (`PerDimSpace`, `PoseSpace`: observe / send / invert, shared by the wrapper and the
-  demo loader) and `my_project/pose_residual.py` (the pose axes: frame, rotation, rotation parametrisation, add or
-  multiply, chained target). A new action variation is a value of one of those axes, never a new frame module; r's
-  range, start and exploration belong to the learner (`ddpg.action_range`, `model.actor.output_bias`).
+* `my_project/wrappers/` — every env wrapper. `env_wrappers.py`: the policy's action meaning (`action.*`: world-pose
+  actions, applied by the recorder, replay and BC rollouts through `apply_policy_wrappers`), the success reset, the
+  history, the measured wrench, the Forge hybrid controller, and `project_env_wrappers` (every env the package builds,
+  `register_env_wrapper` in every script's `setup()`). `my_project/obs_terms.py` adds named Factory/Forge observation
+  terms (`hole_estimate`), so the observation layout is `task.cfg.obs_order` config; installed in every script's `setup()`.
+* Residual RL on a frozen diffusion policy — the residual wrappers, one fixed order, each on or off by its own section:
+  `wrappers/residual_policy/base_policy.py` (`base_policy.*`, innermost: runs the base on the env's own observation,
+  keeps `base_action` / `fresh` / `new_chunk` as fields, lays the agent's observation out as `[columns, base action]`),
+  `wrappers/action_spaces/drop_columns.py` (`drop_columns.*`), `wrappers/action_spaces/target_tracking.py`
+  (`target_tracking.*`), `wrappers/observation_spaces/ee_relative.py` (`ee_relative.*`), then exactly one residual,
+  `wrappers/residual_policy/additive.py` (`additive_residual.*`) or `multiply.py` (`multiply_residual.*`), sharing
+  `combine.py` (side input, per-phase metrics, episode counts, the label check). A conversion is a plain-torch
+  `Conversion` (`wrappers/chain.py`: observe / act / invert) inside a `ConversionWrapper`; a new observation or action
+  space is a new conversion, never a flag on another wrapper, and it makes no assumption about the task beyond its own
+  config's columns and the base action after the observation columns. r's range, start and exploration belong to the
+  learner (`ddpg.action_range`, `model.actor.output_bias`). `wrappers/register.py`'s `register_residual()` registers the
+  sections and the package hooks (critic action, adaptive noise factor, neutral action, demo loader).
+  `history.*` (`ObservationHistory`) goes on outermost, after the residual, so the base's input never changes.
+  Demos: `my_project/raw_demos.py` (`scripts/make_raw_demos.py`) writes raw episodes (observations, executed actions,
+  the base's actions, FurnitureBench's env data); `wrappers/residual_policy/demos.py` converts them at load through the
+  run's own wrappers. The critic is asymmetric on Forge (its `state_order`: privileged sim state).
 * `my_project/demos/` — hand-teleoperated demos: `teleop.py` (velocity → Forge action),
   `gamepad.py`, `writer.py` (LeRobot-style dataset), `state.py` (episode start snapshot /
   restore), `record.py` and `replay.py` (run by `scripts/record_demos.py` /
@@ -79,10 +84,11 @@ Never create a new conda env; never vendor a copy of the package into this repo.
   * `experiments/<group>/` — `_foundation.yaml` (based on a `base/` task, and a `methods/` file when the group runs a
     published method) holds what all of the
     group's trainings share: seed, wandb entity, every learning parameter (`bc.*`, `sac.*`,
-    `residual.*`, `history.*`, ...); one launch config per training, named type first
+    `additive_residual.*`, `history.*`, ...); one launch config per training, named type first
     (`bc_<group>.yaml`, `residual_<group>.yaml`), sets its learner (`trainer`), its `model`, its
     wandb project and group, its env count — and switches on the wrappers only it uses
-    (`residual.enabled`, `history.enabled`: in the foundation they would wrap the BC rollouts too).
+    (`base_policy.enabled` and its residual wrappers, `history.enabled`: in the foundation they would wrap the BC
+    rollouts too).
     The leading `_` keeps `launch_train.py <folder>` from submitting the foundation.
   * Demos are collected outside this repo (Robonuke_Furniture_Bench's `collect_scripted.py`); there
     is no demos folder.

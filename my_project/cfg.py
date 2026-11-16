@@ -251,355 +251,251 @@ class HybridCfg:
             )
 
 
-def check_observation_form_demos(path: str) -> None:
-    """``residual.critic_state: observation``: the demo file must give the critics the observation. A raw demo episode
-    file (scripts/make_raw_demos.py) does -- the demo loader builds every input through the run's action space, routed
-    (one phase per learner) or not (every phase) -- as does a ready transition file in the observation form (meta
-    ``form: "observation"``); refused is a ready file in another form (make_demo_transitions.py's residual critic state).
-    A path that is not (yet) a file is left to the learner, which refuses it at load."""
-    from pathlib import Path
+# ---------------------------------------------------------------------------- residual RL wrappers
+#: one_leg's task phases in phase/id order (furniture_lab assembly/phases.py); ids from len(PHASE_NAMES) on are an
+#: episode's end codes
+PHASE_NAMES = ("corner", "grasp", "insert", "screw")
+#: rotation parametrisations the wrappers read and write (``my_project/wrappers/pose_math.py``)
+ROT_PARAMS = ("rotvec", "euler", "rot6d", "quat_xyzw", "quat_wxyz")
 
-    file = Path(path)
-    if not file.is_file():
-        return
-    import torch
 
-    from my_project.raw_demos import RAW_FORMAT
+def _span(pair: Any, what: str) -> None:
+    if len(pair) != 2 or not 0 <= int(pair[0]) < int(pair[1]):
+        raise ValueError(f"{what} is a [start, stop) column pair, got {list(pair)}")
 
-    data = torch.load(file, map_location="cpu", weights_only=False, mmap=True)
-    if isinstance(data, dict) and data.get("format") == RAW_FORMAT:
-        return
-    form = ((data.get("meta") if isinstance(data, dict) else None) or {}).get("form")
-    if form != "observation":
-        raise ValueError(f"residual.critic_state: observation reads demos in the observation form; {file} is form {form!r} "
-                         "(scripts/make_demo_transitions.py writes the residual's critic state): rebuild them in the "
-                         "observation form, or as raw demo episodes (scripts/make_raw_demos.py)")
+
+def _rot_span(pair: Any, param: str, what: str) -> None:
+    from my_project.wrappers.pose_math import rot_width
+
+    _span(pair, what)
+    if param not in ROT_PARAMS:
+        raise ValueError(f"{what}: a rotation parametrisation is one of {ROT_PARAMS}, got {param!r}")
+    if int(pair[1]) - int(pair[0]) != rot_width(param):
+        raise ValueError(f"{what} spans {int(pair[1]) - int(pair[0])} columns; {param} is {rot_width(param)}")
 
 
 @dataclass
-class ResidualCfg:
-    """Residual RL on a frozen diffusion policy (``my_project/residual.py``).
-
-    The learner (``trainer.learner``) trains a residual: the env runs the frozen base, and the agent's action ``r``
-    changes the base's action through ``action_space``: ``per_dim`` adds ``scale * r`` per action dim in the env's own
-    units (any task); ``pose`` acts on a furniture base's absolute pose targets through independent axes (frame,
-    rotation, rotation parametrisation, add or multiply, a chained target; ``my_project/pose_residual.py``). What r can be
-    is the learner's (``ddpg.action_range``); its exploration too. Every input goes out raw.
-    """
+class BasePolicyCfg:
+    """The frozen diffusion policy under a residual (``my_project/wrappers/residual_policy/base_policy.py``): innermost of
+    the residual wrappers, it runs the base on the env's own observation, re-plans its chunk every ``action_horizon``
+    steps or when an env's episode starts, and appends the base's action to the agent's observation (the critics see
+    the observation without it). Every wrapper above reads the base's action, in its own action space."""
 
     enabled: bool = False
-    #: the base policy's BC run as a local run directory (holds ``checkpoints/``; its resolved
-    #: config, there or one level up, gives the architecture). Null: the wandb run
-    #: ``base_project`` / ``base_run_name`` instead (one of the two, not both)
+    #: the base BC run: a local run directory (``base_run``), or on wandb ``base_entity`` (default ``wandb.entity``) /
+    #: ``base_project`` / ``base_run_name``, downloaded into the package's run cache
     base_run: Optional[str] = None
-    #: the base policy's BC run on wandb: its project and run name (or run id), under
-    #: ``base_entity`` (null: this run's ``wandb.entity``). Its ``resolved_config.yaml`` and
-    #: ``base_checkpoint`` are downloaded fresh whenever an env is built. The project must not
-    #: be this run's ``wandb.project``: residual runs and their bases live in separate projects
     base_project: Optional[str] = None
     base_run_name: Optional[str] = None
     base_entity: Optional[str] = None
-    #: the base's checkpoint file (in ``<base_run>/checkpoints/``, or the wandb run's files)
     base_checkpoint: str = "actor_chkpt_best_success_rate.pt"
-    #: largest correction per step, one value per action dim (Forge: [x, y, z, yaw] in m and
-    #: rad; FurnitureBench: [dpos 3, dquat 4, gripper]); null: action_scale_fraction
-    #: of the base policy's normalized action range per dim
-    action_scale: Optional[List[float]] = None
-    #: with action_scale null: the correction bound as a fraction of the base's normalized
-    #: action range, i.e. fraction * (max - min) / 2 of its training actions per dim
-    #: (robust-rearrangement's ``action_scale: 0.1``; Policy Decorator's alpha)
-    action_scale_fraction: float = 0.1
-    #: demo transitions (``scripts/make_demo_transitions.py``) whose residual action
-    #: ``(a_demo - a_base) / scale`` lies beyond the policy's [-1, 1] in any dim: "store" them
-    #: as they are (the critic takes the action as an input, so the value is still true) or
-    #: "drop" them. Never clipped: a clipped action did not produce the stored next state
-    demo_actions_beyond_scale: str = "store"
-    #: what the SAC critics take as the action: "residual", the agent's own r in [-1, 1]
-    #: (the base action reaches them through the observation), or "full", the executed pose
-    #: action normalized as the base's, normalize(a_base + scale * r) = normalize(a_base) +
-    #: scale / half_range * r (``residual_critic_action``); with ``steps_per_chunk`` k, the
-    #: chunk's k executed actions, one row each, step-major. A demo transition's is then exactly
-    #: normalize(a_demo), however far beyond the residual's reach it lies
-    critic_action: str = "residual"
-    #: what the agent's action changes. "per_dim": ``scale * r`` added to every dim of the base action, in the env's own
-    #: action units (``action_scale`` / ``action_scale_fraction`` above; any task; ResFiT's form, and Policy Decorator's on
-    #: a delta-action base). "pose" (furniture FBAbs tasks, ``my_project/pose_residual.py``): r acts on the base's absolute
-    #: pose target as the axes below set; the gripper is the base's
-    action_space: str = "per_dim"
-    #: pose: the frame the base's target (or, with a target, its motion's axes) is expressed in: "absolute" the robot base
-    #: B, "chunk" the EE pose at the base's chunk start, "relative" the current EE pose
-    action_frame: str = "absolute"
-    #: pose: the frame's axes: "absolute" B's axes, "relative" the frame's own (the same thing for the absolute frame)
-    action_rotation: str = "absolute"
-    #: pose: the frame the agent's observation is re-expressed in (poses, velocities), as action_frame
-    observation_frame: str = "absolute"
-    #: pose: the observation frame's axes, as action_rotation
-    observation_rotation: str = "absolute"
-    #: pose: how a rotation is written as numbers in d, r and the observed motion: "rotvec" (axis-angle, 3), "euler" (roll,
-    #: pitch, yaw, Rz Ry Rx, 3) or "rot6d" (6). r is 3 + 3 (3 + 6 with rot6d) wide
-    rotation_param: str = "rotvec"
-    #: pose: "add", ``step = d + scale * r`` (step_scale_*), or "multiply", ``step = r * d``, per dim of the parametrised step
-    combine: str = "add"
-    #: pose: "none", d is the base's target in the frame; "target", a chained target that starts at the EE at each chunk
-    #: start and is moved every step by the base's planned increment combined with r (the current target joins the agent's
-    #: and the critics' observation)
-    action_target: str = "none"
-    #: pose, action_target: target: the critics observe the current target too. False: the agent alone does -- the
-    #: critics' input as before they saw it (smol2's and every earlier multiply-chain run's checkpoints)
-    critic_observes_target: bool = True
-    #: pose, combine: add: the scale per r dim, one number each -- m on the 3 position dims, rad on the rotation dims (3,
-    #: or 6 rot6d components): 6 numbers (9 with rot6d), the same in every phase; or a mapping phase name -> those numbers,
-    #: each env's current phase's own (every phase the residual acts in needs one; the critics get it in their side
-    #: input, the demo loader inverts each frame with its phase's). Required for add; null for multiply (r is the
-    #: multiplier)
-    step_scale: Any = None
-    #: pose: the agent observes the base's target in Policy Decorator's command form -- relative to the EE, in the
-    #: EE's frame, ``[R_ee^T (p - p_ee), log(R_ee^T R)]`` and the gripper (7) -- instead of ``d`` (the critics' action
-    #: is this form already)
-    ee_relative_actions: bool = False
-    #: env steps per agent action (Policy Decorator's residual chunk). 1: the agent acts every env
-    #: step. k > 1: it acts once every k env steps with a (k x A)-wide action, step-major (row j
-    #: is sub-step j's residual, A the per-step width); the wrapper runs the k env steps, each
-    #: with the base's own next action plus its row, sums the rewards and ORs the dones. The
-    #: base's executed ``action_horizon`` must be a multiple of k (a chunk never straddles a
-    #: base re-plan), so the observed base action is the chunk's k (step-major) and
-    #: ``critic_action: full`` is the chunk's k executed actions. No ``hybrid``, no demo transitions
-    steps_per_chunk: int = 1
-    #: override the base's executed ``model.actor.action_horizon`` (Policy Decorator's act
-    #: horizon 4); null: the base run's own. At most its ``horizon``
+    #: the base's executed horizon and DDIM steps; null: the base run's own
     base_action_horizon: Optional[int] = None
-    #: override the base's DDIM ``model.actor.inference_steps`` (Policy Decorator's 4); null:
-    #: the base run's own. At most its ``num_diffusion_iters``
     base_inference_steps: Optional[int] = None
-    #: append the base action to the agent's observation and the critic state; false: the
-    #: agent sees the observation alone (Policy Decorator's ``actor_input: obs``), which rules
-    #: out ``critic_action: full`` (it reads the base action there). Part of the demo fingerprint
-    observe_base_action: bool = True
-    #: what the SAC critics observe. "residual": the residual's own critic state (``critic_state``: the env's,
-    #: or the base observation, then the base action(s)). "observation": the agent's
-    #: own observation, no critic state (Policy Decorator's critic); ``critic_action: full`` then reads the
-    #: base action(s) from per-transition side inputs the critics never see (``infos["residual_base"]`` /
-    #: ``["next_residual_base"]``, the learner's ``side_inputs``). Furniture envs (no critic group of their
-    #: own), not with demo transitions
-    critic_state: str = "residual"
-    #: override the base run's ``model.actor.warm_start`` (null keeps it): false plans every chunk from pure noise
+    #: each plan warm-started from the last one's tail; null: the base run's own setting
     base_warm_start: Optional[bool] = None
-    #: one_leg's task phase (``furniture.track_phases``: corner, grasp, insert, screw) from which the residual acts:
-    #: an agent step whose observation's phase is earlier (or an episode-end code) runs the base alone (r = 1 for
-    #: combine: multiply, 0 otherwise), and ``infos["residual_active"]`` (1 / 0 per env) says which steps used it (set
-    #: ``sac.executed_action_mask: residual_active`` so the memory stores that r, or ``sac.store_labels`` to
-    #: store only the phases it acts in). "insert": only after the leg is grasped. Train and eval alike. None: every step
-    active_from_phase: Optional[str] = None
-    #: columns of the base's observation the residual never sees, as ``[start, stop)`` pairs: removed from the agent's
-    #: observation and from the critic state (an env without a critic group of its own), never from the base's input.
-    #: one_leg -FBAbs-ResiP (63): ``[25, 52]`` legs 1-3 (parts 1-3 of ``parts 5 x 9`` at column 16), ``[61, 63]`` the
-    #: front obstacle. Empty: the whole observation
-    observation_drop: List[List[int]] = field(default_factory=list)
-    #: per_dim: clamp every sent dim to ``center +- executed_clip x`` the residual scale's half range
-    #: (``action_half_range_floor``'s floored one when set): ResFiT's clamp to ``mid +- (1 + action_scale) x max(half range,
-    #: floor)`` with executed_clip = action_scale_fraction; the critics take the unclamped action, as ResFiT stores it.
-    #: Null: no clamp
-    executed_clip: Optional[float] = None
-
-    #: per_dim: the smallest half range of an action dim in the residual's scale (``scale =
-    #: action_scale_fraction x max(half range, floor)``, the half range the base's demo dataset's own), ResFiT's
-    #: ActionScaler floor (min_action_range / 2 = 0.05). Null: the base normalizer's half range, which is 1 for a
-    #: dim constant in the demos (robosuite Coffee's idle fingers: 1.2 rad per unit r instead of ResFiT's 0.06).
-    #: Robosuite tasks only
-    action_half_range_floor: Optional[float] = None
-    #: per routed phase (``ddpg.route_labels``) its own action scale, read from ``phase_stats``; the env wrapper reads the
-    #: phase of every env's observation from the env's phase tracker and applies that phase's (a phase without a residual
-    #: gets no correction). The critics' scale from r to the executed action rides in their side input, per transition.
-    #: per_dim, critic_state: observation, critic_action: full, one step per chunk, furniture tasks
-    phase_scales: bool = False
-    #: phase_scales' file: every routed phase's action scale
-    phase_stats: Optional[str] = None
-    #: phase_scales: what one unit of r is per action dim. "half_range": ResFiT's ``action_scale_fraction x max(the
-    #: phase's demo half range, action_half_range_floor or 0.05)``; "median_correction": the phase's median demo
-    #: correction ``|a_demo - a_base|`` (the base run along the demos), so r is in multiples of a typical correction on
-    #: every dim; a dim whose median is at most ``scale_zero_below`` (one the demos never correct, e.g. the gripper) gets
-    #: scale 0, no correction
-    action_scale_source: str = "half_range"
-    #: action_scale_source: median_correction: a median correction at or below this gives the dim scale 0
-    scale_zero_below: float = 1e-6
-
-    DEMO_ACTIONS_BEYOND_SCALE = ("store", "drop")
-    CRITIC_ACTIONS = ("residual", "full")
-    ACTION_SPACES = ("per_dim", "pose")
-    #: the pose axes and their defaults: a per_dim run must leave them alone (they would do nothing)
-    POSE_FIELDS = {"action_frame": "absolute", "action_rotation": "absolute", "observation_frame": "absolute",
-                   "observation_rotation": "absolute", "rotation_param": "rotvec", "combine": "add", "action_target": "none",
-                   "critic_observes_target": True, "step_scale": None, "ee_relative_actions": False}
-    CRITIC_STATES = ("residual", "observation")
-    PHASES = ("corner", "grasp", "insert", "screw")
-
-    def _validate_pose(self, cfg: Any) -> None:
-        """action_space: pose: the axes (checked by the map itself), and what the pose space is built for."""
-        from my_project.pose_residual import PoseResidual
-
-        sec = q_section(cfg) if cfg is not None else None
-        names = list(getattr(sec, "std_label_names", None) or []) if sec is not None else []
-        pose = PoseResidual(action_frame=self.action_frame, action_rotation=self.action_rotation,
-                            observation_frame=self.observation_frame, observation_rotation=self.observation_rotation,
-                            rotation_param=self.rotation_param, combine=self.combine, action_target=self.action_target,
-                            step_scale=self.step_scale, ee_relative_actions=self.ee_relative_actions,
-                            phase_names=names or None)
-        if pose.phase_step_scale is not None and sec is not None:
-            if not names:
-                raise ValueError("a per-phase residual.step_scale reads each env's phase: set the learner's std_label_names")
-            acting = list(getattr(sec, "route_labels", None) or []) or names
-            unscaled = [n for n in acting if n not in pose.phase_step_scale]
-            if unscaled:
-                raise ValueError(f"residual.step_scale has no scale for the residual's phases {unscaled} "
-                                 f"(it has {sorted(pose.phase_step_scale)})")
-        if not self.critic_observes_target and self.action_target != "target":
-            raise ValueError("residual.critic_observes_target: false leaves the current target out of the critics' input; "
-                             "without action_target: target there is none")
-        needs = {"critic_state: observation": self.critic_state == "observation", "critic_action: full": self.critic_action == "full",
-                 "steps_per_chunk: 1": int(self.steps_per_chunk) == 1, "observe_base_action": bool(self.observe_base_action),
-                 "no phase_scales (a per_dim scale)": not self.phase_scales, "no executed_clip (a per_dim clamp)": self.executed_clip is None,
-                 "action_scale: null (a per_dim scale)": self.action_scale is None,
-                 "no action_half_range_floor (a per_dim scale)": self.action_half_range_floor is None}
-        missing = [k for k, ok in needs.items() if not ok]
-        if missing:
-            raise ValueError(f"residual.action_space: pose needs {missing}")
-        if cfg is None or not self.enabled:
-            return
-        from my_project.families import is_abs
-
-        if not is_abs(str(cfg.task_name)):
-            raise ValueError(f"residual.action_space: pose corrects an FBAbs absolute target; got task {cfg.task_name!r}")
-        if cfg.hybrid.enabled:
-            raise ValueError("residual.action_space: pose has no hybrid blocks; switch hybrid off")
-        if self.combine == "multiply":
-            if cfg.trainer.learner != "ddpg":
-                raise ValueError("residual.combine: multiply reads r as the multiplier itself: trainer.learner: ddpg, whose "
-                                 "action_range sets what it can be")
 
     def validate(self, cfg: Any) -> None:
-        if self.critic_action not in self.CRITIC_ACTIONS:
-            raise ValueError(f"residual.critic_action must be one of {self.CRITIC_ACTIONS}, got {self.critic_action!r}")
-        if self.action_scale_fraction <= 0:
-            raise ValueError(f"residual.action_scale_fraction must be > 0, got {self.action_scale_fraction}")
-        if self.demo_actions_beyond_scale not in self.DEMO_ACTIONS_BEYOND_SCALE:
-            raise ValueError(
-                f"residual.demo_actions_beyond_scale must be one of {self.DEMO_ACTIONS_BEYOND_SCALE}, "
-                f"got {self.demo_actions_beyond_scale!r}"
-            )
-        if self.action_space not in self.ACTION_SPACES:
-            raise ValueError(f"residual.action_space must be one of {self.ACTION_SPACES}, got {self.action_space!r}")
-        if self.action_space == "per_dim":
-            set_ = sorted(k for k, default in self.POSE_FIELDS.items() if getattr(self, k) != default)
-            if set_:
-                raise ValueError(f"residual.{set_} are action_space: pose's axes; this run is per_dim: set action_space: pose "
-                                 "or leave them at their defaults")
-        else:
-            self._validate_pose(cfg)
-        if self.critic_state not in self.CRITIC_STATES:
-            raise ValueError(f"residual.critic_state must be one of {self.CRITIC_STATES}, got {self.critic_state!r}")
-        if self.active_from_phase is not None and self.active_from_phase not in self.PHASES:
-            raise ValueError(f"residual.active_from_phase must be one of {self.PHASES} or null, got {self.active_from_phase!r}")
-        for pair in self.observation_drop:
-            if len(pair) != 2 or not 0 <= int(pair[0]) < int(pair[1]):
-                raise ValueError(f"residual.observation_drop entries are [start, stop) column pairs, got {list(pair)}")
-        if self.action_scale_source not in ("half_range", "median_correction"):
-            raise ValueError(f"residual.action_scale_source is half_range or median_correction, got {self.action_scale_source!r}")
-        if self.phase_scales:
-            if not self.phase_stats:
-                raise ValueError("residual.phase_scales reads and writes its per-phase stats at residual.phase_stats: set it")
-            needs = {"action_space: per_dim": self.action_space == "per_dim", "critic_state: observation": self.critic_state == "observation",
-                     "critic_action: full": self.critic_action == "full",
-                     "steps_per_chunk: 1": int(self.steps_per_chunk) == 1, "action_scale: null": self.action_scale is None,
-                     "no executed_clip": self.executed_clip is None}
-            missing = [k for k, ok in needs.items() if not ok]
-            if missing:
-                raise ValueError(f"residual.phase_scales needs {missing}")
-        elif self.action_scale_source != "half_range":
-            raise ValueError("residual.action_scale_source: median_correction is phase_scales' (per-phase) scale: set phase_scales")
-        if self.action_half_range_floor is not None:
-            if not float(self.action_half_range_floor) > 0:
-                raise ValueError(f"residual.action_half_range_floor must be > 0 or null, got {self.action_half_range_floor}")
-            if self.action_space != "per_dim" or self.action_scale is not None:
-                raise ValueError("residual.action_half_range_floor floors the per_dim half-range scale (action_scale: null)")
-        if self.enabled and cfg is not None and (self.phase_scales or self.action_half_range_floor is not None):
-            from my_project.families import FURNITURE, ROBOSUITE, family_of
-
-            family = family_of(cfg.task_name)
-            if self.phase_scales:
-                if family != FURNITURE:
-                    raise NotImplementedError("residual.phase_scales reads one_leg's phase tracker: furniture tasks only")
-                sec = q_section(cfg)
-                if not list(getattr(sec, "route_labels", []) or []):
-                    raise ValueError("residual.phase_scales scales each routed phase: set the learner's route_labels")
-            # robosuite and furniture tasks only (the floor acts on the per_dim scale only); Forge neither
-            if family not in (ROBOSUITE, FURNITURE):
-                raise NotImplementedError("residual.phase_scales / action_half_range_floor are for robosuite and furniture tasks")
-        if self.executed_clip is not None and self.executed_clip <= 0:
-            raise ValueError(f"residual.executed_clip must be > 0 or null, got {self.executed_clip}")
-        if self.steps_per_chunk < 1:
-            raise ValueError(f"residual.steps_per_chunk must be >= 1, got {self.steps_per_chunk}")
-        for name in ("base_action_horizon", "base_inference_steps"):
-            value = getattr(self, name)
-            if value is not None and value < 1:
-                raise ValueError(f"residual.{name} must be null or >= 1, got {value}")
-        if self.base_action_horizon is not None and self.base_action_horizon % self.steps_per_chunk:
-            raise ValueError(
-                f"residual.base_action_horizon ({self.base_action_horizon}) must be a multiple of "
-                f"residual.steps_per_chunk ({self.steps_per_chunk}): a residual chunk never straddles a base re-plan"
-            )
-        if not self.enabled or cfg is None:
+        if not self.enabled:
             return
-        if self.steps_per_chunk > 1 and cfg.hybrid.enabled:
-            raise NotImplementedError(
-                f"residual.steps_per_chunk {self.steps_per_chunk} with hybrid.enabled is not supported: the chunk "
-                "action carries no per-step selection and force blocks"
-            )
-        if self.critic_state == "observation":
-            from my_project.families import FORGE, family_of
-
-            if family_of(cfg.task_name) == FORGE:
-                raise NotImplementedError("residual.critic_state: observation: a Forge env has a critic state of its own")
-            sac = q_section(cfg)
-            if sac is not None and sac.demo_transitions:
-                check_observation_form_demos(str(sac.demo_transitions))
-        remote = self.base_project is not None or self.base_run_name is not None
-        if bool(self.base_run) == remote:
-            raise ValueError(
-                "residual needs the base policy's BC run, one way: residual.base_run (a local run directory) "
-                "or residual.base_project and residual.base_run_name (a wandb run); "
-                f"got base_run={self.base_run!r}, base_project={self.base_project!r}, base_run_name={self.base_run_name!r}"
-            )
-        if remote and not (self.base_project and self.base_run_name):
-            raise ValueError(
-                f"residual.base_project and residual.base_run_name name the base's wandb run together; got "
-                f"base_project={self.base_project!r}, base_run_name={self.base_run_name!r}"
-            )
-        if remote and self.base_project == cfg.wandb.project:
-            raise ValueError(
-                f"residual.base_project is this run's own wandb.project ({cfg.wandb.project!r}): a residual run "
-                "logs to another project than its base BC run"
-            )
+        if not self.base_run and not (self.base_project and self.base_run_name):
+            raise ValueError("base_policy needs base_run, or base_project and base_run_name")
+        if self.base_run and (self.base_project or self.base_run_name):
+            raise ValueError("base_policy: set base_run or base_project / base_run_name, not both")
+        if cfg is None:
+            return
+        if not self.base_run and self.base_project == cfg.wandb.project:
+            raise ValueError(f"base_policy.base_project is this run's own wandb.project ({cfg.wandb.project!r}): a residual "
+                             "run logs to another project than its base BC run")
         if cfg.trainer.learner == BC_LEARNER:
-            raise ValueError(f"residual.enabled trains a residual with sac / ppo, not {BC_LEARNER}")
-        if self.critic_action == "full" and cfg.trainer.learner not in Q_LEARNERS:
-            raise ValueError(
-                f"residual.critic_action: full is the Q critics' action input ({Q_LEARNERS}); {cfg.trainer.learner} has no Q critic"
-            )
-        from my_project.families import FORGE, action_layout, family_of
+            raise ValueError(f"base_policy.enabled trains a residual with sac / ddpg / ppo, not {BC_LEARNER}")
 
-        family = family_of(cfg.task_name)
-        if family == FORGE and not cfg.action.world_pose:
-            raise ValueError("residual.enabled needs action.world_pose: the base acts in world poses")
-        if family != FORGE and cfg.action.world_pose:
-            raise ValueError(f"action.world_pose is a Forge interface; {cfg.task_name} acts in its own (FurnitureBench) action")
-        width = action_layout(cfg.task_name)["dim"]
-        if self.action_scale is not None and (
-            len(self.action_scale) != width or min(self.action_scale) <= 0
-        ):
-            raise ValueError(
-                f"residual.action_scale must be {width} positive values (one per action dim of {cfg.task_name}), "
-                f"got {self.action_scale}"
-            )
+
+@dataclass
+class DropColumnsCfg:
+    """``my_project/wrappers/action_spaces/drop_columns.py``: removes observation columns (from the agent's and the
+    critics' observation) and action dims. A dropped action dim is the base's: the agent no longer controls it, and it
+    leaves the base's action too."""
+
+    enabled: bool = False
+    #: ``[start, stop)`` observation column pairs, indexed as the observation reaches this wrapper (the env's own
+    #: columns: it sits right above the base policy)
+    observation: List[List[int]] = field(default_factory=list)
+    #: action dims, indexed in the env's action
+    action: List[int] = field(default_factory=list)
+
+    def validate(self, cfg: Any) -> None:
+        for pair in self.observation:
+            _span(pair, "drop_columns.observation entries")
+        if len(set(int(a) for a in self.action)) != len(self.action) or any(int(a) < 0 for a in self.action):
+            raise ValueError(f"drop_columns.action is a list of distinct dims >= 0, got {list(self.action)}")
+
+
+@dataclass
+class TargetCfg:
+    """One tracked target (``target_tracking.targets``): a position-like part -- ``action_pos`` in the action, the body's
+    current value at ``obs_pos`` in the observation (an arm's position in m, or a finger's joints) -- and optionally a
+    rotation (``action_rot`` / ``obs_rot``, each with its parametrisation)."""
+
+    action_pos: List[int] = field(default_factory=lambda: [0, 3])
+    obs_pos: List[int] = field(default_factory=lambda: [0, 3])
+    action_rot: Optional[List[int]] = None
+    action_rot_param: str = "rot6d"
+    obs_rot: Optional[List[int]] = None
+    obs_rot_param: str = "rot6d"
+
+    def check(self, what: str) -> None:
+        _span(self.action_pos, f"{what}.action_pos")
+        _span(self.obs_pos, f"{what}.obs_pos")
+        if int(self.action_pos[1]) - int(self.action_pos[0]) != int(self.obs_pos[1]) - int(self.obs_pos[0]):
+            raise ValueError(f"{what}: action_pos and obs_pos must be as wide")
+        if (self.action_rot is None) != (self.obs_rot is None):
+            raise ValueError(f"{what}: set both action_rot and obs_rot, or neither")
+        if self.action_rot is not None:
+            _rot_span(self.action_rot, self.action_rot_param, f"{what}.action_rot")
+            _rot_span(self.obs_rot, self.obs_rot_param, f"{what}.obs_rot")
+
+
+@dataclass
+class TargetTrackingCfg:
+    """``my_project/wrappers/action_spaces/target_tracking.py``: the action sent to the env is an absolute target per
+    tracked body; the agent's action is each target's change. Each target starts at the body's current pose when an
+    episode starts (and, with ``reset_at_chunk``, when the base starts a new chunk); its change per step is the base's
+    own planned change (``base_t - base_{t-1}``, or ``base_0 - current`` at a reset) -- the base action the wrappers above
+    see -- and the sent target is the current one moved by the agent's change: positions added, rotations ``Exp(drot)
+    R`` (axis-angle in the base frame's axes). Action dims outside every target pass through as they are."""
+
+    enabled: bool = False
+    targets: List[TargetCfg] = field(default_factory=lambda: [TargetCfg()])
+    #: each target starts over at the body's pose whenever the base re-plans (smol2), not only at an episode's start
+    reset_at_chunk: bool = True
+    #: the current targets, each relative to its body (``R^T (p_target - p)``, ``log(R^T R_target)``; a joint target
+    #: minus the joints), appended to the agent's / the critics' observation
+    target_in_policy: bool = True
+    target_in_critic: bool = False
+
+    def validate(self, cfg: Any) -> None:
+        if not self.enabled:
+            return
+        if not self.targets:
+            raise ValueError("target_tracking.targets is empty")
+        for i, target in enumerate(self.targets):
+            target.check(f"target_tracking.targets[{i}]")
+        used = []
+        for target in self.targets:
+            for pair in (target.action_pos, target.action_rot):
+                if pair is not None:
+                    used += list(range(int(pair[0]), int(pair[1])))
+        if len(set(used)) != len(used):
+            raise ValueError("target_tracking.targets overlap in the action")
+
+
+@dataclass
+class PoseColumnsCfg:
+    """A pose in the observation (``ee_relative.poses``): its position and rotation columns and the rotation's
+    parametrisation."""
+
+    pos: List[int] = field(default_factory=lambda: [0, 3])
+    rot: List[int] = field(default_factory=lambda: [3, 9])
+    param: str = "rot6d"
+
+
+@dataclass
+class EERelativeCfg:
+    """``my_project/wrappers/observation_spaces/ee_relative.py``: the observation re-expressed relative to the EE, in the
+    EE's own axes -- every listed pose ``(R_ee^T (p - p_ee), R_ee^T R)`` in its own columns and parametrisation, every
+    listed vector rotated ``R_ee^T v`` -- and the EE's own columns removed. Columns are indexed as the observation
+    reaches this wrapper."""
+
+    enabled: bool = False
+    ee_pos: List[int] = field(default_factory=lambda: [0, 3])
+    ee_rot: List[int] = field(default_factory=lambda: [3, 9])
+    ee_rot_param: str = "rot6d"
+    poses: List[PoseColumnsCfg] = field(default_factory=list)
+    vectors: List[List[int]] = field(default_factory=list)
+
+    def validate(self, cfg: Any) -> None:
+        if not self.enabled:
+            return
+        _span(self.ee_pos, "ee_relative.ee_pos")
+        _rot_span(self.ee_rot, self.ee_rot_param, "ee_relative.ee_rot")
+        for i, pose in enumerate(self.poses):
+            _span(pose.pos, f"ee_relative.poses[{i}].pos")
+            _rot_span(pose.rot, pose.param, f"ee_relative.poses[{i}].rot")
+        for pair in self.vectors:
+            _span(pair, "ee_relative.vectors entries")
+            if int(pair[1]) - int(pair[0]) != 3:
+                raise ValueError(f"ee_relative.vectors entries are 3 wide, got {list(pair)}")
+
+
+@dataclass
+class AdditiveResidualCfg:
+    """``my_project/wrappers/residual_policy/additive.py``: the agent's ``r`` added to the base's action, ``sent = base +
+    scale * r`` on every dim of the action space it is given. The critics take the sent action."""
+
+    enabled: bool = False
+    #: the scale per action dim; null: ``scale_fraction`` x the base's demo half range per dim (only right above the
+    #: base policy, where the action is the base's own), or the routed phases' scales from ``phase_stats``
+    scale: Optional[List[float]] = None
+    #: ResFiT's rule: ``scale_fraction x max(half range, half_range_floor)`` of the base's demo actions per dim (the
+    #: floor null: the base normalizer's half range)
+    scale_fraction: float = 0.1
+    half_range_floor: Optional[float] = None
+    #: per routed phase (the learner's ``route_labels``, phases read from the env's tracker) its own scale, from this
+    #: file (a phase without a residual gets scale 0); the critics' scale rides in their side input
+    phase_stats: Optional[str] = None
+    #: clamp every sent dim to ``center +- clip x half range`` of the base's demo actions (ResFiT's widened range); null:
+    #: no clamp. Only right above the base policy
+    clip: Optional[float] = None
+
+    def validate(self, cfg: Any) -> None:
+        if not self.enabled:
+            return
+        if self.scale is not None and (self.phase_stats is not None or any(float(v) < 0 for v in self.scale)):
+            raise ValueError("additive_residual.scale: numbers >= 0, and not with phase_stats")
+        if self.scale_fraction <= 0:
+            raise ValueError(f"additive_residual.scale_fraction must be > 0, got {self.scale_fraction}")
+        if self.half_range_floor is not None and self.half_range_floor <= 0:
+            raise ValueError("additive_residual.half_range_floor must be > 0 or null")
+        if self.clip is not None and self.clip <= 0:
+            raise ValueError("additive_residual.clip must be > 0 or null")
+        if cfg is not None and self.phase_stats is not None and not list(getattr(q_section(cfg), "route_labels", []) or []):
+            raise ValueError("additive_residual.phase_stats scales the routed phases: set the learner's route_labels")
+
+
+@dataclass
+class MultiplyResidualCfg:
+    """``my_project/wrappers/residual_policy/multiply.py``: the agent's ``r`` multiplies the base's action, ``sent = r *
+    base`` on every dim of the action space it is given (drop a dim it must not scale, e.g. the gripper, with
+    ``drop_columns``). r's range and start are the learner's (``ddpg.action_range``, ``model.actor.output_bias``); the
+    base alone is r = 1."""
+
+    enabled: bool = False
+    #: a demo's r is ``executed / base`` per dim, 1 where ``|base|`` is under this (one number, or one per dim), then
+    #: clamped to the learner's action_range
+    invert_floor: List[float] = field(default_factory=lambda: [1e-6])
+
+    def validate(self, cfg: Any) -> None:
+        if not self.enabled:
+            return
+        if not self.invert_floor or any(float(v) <= 0 for v in self.invert_floor):
+            raise ValueError("multiply_residual.invert_floor: one or more numbers > 0")
+        if cfg is not None and cfg.trainer.learner != "ddpg":
+            raise ValueError("multiply_residual reads r as the multiplier itself: trainer.learner: ddpg, whose action_range "
+                             "sets what it can be")
+
+
+def residual_wrappers_check(cfg: Any) -> None:
+    """The residual wrappers together (called from :meth:`BasePolicyCfg`'s owner check in ``project_env_wrappers``):
+    every one of them needs the base policy, and exactly one combine runs with it."""
+    combines = [name for name in ("additive_residual", "multiply_residual") if getattr(cfg, name).enabled]
+    others = [name for name in ("drop_columns", "target_tracking", "ee_relative") if getattr(cfg, name).enabled]
+    if not cfg.base_policy.enabled:
+        if combines or others:
+            raise ValueError(f"{combines + others} need base_policy.enabled")
+        return
+    if len(combines) != 1:
+        raise ValueError(f"base_policy runs with exactly one of additive_residual / multiply_residual enabled, got {combines}")
 
 
 @dataclass

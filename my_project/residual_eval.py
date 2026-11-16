@@ -196,9 +196,9 @@ def pending_steps(ckpt_dirs: Sequence[Path], done: Sequence[set]) -> List[int]:
 
 
 def _find_residual(env: Any):
-    from my_project.residual import find_residual
+    from my_project.wrappers.residual_policy.combine import find_combine
 
-    return find_residual(env)
+    return find_combine(env)
 
 
 def _residual_or_none(env: Any):
@@ -255,7 +255,7 @@ def evaluate(env: Any, policy: Any, seed: int, label: str = "eval", episodes: in
     force_sum = torch.zeros(n, device=u.device)
     force_max = torch.zeros(n, device=u.device)
     # Forge ends an episode one step before the limit; one env.step is steps_per_chunk sim steps
-    steps = _agent_steps(int(u.max_episode_length) - 1, residual.steps_per_chunk if residual is not None else 1)
+    steps = _agent_steps(int(u.max_episode_length) - 1, 1)
     bar = _round_bar(steps, label)
     for _ in range(steps):
         with torch.no_grad():
@@ -328,7 +328,7 @@ def _episodes_round(env: Any, policy: Any, seed: int, label: str) -> Dict[str, A
     alive = torch.ones(n, dtype=torch.bool, device=u.device)
     success = torch.zeros(n, dtype=torch.bool, device=u.device)
     length = torch.zeros(n, dtype=torch.long, device=u.device)
-    steps = _agent_steps(int(u.max_episode_length), residual.steps_per_chunk if residual is not None else 1)
+    steps = _agent_steps(int(u.max_episode_length), 1)
     bar = _round_bar(steps, label)
     correction: Dict[str, List[float]] = {}
     for _ in range(steps):
@@ -347,7 +347,7 @@ def _episodes_round(env: Any, policy: Any, seed: int, label: str) -> Dict[str, A
             ended_success = (infos.get("episode_metrics_to_log") or {}).get("episode/success")
             if ended_success is not None:
                 success |= ending & (torch.as_tensor(ended_success, device=u.device).reshape(-1) > 0.5)
-        length += alive.long() * (residual.counted.to(length.device) if residual is not None else 1)
+        length += alive.long() * 1
         alive &= ~ending
         bar.set_postfix(running=int(alive.sum()), success=int(success.sum()), refresh=False)
         bar.update(1)
@@ -382,7 +382,7 @@ def furniture_round(env: Any, policy: Any, seed: int, label: str = "eval", criti
     from robonuke_rl_core.envs.build import reseed_env
     from robonuke_rl_core.evaluation import env_states, force_env_reset
 
-    from my_project.residual import PHASE_NAMES
+    from my_project.cfg import PHASE_NAMES
 
     u = env.unwrapped
     n = int(u.num_envs)
@@ -397,7 +397,7 @@ def furniture_round(env: Any, policy: Any, seed: int, label: str = "eval", criti
     out = torch.zeros(n, dtype=torch.bool, device=u.device)
     length = torch.zeros(n, dtype=torch.long, device=u.device)
     # one env.step is the residual's steps_per_chunk sim steps
-    steps = _agent_steps(int(u.max_episode_length), residual.steps_per_chunk if residual is not None else 1)
+    steps = _agent_steps(int(u.max_episode_length), 1)
     bar = _round_bar(steps, label)
     passed: Dict[str, List[Any]] = {}  # key -> [(env indices, values)] per step
     correction: Dict[str, List[Any]] = {}
@@ -440,7 +440,7 @@ def furniture_round(env: Any, policy: Any, seed: int, label: str = "eval", criti
             if label_ is not None:
                 phase = torch.as_tensor(label_, device=u.device).reshape(-1).round().long()
         # the episode's sim steps in this agent step (the residual's counted sub-steps; 1 without one)
-        length += alive.long() * (residual.counted.to(length.device) if residual is not None else 1)
+        length += alive.long() * 1
         # a term counts only on the step it ends the episode: Isaac Lab's term buffer keeps the
         # last ended episode's terms through a reset, so at a round's start it still holds the
         # previous round's successes
@@ -745,8 +745,8 @@ def _watch(args, overrides, setup) -> int:
     cfg = load_from_run(
         config_path, list(overrides) + [f"experiment.num_agents={len(agents)}"], extra_files=[args.eval_config]
     )
-    if not cfg.residual.enabled:
-        raise ValueError(f"{run_dir} is not a residual run (residual.enabled is false)")
+    if not cfg.base_policy.enabled:
+        raise ValueError(f"{run_dir} is not a residual run (base_policy.enabled is false)")
     from my_project.cfg import Q_LEARNERS, q_section
 
     routes = list(getattr(q_section(cfg), "route_labels", None) or []) if cfg.trainer.learner in Q_LEARNERS else []
@@ -807,12 +807,10 @@ def _evaluate_all(env, cfg, ckpt_dirs: Sequence[Path], sinks: Sequence[_AgentSin
                 sink.record(step, label, result)
 
     if any(0 not in sink.done for sink in sinks) and not getattr(args, "skip_base", False):
-        # the base alone: r = 1 for combine: multiply (a zero multiplier would freeze the target), else 0 (base_alone_r);
-        # no checkpoint needed; the same policy for every agent
-        from my_project.residual import base_alone_r
-
+        # the base alone: r = 1 multiplied (a zero multiplier would freeze the target), 0 added; no checkpoint needed;
+        # the same policy for every agent
         width = int(env.action_space.shape[-1])
-        fill = base_alone_r(cfg.residual)
+        fill = _find_residual(env).neutral
         neutral = lambda observations, states: torch.full((observations.shape[0], width), fill, device=observations.device)
         record_all(0, "base only", evaluate_agents(env, neutral, seed, "base only", num_rollouts, num_agents))
 
@@ -904,84 +902,3 @@ def publish_stochastic(run_dir: str | Path) -> int:
     finally:
         run.finish()
     return len(fresh)
-
-
-# ---------------------------------------------------------------------- scripted residual probes
-#: hand-made residual policies, in units of the residual bound ([-1, 1] per dim, [x, y, z, yaw]):
-#: does a crude bias or dither reproduce what the learned residual gains?
-PROBES = {
-    "z_offset": "constant z = -0.77, nothing else",
-    "z_offset_xy_kicks": "z = -0.77 plus x/y of +-0.7, random sign each step",
-    "z_offset_xy_noise": "z = -0.77 plus x/y ~ N(0, 0.25) clipped to [-1, 1], each step",
-}
-
-
-def _probe_policy(name: str):
-    import torch
-
-    def policy(observations, states):
-        n, device = observations.shape[0], observations.device
-        r = torch.zeros((n, 4), device=device)
-        r[:, 2] = -0.77
-        if name == "z_offset_xy_kicks":
-            r[:, 0:2] = 0.7 * (torch.randint(0, 2, (n, 2), device=device) * 2 - 1)
-        elif name == "z_offset_xy_noise":
-            r[:, 0:2] = (0.25 * torch.randn((n, 2), device=device)).clamp(-1.0, 1.0)
-        return r
-
-    return policy
-
-
-def probe_main(argv=None, setup=None) -> int:
-    """Evaluate the scripted residual probes on a residual run's eval env (the watcher's: same
-    config layering, 100 envs, same seeded starts), print the results and append them to
-    ``<run>/eval_probe/results.jsonl``."""
-    parser = argparse.ArgumentParser(description=probe_main.__doc__)
-    parser.add_argument("--run", required=True, help="a residual run's agent directory")
-    parser.add_argument("--eval_config", required=True)
-    parser.add_argument("--probes", default=",".join(PROBES), help=f"comma list of {list(PROBES)}")
-
-    from isaaclab.app import AppLauncher
-
-    AppLauncher.add_app_launcher_args(parser)
-    args, overrides = parser.parse_known_args(argv)
-    args.headless = True
-    AppLauncher(args)
-    try:
-        if setup is not None:
-            setup()
-        import gymnasium as gym
-
-        from robonuke_rl_core.config import load_from_run
-        from robonuke_rl_core.envs.build import build_env, prepare_task, wrap_for_skrl
-        from robonuke_rl_core.evaluation import SINGLE_AGENT_OVERRIDE, resolved_config_path
-
-        run_dir = Path(args.run).expanduser()
-        cfg = load_from_run(
-            resolved_config_path(run_dir), list(overrides) + [SINGLE_AGENT_OVERRIDE], extra_files=[args.eval_config]
-        )
-        prepare_task(cfg, cfg.task_name, cfg.task_cfg)
-        env = wrap_for_skrl(build_env(cfg, gym.make(cfg.task_name, cfg=cfg.task_cfg), cfg.task_name), cfg.experiment.seed)
-        _find_residual(env)
-        seed = int(cfg.experiment.seed)
-        out = run_dir / "eval_probe"
-        out.mkdir(parents=True, exist_ok=True)
-        for name in [p for p in args.probes.split(",") if p]:
-            if name not in PROBES:
-                raise ValueError(f"unknown probe {name!r}; known: {list(PROBES)}")
-            result = evaluate(env, _probe_policy(name), seed)
-            with (out / "results.jsonl").open("a") as f:
-                f.write(json.dumps({"probe": name, "description": PROBES[name], **result}) + "\n")
-            print(
-                f"[probe] {name} ({PROBES[name]}): success {result['success_rate']:.2f}, engaged "
-                f"{result['engaged_rate']:.2f}, force mean {result['force_mean']:.2f} N, max mean "
-                f"{result['force_max_mean']:.2f} N over {result['episodes']} episodes",
-                flush=True,
-            )
-        sys.stdout.flush()
-        os._exit(0)
-    except BaseException:
-        traceback.print_exc()
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(1)

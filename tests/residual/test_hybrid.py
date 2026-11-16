@@ -9,7 +9,6 @@ import pytest
 import torch
 
 from my_project.cfg import HybridCfg
-from my_project.residual_demos import _section_defaults
 from my_project.wrappers import hybrid_demo_block
 
 
@@ -70,8 +69,3 @@ def test_demo_block_reads_as_position_to_the_controller():
     assert torch.equal(force_target, torch.zeros(1, 6))
 
 
-def test_fingerprint_defaults_cover_the_new_section():
-    """A demo file made before ``hybrid`` existed still matches a run at its defaults."""
-    defaults = _section_defaults()
-    assert defaults["hybrid.enabled"] is False
-    assert defaults["hybrid.force_axes"] == [1, 1, 1, 0, 0, 0]

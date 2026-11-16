@@ -51,12 +51,13 @@ eval:
   record: false
 
 # the task's own values over the method file's (configs/methods/resfit.yaml)
-residual:
+base_policy:
   # the base plans every chunk cold, as the demo residuals were measured
   base_warm_start: false
+additive_residual:
   # action_scale 0.2: the range widened by 1 + 0.2, the clamp at the widened range
-  action_scale_fraction: 1.2
-  executed_clip: 1.2
+  scale_fraction: 1.2
+  clip: 1.2
 ddpg:
   discount_factor: 0.995
   n_step: 5

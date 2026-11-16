@@ -15,9 +15,9 @@
 # furniture.phase_hold_steps; screw: assembled), its attempt then over.
 #
 # Not ResFiT's (our setup has no equivalent, or none is possible here):
-#  * the input normalization is the model's (ddpg.state_preprocessor, the learner's default: none); theirs standardizes
+#  * the inputs standardized on the demo rows (the launch's ddpg.state_preprocessor: demo); theirs standardizes
 #    with the demos' mean and std, the std floored at 0.1;
-#  * the base plans every chunk cold (residual.base_warm_start: false): the per-phase demos measure each demo
+#  * the base plans every chunk cold (base_policy.base_warm_start: false): the per-phase demos measure each demo
 #    residual against a cold base plan, so the env's base must plan the same way;
 #  * their critics share one encoder; ours are separate MLPs (the same widths);
 #  * images: their tasks are image-based, ours is state-based.
@@ -40,12 +40,14 @@ task:
       # steps the later phase's residual gets, and the per-phase residuals are already short of data
       stall_steps_insert: 0
       stall_steps_screw: 0
-residual:
+base_policy:
   base_project: hybrid_demo_furniture
   base_run_name: physic_aligned_evalHappy_a0
   base_warm_start: false
-  # legs 1-3 (never touched in one_leg) and the front obstacle (fixed on every reset)
-  observation_drop:
+drop_columns:
+  # legs 2-4 (parts 2-4 of parts 5 x 9 at column 16) and the front obstacle: out of the agent's and the critics'
+  # observation (switched on by the launch config)
+  observation:
     - - 25
       - 52
     - - 61
@@ -54,8 +56,8 @@ ddpg:
   # the Coffee / CanSorting paper runs' (the code's defaults: 0.99, 3-step), exploration N(0, 0.025)
   discount_factor: 0.995
   n_step: 5
-  # half of every batch from the phase's demos (scripts/make_phase_demos.py), the actor on the same batch
-  demo_transitions: data/ResFiT/demos_{route}.pt
+  # half of every batch from the phase's demo steps (scripts/make_raw_demos.py, converted at load), the actor on the same batch
+  demo_transitions: data/ResFiT/raw_demos.pt
   demo_storage: sample
   demo_sampling_start: 0
   demo_sampling_end: 1000000000

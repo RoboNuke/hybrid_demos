@@ -4,7 +4,6 @@ import pytest
 import torch
 
 from my_project.models.diffusion_policy import MinMaxNormalizer
-from my_project.residual import residual_observation
 
 
 def test_a_column_constant_up_to_float_noise_maps_to_about_zero():
@@ -48,13 +47,5 @@ def test_widen_reads_old_stats_as_the_rule_fits_them_and_the_bases_own_path_is_u
     assert torch.allclose(old.normalize(x, "obs", widen=True), new.normalize(x, "obs"))
     assert torch.equal(new.normalize(x, "obs", widen=True), new.normalize(x, "obs"))  # a no-op on stats fit since
     assert float(old.normalize(x, "obs")[0, 1]) > 100  # the base reads its stats as trained: noise stretched
-
-
-def test_the_residuals_agent_observation_is_raw():
-    # the residual no longer scales its inputs (the learner's state_preprocessor does): the observation and the base
-    # action go out as they are
-    obs, a_base = torch.tensor([[0.25, 0.6816]]), torch.tensor([[0.05, 0.2]])
-    agent, base = residual_observation(obs, a_base)
-    assert torch.equal(agent, torch.cat((obs, a_base), dim=-1)) and torch.equal(base, a_base)
 
 

@@ -1,8 +1,8 @@
-# one residual per phase (insert, screw) on the 50-demo base, each with its own action scale and observation
-# standardization from its own demo frames, one unit of r its phase's median demo correction (residual.phase_scales,
-# action_scale_source: median_correction); otherwise residual_ResFiT_single_v6.yaml's (Coffee v2's learning settings,
-# standardized inputs, the absolute frame, timeouts terminal, no clamp of the executed action), with per-phase logging.
-#   python scripts/make_phase_demos.py --config configs/experiments/ResFiT/residual_ResFiT_phase_v7.yaml --dataset data/physic_aligned_tcp_300
+# one residual per phase (insert, screw) on the 50-demo base, one unit of r its phase's median demo correction per dim
+# (additive_residual.phase_stats); the base policy + dropped columns (legs 2-4, the obstacle) + the additive residual,
+# Coffee v2's learning settings, inputs standardized on the demo rows, timeouts terminal, no clamp of the sent action,
+# per-phase logging. The demos: scaled_ablation's raw episodes (the same base and base settings), converted at load.
+#   python scripts/make_raw_demos.py --config configs/experiments/ResFiT/residual_ResFiT_phase_v7.yaml --out data/scaled_ablation/raw_demos.pt
 #   python scripts/train.py --config configs/experiments/ResFiT/residual_ResFiT_phase_v7.yaml --headless
 #   python scripts/watch_residual_eval.py --headless --run runs/hybrid_demo_furniture_residual/ResFiT_phase_v7/ResFiT_phase_v7_a0 \
 #     --eval_config configs/eval/residual_watch_furniture.yaml
@@ -34,17 +34,19 @@ trainer:
   write_interval: 1000
   success_window: 10
 
-residual:
+base_policy:
   enabled: true
   base_run: runs/hybrid_demo_furniture/obs-fix_true-jacobian_50demos/obs-fix_true-jacobian_50demos_a0
   base_project: null
   base_run_name: null
-  action_scale: null
-  executed_clip: null
-  action_half_range_floor: null
-  phase_scales: true
+drop_columns:
+  enabled: true
+additive_residual:
+  enabled: true
+  # each routed phase's own scale, its median demo correction per dim (the file's scale; a phase without a residual 0)
   phase_stats: data/ResFiT_phase_v7/phase_stats.pt
-  action_scale_source: median_correction
+  half_range_floor: null
+  clip: null
 
 ddpg:
   # timeouts end the target as a termination does (ResFiT's done = terminated | truncated; Coffee v2's)
@@ -55,7 +57,7 @@ ddpg:
     - insert
     - screw
   route_clock: true
-  # r is in multiples of the phase's median demo correction on every dim (residual.action_scale_source). The reach 5
+  # r is in multiples of the phase's median demo correction on every dim (additive_residual.phase_stats). The reach 5
   # covers 80-98% of insert's corrections per dim and 83-97% of screw's; exploration N(0, 0.4): a typical draw 0.27x the
   # median correction; the warm-up uniform +-0.8 of it
   action_range:
@@ -64,8 +66,10 @@ ddpg:
   # r unclamped (it was clamped at +-6, the reach plus 3 noise std, before the clamp became the range's own), the target
   # policy's smoothing noise clipped at 2.4 (ResFiT's 6 x its std)
   clip_actions: false
-  # each phase's demo residuals, in its own phase's units (scripts/make_phase_demos.py)
-  demo_transitions: data/ResFiT_phase_v7/demos_{route}.pt
+  # the base's raw demo episodes (scripts/make_raw_demos.py), each routed residual loading its own phase's steps
+  demo_transitions: data/scaled_ablation/raw_demos.pt
+  # the inputs standardized on the demo rows (theirs: the demos' mean and std)
+  state_preprocessor: demo
   save_memory_with_checkpoints: true
   # per-phase logging: <phase>_episode/*, <phase>_q/*, ... against <phase>_step for insert and screw; corner and grasp
   # in episode/

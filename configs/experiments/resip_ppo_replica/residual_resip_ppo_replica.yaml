@@ -25,7 +25,9 @@ trainer:
   # every 5 iterations
   checkpoint_interval: 3500
 
-residual:
+base_policy:
+  enabled: true
+additive_residual:
   enabled: true
 
 model:

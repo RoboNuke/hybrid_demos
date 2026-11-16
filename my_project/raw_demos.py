@@ -1,18 +1,23 @@
 """Raw demo episodes for the residual, offline, on the CPU, no sim (``scripts/make_raw_demos.py``).
 
-The file holds only what is general about the demos -- nothing the residual's own settings shape (its observation,
-action map, routing, reward weights, normalization): those are applied when the learner loads the file, with the
-env's own code (``my_project/demo_loader.py``, the package's ``register_demo_loader``). Per recorded demo episode (the
-base run's ``bc.dataset``: LeRobot parquet, ``observation.state_abs`` and ``action.abs``; the env's own per-step data
-from the episode's source pkl, ``scripts/collect_scripted.py`` in Robonuke_Furniture_Bench), frames
-``0..success_frame`` (the step after which the training env's ``success`` termination holds, :func:`success_frame`):
+The file holds only what is general about the demos -- nothing the residual wrappers shape (the observation, the
+action spaces, routing, reward weights, normalization): those are applied when the learner loads the file, with the
+run's own wrappers (``my_project/wrappers/residual_policy/demos.py``, the package's ``register_demo_loader``). Per
+recorded demo episode of the base run's ``bc.dataset`` (LeRobot parquet, the base's own ``bc.obs_key`` /
+``bc.action_key``), frames ``0..success_frame``. A FurnitureBench episode names its source pkl
+(``scripts/collect_scripted.py`` in Robonuke_Furniture_Bench), which holds the env's own per-step data and the actions
+the env executed, and its success frame is where the training env's ``success`` termination first holds
+(:func:`success_frame`); a robomimic / DexMimicGen episode records its success frame in ``meta/episodes.jsonl`` and has
+no env data (the loader gives it the env's sparse success reward on that frame):
 
 * ``states`` ``(T, 63)``: the raw env observations;
-* ``actions`` ``(T, 10)``: the absolute targets the env executed (:func:`executed_abs_actions`: a DART collection's
-  perturbed commands during its bursts);
-* ``base_actions`` ``(T, 10)``: the frozen base's action at each frame, as the env runs it -- a plan (its own
+* ``actions`` ``(T, A)``: the actions the env executed (FurnitureBench: :func:`executed_abs_actions`, a DART collection's
+  perturbed commands during its bursts; otherwise the dataset's);
+* ``base_actions`` ``(T, A)``: the frozen base's action at each frame, as the env runs it -- a plan (its own
   observation history, its DDIM steps, cold) at frames ``0, H, 2H, ...`` (``H`` its executed ``action_horizon``), each
   frame taking the plan's next action. The base is stochastic, so its sample is stored, not recomputed;
+FurnitureBench episodes also carry:
+
 * ``infos`` ``{path: (T, ...)}``: the env's infos published with each frame's observation (frame 0 the collection's
   settle step, frame ``t`` the infos of step ``t - 1``), flattened to ``"<key>/<name>"`` paths (``eval_state/phase/id``,
   the phase tag), numeric values only (:func:`frame_infos`);
@@ -115,9 +120,10 @@ def executed_abs_actions(source: Path, states: torch.Tensor, labels: torch.Tenso
 
 
 def raw_fingerprint(rc: Any, policy, dataset: Path, task_name: str, entity: Any = None) -> Dict[str, Any]:
-    """What a raw demo file's data depends on, as plain data: the dataset, the base run and checkpoint, the base's
-    effective planning settings (``policy`` as :func:`~my_project.residual.override_base` left it) and the task. One
-    definition for the builder and the loader's check."""
+    """What a raw demo file's data depends on, as plain data: the dataset, the base run and checkpoint (``rc`` the
+    ``base_policy`` section), the base's effective planning settings (``policy`` as
+    :func:`~my_project.wrappers.residual_policy.base_policy.override_base` left it) and the task. One definition for the
+    builder and the loader's check."""
     return {
         "dataset": str(Path(dataset).expanduser().resolve()),
         "base_run": str(rc.base_run) if rc.base_run else f"{rc.base_entity or entity}/{rc.base_project}/{rc.base_run_name}",
@@ -131,7 +137,7 @@ def raw_fingerprint(rc: Any, policy, dataset: Path, task_name: str, entity: Any 
 
 
 def base_plan_actions(policy, states: torch.Tensor) -> torch.Tensor:
-    """The base's action at each frame ``(T, 10)``, as the env runs it: a cold plan at frames ``0, H, 2H, ...`` from its
+    """The base's action at each frame ``(T, A)``, as the env runs it: a cold plan at frames ``0, H, 2H, ...`` from its
     own observation history (the first frame repeated before the episode), each frame taking the plan's next action."""
     T = states.shape[0]
     horizon = int(policy.action_horizon)
@@ -145,27 +151,27 @@ def base_plan_actions(policy, states: torch.Tensor) -> torch.Tensor:
 
 
 def _config(path: str):
-    """The experiment's residual section under its defaults, its seed and task name -- plain YAML, no sim."""
+    """The experiment's base_policy section under its defaults, its seed and task name -- plain YAML, no sim."""
     from omegaconf import OmegaConf
 
     from robonuke_rl_core.config import load_file_chain
 
-    from my_project.cfg import ResidualCfg
+    from my_project.cfg import BasePolicyCfg
 
     layers = [layer for _, layer in load_file_chain(Path(path))]
     merged = OmegaConf.merge(*layers)
-    rc = OmegaConf.merge(OmegaConf.structured(ResidualCfg), merged.get("residual", {}))
+    rc = OmegaConf.merge(OmegaConf.structured(BasePolicyCfg), merged.get("base_policy", {}))
     entity = OmegaConf.select(merged, "wandb.entity")
     if rc.base_entity is None and entity is not None:
         rc.base_entity = entity
-    return SimpleNamespace(residual=rc, wandb=SimpleNamespace(entity=entity),
+    return SimpleNamespace(base_policy=rc, wandb=SimpleNamespace(entity=entity),
                            seed=int(OmegaConf.select(merged, "experiment.seed", default=0)),
                            task_name=str(OmegaConf.select(merged, "task.name")))
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--config", required=True, help="the residual experiment (its base run and base settings)")
+    parser.add_argument("--config", required=True, help="the residual experiment (its base_policy section)")
     parser.add_argument("--dataset", default=None, help="the demo dataset (default: the base run's bc.dataset)")
     parser.add_argument("--out", required=True, help="the raw demo file to write (the experiment's demo_transitions)")
     args = parser.parse_args(argv)
@@ -176,35 +182,44 @@ def main(argv=None) -> int:
 
     from robonuke_rl_core.evaluation import resolved_config_path
 
-    from my_project.residual import base_run_dir, load_base_policy, override_base
+    from my_project.wrappers.residual_policy.base_policy import base_run_dir, load_base_policy, override_base
 
     cfg = _config(args.config)
-    rc = cfg.residual
+    rc = cfg.base_policy
     base_dir = base_run_dir(cfg)
-    dataset = Path(args.dataset).expanduser() if args.dataset else Path(OmegaConf.load(resolved_config_path(base_dir)).bc.dataset).expanduser()
+    bc = OmegaConf.load(resolved_config_path(base_dir)).bc
+    dataset = Path(args.dataset).expanduser() if args.dataset else Path(bc.dataset).expanduser()
     policy = load_base_policy(base_dir, rc.base_checkpoint, "cpu")
-    override_base(policy, SimpleNamespace(base_action_horizon=rc.base_action_horizon, base_inference_steps=rc.base_inference_steps,
-                                          steps_per_chunk=rc.steps_per_chunk, base_warm_start=rc.get("base_warm_start")))
+    override_base(policy, rc)
     if policy.cfg.warm_start:
         raise ValueError("the raw demos plan the base cold (every chunk from pure noise, at the env's replan frames); the env's "
-                         "base warm-starts each plan from the last one's tail: set residual.base_warm_start: false")
+                         "base warm-starts each plan from the last one's tail: set base_policy.base_warm_start: false")
     torch.manual_seed(cfg.seed)
-    sources = {}
+    sources, success_frames = {}, {}
     with open(dataset / "meta" / "episodes.jsonl") as f:
         for line in f:
             episode = json.loads(line)
-            sources[str((dataset / episode["file"]).resolve())] = episode.get("source")
+            key = str((dataset / episode["file"]).resolve())
+            sources[key] = episode.get("source")
+            success_frames[key] = episode.get("success_frame")
     from my_project.demos.furniture import load_pkl
 
     episodes, skipped, dart_rows = [], [], 0
     for path in sorted(glob.glob(str(dataset / "data" / "**" / "*.parquet"), recursive=True)):
         frame = pd.read_parquet(path)
-        states = torch.tensor(np.stack(frame["observation.state_abs"].values), dtype=torch.float32)
-        labels = torch.tensor(np.stack(frame["action.abs"].values), dtype=torch.float32)
-        source = sources.get(str(Path(path).resolve()))
+        states = torch.tensor(np.stack(frame[str(bc.obs_key)].values), dtype=torch.float32)
+        labels = torch.tensor(np.stack(frame[str(bc.action_key)].values), dtype=torch.float32)
+        key = str(Path(path).resolve())
+        source = sources.get(key)
+        if success_frames.get(key) is not None:
+            # a robomimic / DexMimicGen episode (its success frame recorded in episodes.jsonl): the dataset's actions are
+            # the executed ones, and it has no env data
+            T = int(success_frames[key]) + 1
+            episodes.append({"states": states[:T], "actions": labels[:T], "base_actions": base_plan_actions(policy, states[:T]),
+                             "success_frame": T - 1, "file": Path(path).name})
+            continue
         if not source:
-            raise ValueError(f"{path}: meta/episodes.jsonl names no source pkl for it; the env's data and the executed "
-                             "actions are there")
+            raise ValueError(f"{path}: meta/episodes.jsonl names neither a success_frame nor a source pkl for it")
         data = load_pkl(Path(source))
         missing = [k for k in ENV_DATA if k not in data]
         if missing:

@@ -1,0 +1,12 @@
+# Additive: sent = base + scale * r on every dim (gripper too), scale = 1.1 x the base's demo half range per dim, r in
+# [-0.1, 0.1]; ResFiT's exploration N(0, 0.05) and uniform +-0.2 warm-up (r units).
+#   python scripts/train.py --config configs/experiments/square_compare/square_add.yaml --headless
+#   python scripts/watch_residual_eval.py --headless --run runs/init_explore_residual/square_add/square_add_a<i> \
+#     --eval_config configs/eval/residual_watch_robosuite_rounds.yaml
+base: _foundation.yaml
+
+wandb:
+  group: square_add
+
+additive_residual:
+  enabled: true

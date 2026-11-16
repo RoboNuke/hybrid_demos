@@ -1,0 +1,44 @@
+# Three residuals on robomimic Square (the leading _ keeps launch_train from submitting this file on its own), each on
+# the env's own OSC_POSE delta action and observation, nothing re-expressed: additive (ResFiT's), scaled (multiplied)
+# and additive with adaptive exploration. What they share: the base policy below, ResFiT's learning (resfit_square's
+# foundation and configs/methods/resfit.yaml), 3 agents of one env each, 200k env steps, the inputs standardized on the
+# demo rows (ddpg.state_preprocessor: demo), the demos converted at load from the base's raw demo episodes, checkpoints
+# every 10k with each agent's replay memory, and the first 20 rollouts after the critic warm-up.
+#   python scripts/make_raw_demos.py --config configs/experiments/square_compare/square_add.yaml --out data/resfit_square/raw_demos.pt
+base: ../resfit_square/_foundation.yaml
+
+experiment:
+  num_agents: 3
+
+wandb:
+  project: init_explore_residual
+
+task:
+  cfg:
+    scene:
+      num_envs: 3
+
+trainer:
+  learner: ddpg
+  total_timesteps: 200000
+  checkpoint_interval: 10000
+  write_interval: 1000
+  success_window: 10
+
+base_policy:
+  enabled: true
+  base_run: runs/resfit_validation/bc_resfit_square/bc_resfit_square_a0
+
+additive_residual:
+  # no clamp of the sent action, as the scaled residual has none
+  clip: null
+
+ddpg:
+  state_preprocessor: demo
+  demo_transitions: data/resfit_square/raw_demos.pt
+  demo_storage: sample
+  demo_sampling_start: 0
+  demo_sampling_end: 1000000000
+  demo_batch_shared: true
+  save_memory_with_checkpoints: true
+  init_rollout_checkpoint_saves: 20

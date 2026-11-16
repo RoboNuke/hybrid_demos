@@ -2,13 +2,15 @@ base: _foundation.yaml
 wandb:
   group: add_chain
 
-# the foundation's chained target with the base's increment plus a correction instead of times a multiplier:
-# step = d + scale * r per dim, r in [-1, 1] (0, the base's own trajectory, at the start). The scales and the noise
+# the foundation's chained target with the base's change plus a correction instead of times a multiplier (the additive
+# residual): sent = d + scale * r per dim, r in [-1, 1] (0, the base's own trajectory, at the start). The scales and the noise
 # below are starting values, not tuned: 1 cm and 5 deg per unit r per step, which add up along the chain until the base
-# replans. step_scale: one number per r dim, m on x, y, z and rad on the 3 rotvec dims (5 deg = 0.0872664626 rad)
-residual:
-  combine: add
-  step_scale:
+# replans. additive_residual.scale: one number per r dim, m on x, y, z and rad on the 3 rotvec dims (5 deg = 0.0872664626 rad)
+multiply_residual:
+  enabled: false
+additive_residual:
+  enabled: true
+  scale:
     - 0.01
     - 0.01
     - 0.01

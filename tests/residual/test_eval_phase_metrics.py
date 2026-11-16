@@ -94,7 +94,8 @@ def test_the_base_alone_round_acts_with_the_neutral_r_1_for_multiply_else_0(monk
 
     env = SimpleNamespace(action_space=SimpleNamespace(shape=(1, 6)))
     cfg = SimpleNamespace(trainer=SimpleNamespace(total_timesteps=10), eval=SimpleNamespace(num_rollouts=4),
-                          residual=SimpleNamespace(action_space="pose", combine=combine))
+                          base_policy=SimpleNamespace(enabled=True))
+    monkeypatch.setattr(residual_eval, "_find_residual", lambda env: SimpleNamespace(neutral=fill))
     acted = []
     monkeypatch.setattr(residual_eval, "evaluate_agents",
                         lambda env, policy, seed, label, num_rollouts, num_agents:
@@ -119,7 +120,8 @@ def test_skip_base_leaves_out_the_base_alone_round(monkeypatch, tmp_path):
                         lambda env, policy, seed, label, episodes=None: calls.append(label) or {"success_rate": 0.0})
     env = SimpleNamespace(action_space=SimpleNamespace(shape=(1, 28)))
     cfg = SimpleNamespace(trainer=SimpleNamespace(total_timesteps=10), eval=SimpleNamespace(num_rollouts=4),
-                          residual=SimpleNamespace(action_space="per_dim", combine="add"))
+                          base_policy=SimpleNamespace(enabled=True))
+    monkeypatch.setattr(residual_eval, "_find_residual", lambda env: SimpleNamespace(neutral=0.0))
 
     class Sink:
         def __init__(self):
@@ -143,7 +145,8 @@ def test_the_base_alone_round_is_recorded_only_for_agents_that_lack_it(monkeypat
 
     env = SimpleNamespace(action_space=SimpleNamespace(shape=(1, 4)))
     cfg = SimpleNamespace(trainer=SimpleNamespace(total_timesteps=10), eval=SimpleNamespace(num_rollouts=4),
-                          residual=SimpleNamespace(action_space="per_dim", combine="add"))
+                          base_policy=SimpleNamespace(enabled=True))
+    monkeypatch.setattr(residual_eval, "_find_residual", lambda env: SimpleNamespace(neutral=0.0))
     rounds = []
     monkeypatch.setattr(residual_eval, "evaluate_agents",
                         lambda env, policy, seed, label, num_rollouts, num_agents: rounds.append(label)

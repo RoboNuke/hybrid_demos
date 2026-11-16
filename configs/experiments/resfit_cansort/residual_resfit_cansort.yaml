@@ -1,7 +1,7 @@
 # ResFiT's residual TD3 on cansort (the foundation's settings) on our cansort base: 3 agents in one process, one env
 # each, every agent its own networks, replay, schedule and wandb run; 300k env steps per agent, a checkpoint every
 # 10k (ResFiT's eval interval) for the watchers (one per agent).
-#   python scripts/make_robosuite_demos.py --config configs/experiments/resfit_cansort/residual_resfit_cansort.yaml \
+#   python scripts/make_raw_demos.py --config configs/experiments/resfit_cansort/residual_resfit_cansort.yaml --out data/resfit_cansort/raw_demos.pt
 #     --dataset data/dexmg_cansort_100   (ResFiT's offline_data.num_episodes 100; the base trained on all 1000)
 #   python scripts/train.py --config configs/experiments/resfit_cansort/residual_resfit_cansort.yaml --headless
 #   python scripts/watch_residual_eval.py --headless --run runs/resfit_validation_residual/resfit_cansort/resfit_cansort_a<i> \
@@ -27,15 +27,17 @@ trainer:
   write_interval: 1000
   success_window: 10
 
-residual:
+base_policy:
   enabled: true
   base_run: runs/resfit_validation/bc_resfit_cansort/bc_resfit_cansort_a0
-  base_project: null
-  base_run_name: null
+additive_residual:
+  enabled: true
 
 ddpg:
-  # this base's demo residuals (scripts/make_robosuite_demos.py), half of every batch, the actor on the same batch
-  demo_transitions: data/resfit_cansort/demos.pt
+  # the base's demo episodes (scripts/make_raw_demos.py), converted at load, half of every batch, the actor on the same batch
+  demo_transitions: data/resfit_cansort/raw_demos.pt
+  # the inputs standardized on the demo rows (theirs: the demos' mean and std)
+  state_preprocessor: demo
   demo_storage: sample
   demo_sampling_start: 0
   demo_sampling_end: 1000000000

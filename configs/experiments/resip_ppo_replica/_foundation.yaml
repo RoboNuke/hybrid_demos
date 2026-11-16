@@ -13,15 +13,12 @@ experiment:
 wandb:
   entity: hur
 
-residual:
+base_policy:
   base_project: hybrid_demo_furniture
   base_run_name: physic_aligned_evalHappy_a0
-  # ResiP's action_scale 0.1 in normalized action units
-  action_scale: null
-  action_scale_fraction: 0.1
-  critic_action: residual
-  steps_per_chunk: 1
-  observe_base_action: true
+additive_residual:
+  # ResiP's: r in [-1, 1] times 0.1 of the base's normalized action range per dim
+  scale_fraction: 0.1
 
 ppo:
   discount_factor: 0.999

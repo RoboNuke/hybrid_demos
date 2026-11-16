@@ -51,7 +51,7 @@ eval:
   record: false
 
 # the task's own values over the method file's (configs/methods/resfit.yaml)
-residual:
+base_policy:
   # the base plans every chunk cold, as the demo residuals were measured
   base_warm_start: false
 ddpg:

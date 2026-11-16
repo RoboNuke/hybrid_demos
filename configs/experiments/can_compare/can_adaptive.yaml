@@ -1,0 +1,23 @@
+# Additive with adaptive exploration: can_add.yaml with every noise (warm-up, exploration, both target smoothings) at
+# can_add's scales, times the base action in r units per dim (|base| / scale).
+#   python scripts/train.py --config configs/experiments/can_compare/can_adaptive.yaml --headless
+#   python scripts/watch_residual_eval.py --headless --run runs/init_explore_residual/can_adaptive_v2/can_adaptive_v2_a<i> \
+#     --eval_config configs/eval/residual_watch_robosuite_rounds.yaml
+base: _foundation.yaml
+
+wandb:
+  group: can_adaptive_v2
+
+additive_residual:
+  enabled: true
+
+ddpg:
+  warmup_noise:
+    scale: 0.2
+    adaptive: true
+    target_scale: 0.05
+    target_adaptive: true
+  train_noise:
+    scale: 0.05
+    adaptive: true
+    target_adaptive: true
