@@ -500,6 +500,10 @@ class MultiplyResidualCfg:
     #: (``additive_residual.scale``, or its ``scale_fraction x`` the base's demo half range), the change an additive
     #: residual with r in ``+-r_range_clip`` can make; the critics' action clamped the same way. 0: no clamp
     r_range_clip: float = 0.0
+    #: true: ``r_range_clip`` clamps the policy's own action instead: the actor's r clamped so ``r * base`` stays within
+    #: ``base +- r_range_clip x scale`` (r within ``1 +- limit / |base|``; straight-through), the exploration noise (times the base) added
+    #: after the clamp; neither the sent action nor the critics' is clamped again. Needs ``r_range_clip``
+    r_range_clip_actor: bool = False
 
     def validate(self, cfg: Any) -> None:
         if not self.enabled:
@@ -508,6 +512,8 @@ class MultiplyResidualCfg:
             raise ValueError("multiply_residual.invert_floor: one or more numbers > 0")
         if self.r_range_clip < 0:
             raise ValueError(f"multiply_residual.r_range_clip must be >= 0 (0: no clamp), got {self.r_range_clip}")
+        if self.r_range_clip_actor and self.r_range_clip == 0:
+            raise ValueError("multiply_residual.r_range_clip_actor bounds the actor by r_range_clip: set r_range_clip > 0")
         if cfg is not None and cfg.trainer.learner != "ddpg":
             raise ValueError("multiply_residual reads r as the multiplier itself: trainer.learner: ddpg, whose action_range "
                              "sets what it can be")

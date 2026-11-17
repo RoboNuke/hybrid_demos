@@ -5,6 +5,7 @@
   :meth:`critic_action`);
 * ``register_exploration_scale``: DDPG's adaptive noise factor, read from agent observations (:meth:`noise_factor`);
 * ``register_neutral_action``: the r that sends the base's own action (0 added, 1 multiplied);
+* ``register_action_bound``: the clamp on DDPG's deterministic action (:meth:`action_bound`; ``multiply_residual.r_range_clip_actor``);
 * ``register_demo_loader``: raw demo episodes converted at load (``my_project/wrappers/residual_policy/demos.py``).
 
 Each hook answers None when the run has no residual (``base_policy.enabled`` false).
@@ -14,7 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["register_residual", "residual_critic_action", "residual_exploration_scale", "residual_neutral_action"]
+__all__ = ["register_residual", "residual_action_bound", "residual_critic_action", "residual_exploration_scale",
+           "residual_neutral_action"]
 
 
 def _enabled(cfg: Any) -> bool:
@@ -41,6 +43,16 @@ def residual_exploration_scale(cfg: Any, env: Any):
     return find_combine(env).noise_factor()
 
 
+def residual_action_bound(cfg: Any, env: Any):
+    """The clamp on DDPG's deterministic action, ``observations -> (lo, hi)`` (``multiply_residual.r_range_clip_actor``);
+    else None."""
+    if not _enabled(cfg):
+        return None
+    from my_project.wrappers.residual_policy.combine import find_combine
+
+    return find_combine(env).action_bound()
+
+
 def residual_neutral_action(cfg: Any, env: Any):
     """The r that sends the base's own action; None without a residual."""
     if not _enabled(cfg):
@@ -53,8 +65,8 @@ def residual_neutral_action(cfg: Any, env: Any):
 def register_residual() -> None:
     """Register the residual wrappers' config sections and package hooks (every entry script's ``setup()``)."""
     from robonuke_rl_core.config import register_section
-    from robonuke_rl_core.learners.sac import (register_critic_action, register_demo_loader, register_exploration_scale,
-                                               register_neutral_action)
+    from robonuke_rl_core.learners.sac import (register_action_bound, register_critic_action, register_demo_loader,
+                                               register_exploration_scale, register_neutral_action)
 
     from my_project.cfg import (AdditiveResidualCfg, BasePolicyCfg, DropColumnsCfg, EERelativeCfg, MultiplyResidualCfg,
                                 TargetTrackingCfg)
@@ -69,4 +81,5 @@ def register_residual() -> None:
     register_critic_action(residual_critic_action)
     register_exploration_scale(residual_exploration_scale)
     register_neutral_action(residual_neutral_action)
+    register_action_bound(residual_action_bound)
     register_demo_loader(residual_demo_loader)

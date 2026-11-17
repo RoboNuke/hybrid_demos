@@ -87,6 +87,10 @@ class CombineWrapper(ChainWrapper):
     def uses_phase_rows(self) -> bool:
         return False
 
+    def action_bound(self):
+        """The clamp on DDPG's deterministic action, ``observations -> (lo, hi)`` (``register_action_bound``), or None."""
+        return None
+
     # ------------------------------------------------------------------ the env
     def _tracker_phase(self) -> torch.Tensor:
         """Each env's phase from the env's tracker, which already holds the phase of the observation being built."""

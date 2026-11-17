@@ -37,9 +37,10 @@ def additive(width, scale, clip=None):
     return w
 
 
-def multiply(width, floor, r_range, limit=None):
+def multiply(width, floor, r_range, limit=None, bound_actor=False):
     w = object.__new__(MultiplyResidual)
     w.action_dim, w.floor, w.r_range, w.limit = width, torch.as_tensor(floor, dtype=torch.float32), r_range, limit
+    w.bound_actor, w.device = bound_actor, torch.device("cpu")
     return w
 
 
@@ -237,6 +238,30 @@ def test_r_range_clip_limits_the_multiplied_change_to_the_additive_ones_and_the_
     torch.testing.assert_close(MultiplyCriticAction(3, limit)(None, r, {SIDE: base}), sent)
     # below the limit nothing changes
     torch.testing.assert_close(multiply(3, [1e-3], (-1.0, 3.0), limit).combine(torch.ones(1, 3), base), base)
+
+def test_r_range_clip_actor_clamps_the_actors_r_so_its_change_is_the_additive_ones_and_leaves_the_noise_and_critic():
+    # r_range_clip 0.1 on scale [1.1, 0.5, 1.1]: the actor's r clamped to 1 +- limit / |b|, so r * b within b +- limit
+    limit = 0.1 * torch.tensor([1.1, 0.5, 1.1])
+    combine = multiply(3, [1e-3], (-1.0, 3.0), limit, bound_actor=True)
+    combine.obs_width = 2
+    base = torch.tensor([[0.5, -0.2, 0.0], [0.01, 1.0, -0.9]])
+    observations = torch.cat([torch.full((2, 2), 9.0), base, torch.full((2, 1), 7.0)], dim=1)  # 2 columns, base, history
+    lo, hi = combine.action_bound()(observations)
+    torch.testing.assert_close(hi[0, :2], torch.tensor([1.22, 1.25]))  # 1 + 0.11 / 0.5, 1 + 0.05 / 0.2
+    torch.testing.assert_close(lo[1], torch.tensor([1 - 11.0, 0.95, 1 - 0.11 / 0.9]))
+    assert hi[0, 2] > 1e9  # b = 0: no clamp (r * 0 is 0 whatever r)
+    for r in (torch.full((2, 3), 3.0), torch.full((2, 3), -1.0)):  # the actor at either end of its range
+        clamped = torch.maximum(torch.minimum(r, hi), lo)
+        change = (clamped * base - base).abs()
+        assert bool((change <= limit + 1e-6).all())
+        # where the actor's own range reaches past the limit, the clamp leaves exactly the limit
+        reaches = 2 * base.abs() >= limit
+        torch.testing.assert_close(change[reaches], limit.expand(2, 3)[reaches])
+    noisy = torch.tensor([[2.0, 1.1, 3.0], [3.0, -1.0, 2.0]])  # a clamped r plus noise: sent and critic not clamped again
+    torch.testing.assert_close(combine.combine(noisy, base), noisy * base)
+    torch.testing.assert_close(combine.critic_action()(None, noisy, {SIDE: base}), noisy * base)
+    assert multiply(3, [1e-3], (-1.0, 3.0), limit).action_bound() is None  # the sent-action clamp has no actor clamp
+
 
 def test_the_additive_noise_factor_reads_the_base_after_the_observation_columns():
     w = additive(2, torch.tensor([0.5, 0.0]))

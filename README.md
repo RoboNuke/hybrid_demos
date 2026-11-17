@@ -592,6 +592,7 @@ python scripts/make_raw_demos.py --config configs/experiments/can_compare/can_ad
 | `multiply_residual.enabled` | bool | `false` | `sent = r * base`; r's range and start are `ddpg.action_range` and `model.actor.output_bias` (ddpg only) |
 | `multiply_residual.invert_floor` | list[float] | `[1e-6]` | a demo's r is `executed / base`, 1 where `|base|` is under this (one number or one per dim), clamped to the range |
 | `multiply_residual.r_range_clip` | float | `0.0` | not 0: the sent action clamped to `base +- r_range_clip x` the additive residual's scale per dim (`additive_residual.scale` or `scale_fraction x` the demo half range), the change an additive residual with r in `+-r_range_clip` can make; the critics' action too. 0: no clamp |
+| `multiply_residual.r_range_clip_actor` | bool | `false` | true: `r_range_clip` clamps the policy's own action instead: the actor's r (unchanged) clamped so `r * base` stays within `base +- r_range_clip x scale`, i.e. r within `1 +- limit / \|base\|` (`register_action_bound`; straight-through: the actor's gradient passes the clamp); the exploration noise (times the base) is added after the clamp, so the sent action is `clamped r * base + noise * base`, and neither it nor the critics' action is clamped again. Needs `r_range_clip > 0` |
 
 **The critic is asymmetric** on a Forge task: Forge gives the env a critic state (`task.cfg.state_order`: true peg and
 hole poses, joint positions, gains, ...), which the base policy wrapper keeps for the critics while the actor sees the

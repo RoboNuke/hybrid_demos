@@ -7,7 +7,12 @@ base``, rebuilt from the side input (the base action); the adaptive noise factor
 ``r_range_clip`` (not 0) limits the change as an additive residual with ``r`` in ``+-r_range_clip`` is limited: the sent
 action clamped to ``base +- r_range_clip x scale`` per dim, ``scale`` the additive residual's (``additive_residual.scale``
 or ``scale_fraction x`` the base's demo half range, :func:`~my_project.wrappers.residual_policy.additive.flat_scale`); the
-critics' action is clamped the same way.
+critics' action is clamped the same way. With ``r_range_clip_actor`` the limit clamps the policy's own action instead:
+the actor's ``r`` (its ``mid + half * tanh``, unchanged) clamped so ``r * base`` stays within ``base +- limit``, i.e. r
+within ``1 +- limit / |base|`` per row and dim (:meth:`MultiplyResidual.action_bound`; straight-through: the actor's
+gradient passes the clamp); the exploration noise is added
+after the clamp, so the sent action is ``clamped r * base + noise * base``, and neither it nor the critics' action is
+clamped again.
 """
 
 from __future__ import annotations
@@ -62,13 +67,21 @@ class MultiplyResidual(CombineWrapper):
             from my_project.wrappers.residual_policy.additive import flat_scale
 
             self.limit = clip * flat_scale(self, cfg)
+        #: r_range_clip_actor: the limit bounds the actor (action_bound), not the sent action
+        self.bound_actor = bool(cfg.multiply_residual.r_range_clip_actor)
         print(f"[multiply_residual] sent = r * base over the {self.action_dim}-wide action, r in {self.r_range} "
               f"(the base alone at 1)"
-              + ("" if self.limit is None else f", clamped to base +- {[round(v, 5) for v in self.limit.tolist()]}"
-                 f" (r_range_clip {clip} x the additive scale)"), flush=True)
+              + ("" if self.limit is None else f", {'the actor' if self.bound_actor else 'clamped'} to base +- "
+                 f"{[round(v, 5) for v in self.limit.tolist()]} (r_range_clip {clip} x the additive scale)"
+                 + (", the noise unclamped" if self.bound_actor else "")), flush=True)
+
+    @property
+    def sent_limit(self) -> Optional[torch.Tensor]:
+        """The clamp on the sent (and the critics') action: the limit, unless it bounds the actor instead."""
+        return None if self.bound_actor else self.limit
 
     def combine(self, r, side):
-        return clamp_change(r * side, side, self.limit)
+        return clamp_change(r * side, side, self.sent_limit)
 
     def invert(self, executed, side):
         """``executed / base`` per dim, 1 where ``|base|`` is under the floor, clamped to the learner's range."""
@@ -80,7 +93,22 @@ class MultiplyResidual(CombineWrapper):
         metrics["residual/multiplier"] = r.mean(dim=-1)
 
     def critic_action(self) -> MultiplyCriticAction:
-        return MultiplyCriticAction(self.action_dim, self.limit)
+        return MultiplyCriticAction(self.action_dim, self.sent_limit)
+
+    def action_bound(self):
+        """With ``r_range_clip_actor``: ``observations -> (1 - limit / |base|, 1 + limit / |base|)`` per row and dim, the
+        base read from the observation's base-action columns, the actor's r clamped to it so ``r * base`` moves at most
+        ``limit`` from the base; else None."""
+        if not self.bound_actor:
+            return None
+        start, stop = self.obs_width, self.obs_width + self.action_dim
+        limit = self.limit.to(self.device)
+
+        def window(observations: torch.Tensor):
+            reach = limit / observations[..., start:stop].abs().clamp_min(1e-12)
+            return 1.0 - reach, 1.0 + reach
+
+        return window
 
     def noise_factor(self):
         start, stop = self.obs_width, self.obs_width + self.action_dim
