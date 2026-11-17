@@ -591,6 +591,7 @@ python scripts/make_raw_demos.py --config configs/experiments/can_compare/can_ad
 | `additive_residual.clip` | float \| null | `null` | clamp the sent action to `center +- clip x` the base's demo half range (ResFiT's widened range); null: no clamp |
 | `multiply_residual.enabled` | bool | `false` | `sent = r * base`; r's range and start are `ddpg.action_range` and `model.actor.output_bias` (ddpg only) |
 | `multiply_residual.invert_floor` | list[float] | `[1e-6]` | a demo's r is `executed / base`, 1 where `|base|` is under this (one number or one per dim), clamped to the range |
+| `multiply_residual.r_range_clip` | float | `0.0` | not 0: the sent action clamped to `base +- r_range_clip x` the additive residual's scale per dim (`additive_residual.scale` or `scale_fraction x` the demo half range), the change an additive residual with r in `+-r_range_clip` can make; the critics' action too. 0: no clamp |
 
 **The critic is asymmetric** on a Forge task: Forge gives the env a critic state (`task.cfg.state_order`: true peg and
 hole poses, joint positions, gains, ...), which the base policy wrapper keeps for the critics while the actor sees the

@@ -496,12 +496,18 @@ class MultiplyResidualCfg:
     #: a demo's r is ``executed / base`` per dim, 1 where ``|base|`` is under this (one number, or one per dim), then
     #: clamped to the learner's action_range
     invert_floor: List[float] = field(default_factory=lambda: [1e-6])
+    #: not 0: the sent action clamped to ``base +- r_range_clip x`` the additive residual's scale per dim
+    #: (``additive_residual.scale``, or its ``scale_fraction x`` the base's demo half range), the change an additive
+    #: residual with r in ``+-r_range_clip`` can make; the critics' action clamped the same way. 0: no clamp
+    r_range_clip: float = 0.0
 
     def validate(self, cfg: Any) -> None:
         if not self.enabled:
             return
         if not self.invert_floor or any(float(v) <= 0 for v in self.invert_floor):
             raise ValueError("multiply_residual.invert_floor: one or more numbers > 0")
+        if self.r_range_clip < 0:
+            raise ValueError(f"multiply_residual.r_range_clip must be >= 0 (0: no clamp), got {self.r_range_clip}")
         if cfg is not None and cfg.trainer.learner != "ddpg":
             raise ValueError("multiply_residual reads r as the multiplier itself: trainer.learner: ddpg, whose action_range "
                              "sets what it can be")

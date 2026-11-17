@@ -117,7 +117,7 @@ def test_skip_base_leaves_out_the_base_alone_round(monkeypatch, tmp_path):
 
     calls = []
     monkeypatch.setattr(residual_eval, "evaluate",
-                        lambda env, policy, seed, label, episodes=None: calls.append(label) or {"success_rate": 0.0})
+                        lambda env, policy, seed, label, episodes=None, critic=None: calls.append(label) or {"success_rate": 0.0})
     env = SimpleNamespace(action_space=SimpleNamespace(shape=(1, 28)))
     cfg = SimpleNamespace(trainer=SimpleNamespace(total_timesteps=10), eval=SimpleNamespace(num_rollouts=4),
                           base_policy=SimpleNamespace(enabled=True))
@@ -165,3 +165,57 @@ def test_the_base_alone_round_is_recorded_only_for_agents_that_lack_it(monkeypat
     residual_eval._evaluate_all(env, cfg, [tmp_path / "a0", tmp_path / "a1"], [fresh, resumed], 0, args)
     assert rounds == ["base only"]  # once, not per agent
     assert fresh.recorded == [(0, 0.0)] and resumed.recorded == []  # each agent gets its own slot's result
+
+
+class StandaloneEnv:
+    """A standalone task (robosuite's form): two envs, env 0's episode ends at step 1 (a success), env 1's at step 2."""
+
+    class Cfg:  # the task cfg's class carries the simulator
+        SIMULATOR = "standalone"
+
+    def __init__(self):
+        self.num_envs, self.device, self.max_episode_length = 2, "cpu", 3
+        self.unwrapped, self.cfg = self, self.Cfg()
+        self.t = 0
+
+    def step(self, action):
+        self.t += 1
+        ends = torch.tensor([self.t == 1, self.t == 2])
+        infos = {"episode_metrics_to_log": {"episode/success": torch.tensor([1.0, 0.0])},
+                 "residual_base": torch.zeros(2, 1), "next_residual_base": torch.zeros(2, 1)}
+        return torch.full((2, 1), float(self.t)), torch.ones(2), ends, torch.zeros(2, dtype=torch.bool), infos
+
+
+def test_a_standalone_round_feeds_every_agent_step_to_the_critics_health_and_merges_its_result(monkeypatch):
+    import robonuke_rl_core.envs.build as build
+    import robonuke_rl_core.evaluation as evaluation
+
+    monkeypatch.setattr(build, "reseed_env", lambda env, seed: None)
+    monkeypatch.setattr(evaluation, "force_env_reset", lambda env: (torch.zeros(2, 1), None))
+    monkeypatch.setattr(evaluation, "env_states", lambda env: None)
+
+    class Critic:
+        def __init__(self):
+            self.rounds, self.steps = 0, []
+
+        def start_round(self):
+            self.rounds += 1
+
+        def step(self, **row):
+            self.steps.append(row)
+
+        def results(self):
+            return [{"critic_all/explained_variance": 0.5}]
+
+    critic = Critic()
+    env = StandaloneEnv()
+    out = residual_eval.evaluate(env, lambda o, s: torch.zeros(2, 1), seed=0, episodes=None, critic=critic)
+    assert critic.rounds == 1 and len(critic.steps) == 2
+    first, second = critic.steps
+    # each step is the transition from the observation the action was chosen on; alive is the envs before the step
+    torch.testing.assert_close(first["observations"], torch.zeros(2, 1))
+    torch.testing.assert_close(first["next_observations"], torch.ones(2, 1))
+    torch.testing.assert_close(second["observations"], torch.ones(2, 1))
+    assert first["alive"].tolist() == [True, True] and second["alive"].tolist() == [False, True]
+    assert first["start_label"] is None and "residual_base" in first["infos"]
+    assert out["critic_all/explained_variance"] == 0.5 and out["success_rate"] == 0.5

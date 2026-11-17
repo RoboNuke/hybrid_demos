@@ -37,9 +37,9 @@ def additive(width, scale, clip=None):
     return w
 
 
-def multiply(width, floor, r_range):
+def multiply(width, floor, r_range, limit=None):
     w = object.__new__(MultiplyResidual)
-    w.action_dim, w.floor, w.r_range = width, torch.as_tensor(floor, dtype=torch.float32), r_range
+    w.action_dim, w.floor, w.r_range, w.limit = width, torch.as_tensor(floor, dtype=torch.float32), r_range, limit
     return w
 
 
@@ -223,6 +223,20 @@ def test_the_multiply_rule_and_its_critic_action():
     assert combine.invert(torch.tensor([[5.0, -0.1, 0.0]]), base)[0, 0].item() == 3.0
     torch.testing.assert_close(MultiplyCriticAction(3)(None, r, {SIDE: base}), sent)
 
+
+
+def test_r_range_clip_limits_the_multiplied_change_to_the_additive_ones_and_the_critic_sees_the_clamped_action():
+    # r_range_clip 0.1 on scale [1.1, 0.5, 1.1]: the sent action stays within base +- [0.11, 0.05, 0.11]
+    limit = 0.1 * torch.tensor([1.1, 0.5, 1.1])
+    combine = multiply(3, [1e-3], (-1.0, 3.0), limit)
+    base = torch.tensor([[0.5, -0.2, 0.04]])
+    r = torch.tensor([[2.0, 1.1, 3.0]])
+    sent = combine.combine(r, base)
+    # 1.0 -> 0.5 + 0.11; -0.22 is within 0.05 of -0.2; 0.12 within 0.11 of 0.04
+    torch.testing.assert_close(sent, torch.tensor([[0.61, -0.22, 0.12]]))
+    torch.testing.assert_close(MultiplyCriticAction(3, limit)(None, r, {SIDE: base}), sent)
+    # below the limit nothing changes
+    torch.testing.assert_close(multiply(3, [1e-3], (-1.0, 3.0), limit).combine(torch.ones(1, 3), base), base)
 
 def test_the_additive_noise_factor_reads_the_base_after_the_observation_columns():
     w = additive(2, torch.tensor([0.5, 0.0]))

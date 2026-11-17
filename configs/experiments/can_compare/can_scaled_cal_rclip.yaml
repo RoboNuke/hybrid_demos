@@ -1,0 +1,41 @@
+# can_scaled_cal with the change limited as can_add's (r in [-0.1, 0.1]): the sent r * base clamped to base +- 0.1 x
+# the additive scale per dim (1.1 x max(demo half range, 0.05)), multiply_residual.r_range_clip 0.1; the critics' action
+# clamped the same way. Exploration as can_scaled_cal's.
+# Scaled, calibrated per dim: sent = r * base on all 7 dims, r in [-1, 3] from 1. A multiplier's noise reaches the sent
+# action as noise x b, so each dim's r-noise scale is can_add's divided by that dim's demo mean of |b| / s (m below): every
+# dim's warm-up, exploration and target smoothing are can_add's on average in the sent action (more where the base moves
+# more than its usual, less where less). The target clip likewise 0.3 / m.
+#   m = mean over the 61548 can demo frames of |b_d| / s_d = [0.1679, 0.3121, 0.1812, 0.0332, 0.0324, 0.0834, 0.9031]
+# 200k env steps, as can_add_wide_v2 and can_adaptive_cal_wide_v2.
+base: _foundation.yaml
+
+wandb:
+  group: can_scaled_cal_rclip_v2
+
+trainer:
+  total_timesteps: 200000
+
+multiply_residual:
+  enabled: true
+  invert_floor:
+    - 0.01
+  r_range_clip: 0.1
+
+ddpg:
+  action_range:
+    - -1.0
+    - 3.0
+  warmup_noise:
+    # 0.2 / m, uniform about the range's midpoint 1
+    scale: [1.1909, 0.6408, 1.1036, 6.0211, 6.1759, 2.3971, 0.2215]
+    target_scale: [0.2977, 0.1602, 0.2759, 1.5053, 1.544, 0.5993, 0.0554]
+    target_clip: [1.7863, 0.9612, 1.6554, 9.0316, 9.2638, 3.5957, 0.3322]
+  train_noise:
+    # 0.05 / m
+    scale: [0.2977, 0.1602, 0.2759, 1.5053, 1.544, 0.5993, 0.0554]
+    target_scale: [0.2977, 0.1602, 0.2759, 1.5053, 1.544, 0.5993, 0.0554]
+    target_clip: [1.7863, 0.9612, 1.6554, 9.0316, 9.2638, 3.5957, 0.3322]
+
+model:
+  actor:
+    output_bias: 0.0

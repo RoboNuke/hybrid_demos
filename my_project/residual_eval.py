@@ -48,7 +48,7 @@ and histograms ``eval/force_max_hist`` and ``eval/force_mean_hist``; on a Furnit
 phases, also ``eval/phase_success/<phase>`` (each phase's success among the episodes that reached it, the env's
 ``phase/passed_*``; ``screw`` is ``passed_success``), ``eval/phase_reached/<phase>`` (how many episodes reached it)
 and ``eval/residual_mm/<phase>`` / ``eval/residual_deg/<phase>`` (the mean correction over the agent steps that
-started in that phase). For a sac / ddpg run on FurnitureBench, after all of a checkpoint's rollouts, its critics'
+started in that phase). For a sac / ddpg run on FurnitureBench or a standalone task (robosuite), after all of a checkpoint's rollouts, its critics'
 health (``my_project/eval_critic.py``) per learner, ``eval/critic_<phase|all>/<metric>`` on the eval rows and the
 run's demo rows together, ``..._eval`` / ``..._demo`` on each (``<metric>``: ``explained_variance``, ``td_abs_mean``,
 ``td_abs_max``, ``mean``, ``rows``); none for the base-alone round. ``--skip_base`` leaves out the base-alone round (step 0), for one-off tests on checkpoints whose reference is already
@@ -226,16 +226,23 @@ def _is_furniture(env: Any) -> bool:
     return hasattr(getattr(env, "unwrapped", env), "termination_manager")
 
 
-def evaluate(env: Any, policy: Any, seed: int, label: str = "eval", episodes: int | None = None) -> Dict[str, Any]:
+def _is_standalone(env: Any) -> bool:
+    """A standalone task (``task.simulator: standalone``, e.g. robosuite Can): :func:`evaluate_episodes`."""
+    return getattr(type(env.unwrapped.cfg), "SIMULATOR", "isaac") == "standalone"
+
+
+def evaluate(env: Any, policy: Any, seed: int, label: str = "eval", episodes: int | None = None,
+             critic: Any = None) -> Dict[str, Any]:
     """One agent's evaluation: success, engagement, mean and max force per episode over one round on every env
     (FurnitureBench: :func:`evaluate_rounds`, ``ceil(episodes / num_envs)`` rounds; standalone:
-    :func:`evaluate_episodes`). ``label`` names the round's progress bar."""
+    :func:`evaluate_episodes`). ``label`` names the round's progress bar; ``critic`` (FurnitureBench and standalone)
+    adds the critics' health."""
     import torch
 
     if _is_furniture(env):
-        return evaluate_rounds(env, policy, seed, label, episodes, num_agents=1)[0]
-    if getattr(type(env.unwrapped.cfg), "SIMULATOR", "isaac") == "standalone":
-        return evaluate_episodes(env, policy, seed, label, episodes)
+        return evaluate_rounds(env, policy, seed, label, episodes, num_agents=1, critic=critic)[0]
+    if _is_standalone(env):
+        return evaluate_episodes(env, policy, seed, label, episodes, critic=critic)
 
     from robonuke_rl_core.evaluation import env_states, force_env_reset
 
@@ -286,20 +293,25 @@ def evaluate(env: Any, policy: Any, seed: int, label: str = "eval", episodes: in
     }
 
 
-def evaluate_episodes(env: Any, policy: Any, seed: int, label: str = "eval", episodes: int | None = None) -> Dict[str, Any]:
+def evaluate_episodes(env: Any, policy: Any, seed: int, label: str = "eval", episodes: int | None = None,
+                      critic: Any = None) -> Dict[str, Any]:
     """Rounds on every env of a standalone task (``task.simulator: standalone``, e.g. robosuite Can) until ``episodes``
     (``eval.num_rollouts``; None: one round) have run, round ``k`` reset under ``seed + k``: each env's first episode
     of a round, its success the env's ``episode_metrics_to_log["episode/success"]`` on the step it ends, its length,
     and the residual's mean correction (``residual_mm/all``, ``residual_deg/all``). The furniture round's keys, so the
     watcher prints and logs it the same way (no part can leave its bounds here: ``out_of_bounds_rate`` 0). A task
-    whose envs are heavy (GR1: ~0.4 GB each) evaluates 50 episodes on a few envs this way."""
+    whose envs are heavy (GR1: ~0.4 GB each) evaluates 50 episodes on a few envs this way. ``critic``
+    (:class:`~my_project.eval_critic.CriticEval`): every round's agent steps kept, then the critics' health on all of
+    them and the demo rows joins the result, as :func:`evaluate_rounds` does."""
     n = int(env.unwrapped.num_envs)
     rounds = max(1, -(-int(episodes) // n)) if episodes else 1
-    results = [_episodes_round(env, policy, seed + k, label if rounds == 1 else f"{label} {k + 1}/{rounds}")
+    results = [_episodes_round(env, policy, seed + k, label if rounds == 1 else f"{label} {k + 1}/{rounds}", critic)
                for k in range(rounds)]
     # each round's per-episode outcomes, for the pooled rate; not a result of its own
     per_round = [r.pop("successes") for r in results]
+    health = critic.results()[0] if critic is not None else {}
     if rounds == 1:
+        results[0].update(health)
         return results[0]
     lengths = [v for r in results for v in r["lengths"]][: int(episodes)]
     successes = [v for r in per_round for v in r][: int(episodes)]
@@ -308,11 +320,13 @@ def evaluate_episodes(env: Any, policy: Any, seed: int, label: str = "eval", epi
     for key in {k for r in results for k in r if k.startswith("residual_")}:
         values = [r[key] for r in results if key in r]
         out[key] = sum(values) / len(values)
+    out.update(health)
     return out
 
 
-def _episodes_round(env: Any, policy: Any, seed: int, label: str) -> Dict[str, Any]:
-    """One round of :func:`evaluate_episodes`: every env's first episode, reset under ``seed``."""
+def _episodes_round(env: Any, policy: Any, seed: int, label: str, critic: Any = None) -> Dict[str, Any]:
+    """One round of :func:`evaluate_episodes`: every env's first episode, reset under ``seed`` (every agent step kept
+    for ``critic``, the env's one phase)."""
     import torch
 
     from robonuke_rl_core.envs.build import reseed_env
@@ -331,11 +345,18 @@ def _episodes_round(env: Any, policy: Any, seed: int, label: str) -> Dict[str, A
     steps = _agent_steps(int(u.max_episode_length), 1)
     bar = _round_bar(steps, label)
     correction: Dict[str, List[float]] = {}
+    if critic is not None:
+        critic.start_round()
     for _ in range(steps):
         with torch.no_grad():
             actions = policy(observations, states)
-        observations, _, terminated, truncated, infos = env.step(actions)
+        previous, previous_states = observations, states
+        observations, rewards, terminated, truncated, infos = env.step(actions)
         states = env_states(env)
+        if critic is not None:
+            critic.step(observations=previous, states=previous_states, actions=actions, rewards=rewards,
+                        next_observations=observations, next_states=states, terminated=terminated, truncated=truncated,
+                        infos=infos, alive=alive.clone(), start_label=None)
         ending = alive & (terminated.reshape(-1).bool() | truncated.reshape(-1).bool())
         if isinstance(infos, dict):
             metrics = infos.get("metrics_to_log") or {}
@@ -562,7 +583,7 @@ def evaluate_agents(env: Any, policy: Any, seed: int, label: str, num_rollouts: 
             f"{num_agents} agents side by side: only FurnitureBench envs split their results per agent; evaluate "
             "a Forge or standalone run one agent directory at a time"
         )
-    return [evaluate(env, policy, seed, label, num_rollouts)]
+    return [evaluate(env, policy, seed, label, num_rollouts, critic=critic)]
 
 
 #: list-valued results logged as histograms, under these names
@@ -780,8 +801,8 @@ def _watch(args, overrides, setup) -> int:
 def critic_eval_of(cfg: Any, env: Any, policy: Any, learner: Any, num_agents: int) -> Any:
     """The critics' health collector (:class:`~my_project.eval_critic.CriticEval`) of an eval policy of the package's
     sac / ddpg (each routed phase's learner, or the one), loading the run's demo rows once; None for any other learner
-    or a non-furniture env."""
-    if not _is_furniture(env):
+    or an env whose rollouts do not feed it (only FurnitureBench's rounds and a standalone task's episodes do)."""
+    if not (_is_furniture(env) or _is_standalone(env)):
         return None
     parts = ({route: part_learner for route, (_, part_learner) in policy.parts.items()} if hasattr(policy, "parts")
              else {None: learner})

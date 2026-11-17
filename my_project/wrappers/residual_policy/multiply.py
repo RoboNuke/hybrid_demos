@@ -3,6 +3,11 @@ space the wrapper below gives (:class:`MultiplyResidual`). r is the multiplier i
 learner's (``ddpg.action_range``, ``model.actor.output_bias``); the base alone is r = 1 (the neutral action). A dim it
 must not scale (the gripper) is dropped below (``drop_columns.action``). The critics take the sent action, ``r *
 base``, rebuilt from the side input (the base action); the adaptive noise factor is 1 (r = 1 is the base's own action).
+
+``r_range_clip`` (not 0) limits the change as an additive residual with ``r`` in ``+-r_range_clip`` is limited: the sent
+action clamped to ``base +- r_range_clip x scale`` per dim, ``scale`` the additive residual's (``additive_residual.scale``
+or ``scale_fraction x`` the base's demo half range, :func:`~my_project.wrappers.residual_policy.additive.flat_scale`); the
+critics' action is clamped the same way.
 """
 
 from __future__ import annotations
@@ -13,17 +18,28 @@ import torch
 
 from my_project.wrappers.residual_policy.combine import SIDE_INPUT, CombineWrapper
 
-__all__ = ["MultiplyResidual", "MultiplyCriticAction"]
+__all__ = ["MultiplyResidual", "MultiplyCriticAction", "clamp_change"]
+
+
+def clamp_change(sent: torch.Tensor, base: torch.Tensor, limit: Optional[torch.Tensor]) -> torch.Tensor:
+    """``sent`` clamped to ``base +- limit`` per dim; as it is with no limit."""
+    if limit is None:
+        return sent
+    limit = limit.to(sent.device)
+    return torch.maximum(torch.minimum(sent, base + limit), base - limit)
 
 
 class MultiplyCriticAction:
-    """``(critic_inputs, r, side) -> r * base``, the critics' action, from the side input :data:`SIDE_INPUT`."""
+    """``(critic_inputs, r, side) -> r * base`` (clamped to ``base +- limit``), the critics' action, from the side input
+    :data:`SIDE_INPUT`."""
 
-    def __init__(self, width: int) -> None:
+    def __init__(self, width: int, limit: Optional[torch.Tensor] = None) -> None:
         self.side_inputs = {SIDE_INPUT: int(width)}
+        self.limit = limit
 
     def __call__(self, critic_inputs: torch.Tensor, actions: torch.Tensor, side) -> torch.Tensor:
-        return actions * side[SIDE_INPUT]
+        base = side[SIDE_INPUT]
+        return clamp_change(actions * base, base, self.limit)
 
 
 class MultiplyResidual(CombineWrapper):
@@ -39,11 +55,20 @@ class MultiplyResidual(CombineWrapper):
         self.floor = torch.tensor(floor * (self.action_dim if len(floor) == 1 else 1), device=self.device)
         rng = getattr(q_section(cfg), "action_range", None)
         self.r_range: Optional[tuple] = None if rng is None else (float(rng[0]), float(rng[1]))
+        #: the most the sent action may move from the base per dim (r_range_clip x the additive residual's scale)
+        self.limit: Optional[torch.Tensor] = None
+        clip = float(cfg.multiply_residual.r_range_clip)
+        if clip != 0:
+            from my_project.wrappers.residual_policy.additive import flat_scale
+
+            self.limit = clip * flat_scale(self, cfg)
         print(f"[multiply_residual] sent = r * base over the {self.action_dim}-wide action, r in {self.r_range} "
-              f"(the base alone at 1)", flush=True)
+              f"(the base alone at 1)"
+              + ("" if self.limit is None else f", clamped to base +- {[round(v, 5) for v in self.limit.tolist()]}"
+                 f" (r_range_clip {clip} x the additive scale)"), flush=True)
 
     def combine(self, r, side):
-        return r * side
+        return clamp_change(r * side, side, self.limit)
 
     def invert(self, executed, side):
         """``executed / base`` per dim, 1 where ``|base|`` is under the floor, clamped to the learner's range."""
@@ -55,7 +80,7 @@ class MultiplyResidual(CombineWrapper):
         metrics["residual/multiplier"] = r.mean(dim=-1)
 
     def critic_action(self) -> MultiplyCriticAction:
-        return MultiplyCriticAction(self.action_dim)
+        return MultiplyCriticAction(self.action_dim, self.limit)
 
     def noise_factor(self):
         start, stop = self.obs_width, self.obs_width + self.action_dim

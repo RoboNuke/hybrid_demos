@@ -1,0 +1,18 @@
+# can_add with the actor's r range widened from [-0.1, 0.1] to [-1, 1]: the correction up to 1.1 controller units per dim
+# (the controller clips the sent action to [-1, 1], scaled's limit), exploration unchanged (absolute r units).
+# 200k env steps.
+base: _foundation.yaml
+
+wandb:
+  group: can_add_wide_v2
+
+trainer:
+  total_timesteps: 200000
+
+additive_residual:
+  enabled: true
+
+ddpg:
+  action_range:
+    - -1.0
+    - 1.0

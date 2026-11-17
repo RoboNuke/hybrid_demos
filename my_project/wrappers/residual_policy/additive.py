@@ -22,7 +22,8 @@ import torch
 
 from my_project.wrappers.residual_policy.combine import SIDE_INPUT, CombineWrapper
 
-__all__ = ["AdditiveResidual", "AdditiveCriticAction", "native_dims", "demo_action_range", "phase_scale_table"]
+__all__ = ["AdditiveResidual", "AdditiveCriticAction", "native_dims", "demo_action_range", "phase_scale_table",
+           "fraction_scale", "flat_scale"]
 
 
 def native_dims(wrapper) -> Optional[list]:
@@ -68,6 +69,44 @@ def phase_scale_table(path: Any, names, routes, width: int, device: Any) -> torc
     for route in routes:
         scale[list(names).index(route)] = torch.as_tensor(stats["phases"][route]["scale"])
     return scale.to(device)
+
+
+def fraction_scale(wrapper, cfg: Any):
+    """ResFiT's scale on the wrapper's action dims, ``additive_residual.scale_fraction x`` the half range per dim (of the
+    base normalizer, or of its demo dataset floored at ``half_range_floor``), with that range's center and half range:
+    ``(scale, center, half)``. Only where the action is still the base's own (:func:`native_dims`)."""
+    ac = cfg.additive_residual
+    dims = native_dims(wrapper)
+    if dims is None:
+        raise ValueError("additive_residual: below it the action is no longer the base's own (target tracking): "
+                         "give additive_residual.scale, one number per dim")
+    device = wrapper.device
+    norm = wrapper.base_policy.policy.normalizer
+    half = (norm.action_max - norm.action_min) / 2
+    center = (norm.action_max + norm.action_min) / 2
+    if ac.half_range_floor is not None:
+        from my_project.wrappers.residual_policy.base_policy import base_run_dir
+
+        stats = demo_action_range(base_run_dir(cfg))
+        half = torch.clamp((stats["action_max"] - stats["action_min"]) / 2, min=float(ac.half_range_floor))
+        center = (stats["action_max"] + stats["action_min"]) / 2
+    index = torch.tensor(dims, dtype=torch.long, device=device)
+    half, center = half.to(device).index_select(0, index), center.to(device).index_select(0, index)
+    return float(ac.scale_fraction) * half, center, half
+
+
+def flat_scale(wrapper, cfg: Any) -> torch.Tensor:
+    """The additive residual's one scale for every phase (``additive_residual.scale`` as a list, else
+    :func:`fraction_scale`'s); a per-phase scale (a mapping, ``phase_stats``) refused."""
+    ac = cfg.additive_residual
+    if ac.phase_stats is not None or (ac.scale is not None and hasattr(ac.scale, "keys")):
+        raise ValueError("this reads the additive residual's one scale for every phase: additive_residual.scale per phase "
+                         "or phase_stats is not supported here")
+    if ac.scale is not None:
+        if len(ac.scale) != wrapper.action_dim:
+            raise ValueError(f"additive_residual.scale has {len(ac.scale)} numbers; the action is {wrapper.action_dim} wide")
+        return torch.tensor([float(v) for v in ac.scale], device=wrapper.device)
+    return fraction_scale(wrapper, cfg)[0]
 
 
 class AdditiveCriticAction:
@@ -119,7 +158,6 @@ class AdditiveResidual(CombineWrapper):
         super().__init__(env, cfg)
         ac = cfg.additive_residual
         policy = self.base_policy.policy
-        dims = native_dims(self)
         self.table = None
         self.clip = None
         if ac.scale is not None and hasattr(ac.scale, "keys"):
@@ -138,24 +176,11 @@ class AdditiveResidual(CombineWrapper):
                 raise ValueError(f"additive_residual.scale has {len(ac.scale)} numbers; the action is {self.action_dim} wide")
             self.scale = torch.tensor([float(v) for v in ac.scale], device=self.device)
         else:
-            if dims is None:
-                raise ValueError("additive_residual: below it the action is no longer the base's own (target tracking): "
-                                 "give additive_residual.scale, one number per dim")
-            norm = policy.normalizer
-            half = (norm.action_max - norm.action_min) / 2
-            center = (norm.action_max + norm.action_min) / 2
-            if ac.half_range_floor is not None:
-                from my_project.wrappers.residual_policy.base_policy import base_run_dir
-
-                stats = demo_action_range(base_run_dir(cfg))
-                half = torch.clamp((stats["action_max"] - stats["action_min"]) / 2, min=float(ac.half_range_floor)).to(self.device)
-                center = ((stats["action_max"] + stats["action_min"]) / 2).to(self.device)
-            index = torch.tensor(dims, dtype=torch.long, device=self.device)
-            self.scale = (float(ac.scale_fraction) * half).to(self.device).index_select(0, index)
+            self.scale, center, half = fraction_scale(self, cfg)
             if ac.clip is not None:
-                c, h = center.to(self.device).index_select(0, index), half.to(self.device).index_select(0, index)
-                self.clip = (c - float(ac.clip) * h, c + float(ac.clip) * h)
+                self.clip = (center - float(ac.clip) * half, center + float(ac.clip) * half)
             if ac.phase_stats is not None:
+                index = torch.tensor(native_dims(self), dtype=torch.long, device=self.device)
                 table = phase_scale_table(ac.phase_stats, self.phase_names, self.routes, policy.action_dim, self.device)
                 self.table = table.index_select(1, index)
         print(f"[additive_residual] sent = base + scale * r over the {self.action_dim}-wide action"

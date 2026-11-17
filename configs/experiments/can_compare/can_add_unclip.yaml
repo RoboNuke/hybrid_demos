@@ -1,0 +1,18 @@
+# can_add with the actor's r range widened from [-0.1, 0.1] to [-3.2, 3.2], as close to unclipped as a bounded actor gets:
+# a change of 2 controller units (any b to any sent action in the controller's [-1, 1]) needs r up to 2 / s, at most 3.14
+# (the smallest scale, 0.637); the controller's clip is the only limit. Exploration unchanged (absolute r units). 200k env steps.
+base: _foundation.yaml
+
+wandb:
+  group: can_add_unclip_v2
+
+trainer:
+  total_timesteps: 200000
+
+additive_residual:
+  enabled: true
+
+ddpg:
+  action_range:
+    - -3.2
+    - 3.2

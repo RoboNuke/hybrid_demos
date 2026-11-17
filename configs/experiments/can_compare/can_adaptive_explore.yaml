@@ -1,0 +1,27 @@
+# can_adaptive.yaml with the target smoothing NOT adaptive: only the acting noise (warm-up and exploration) is times the
+# base action in r units per dim (|base| / scale); the critics' target smoothing is can_add's, N(0, 0.05) clipped at 0.3.
+# 110k env steps, as can_add_v2 was stopped (its last checkpoint 109999).
+#   python scripts/train.py --config configs/experiments/can_compare/can_adaptive_explore.yaml --headless
+#   python scripts/watch_residual_eval.py --headless --run runs/init_explore_residual/can_adaptive_explore_v2/can_adaptive_explore_v2_a<i> \
+#     --eval_config configs/eval/residual_watch_robosuite_rounds.yaml
+base: _foundation.yaml
+
+wandb:
+  group: can_adaptive_explore_v2
+
+trainer:
+  total_timesteps: 110000
+
+additive_residual:
+  enabled: true
+
+ddpg:
+  warmup_noise:
+    scale: 0.2
+    adaptive: true
+    target_scale: 0.05
+    target_adaptive: false
+  train_noise:
+    scale: 0.05
+    adaptive: true
+    target_adaptive: false
