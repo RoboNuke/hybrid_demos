@@ -159,13 +159,16 @@ def test_every_experiment_config_sets_only_known_fields_and_every_launch_config_
 
 
 def test_a_method_file_adds_onto_a_task_file_through_a_list_base():
-    """configs/methods/resfit.yaml is ResFiT with no task: the robosuite and one_leg foundations chain it after their task
-    file and keep only the task's own values."""
+    """configs/methods/resfit.yaml is ResFiT with no task: one_leg's foundation chains it after its task file; the robosuite
+    residual launch configs chain it before their foundation (the task file and the task's own values), so the BC base
+    trained from the same foundation never gets the method's MLP networks."""
     from robonuke_rl_core.configfile import chain
 
-    for folder, task in (("resfit_can", "robosuite_can.yaml"), ("ResFiT", "fb_one_leg.yaml")):
-        files = [p.name for p in chain(CONFIGS / "experiments" / folder / "_foundation.yaml")]
-        assert files[-3:] == [task, "resfit.yaml", "_foundation.yaml"]
+    files = [p.name for p in chain(CONFIGS / "experiments" / "ResFiT" / "_foundation.yaml")]
+    assert files[-3:] == ["fb_one_leg.yaml", "resfit.yaml", "_foundation.yaml"]
+    files = [p.name for p in chain(CONFIGS / "experiments" / "resfit_can" / "residual_resfit_can.yaml")]
+    assert files[0] == "resfit.yaml" and files[-3:] == ["robosuite_can.yaml", "_foundation.yaml", "residual_resfit_can.yaml"]
+    assert "resfit.yaml" not in [p.name for p in chain(CONFIGS / "experiments" / "resfit_can" / "bc_resfit_can.yaml")]
     can = leaves(merged(CONFIGS / "experiments" / "resfit_can" / "residual_resfit_can.yaml"))
     one_leg = leaves(merged(CONFIGS / "experiments" / "ResFiT" / "_foundation.yaml"))
     for key in ("additive_residual.scale_fraction", "additive_residual.half_range_floor", "additive_residual.clip",

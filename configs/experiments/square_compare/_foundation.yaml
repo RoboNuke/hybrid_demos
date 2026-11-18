@@ -5,7 +5,10 @@
 # demo rows (ddpg.state_preprocessor: demo), the demos converted at load from the base's raw demo episodes, checkpoints
 # every 10k with each agent's replay memory, and the first 20 rollouts after the critic warm-up.
 #   python scripts/make_raw_demos.py --config configs/experiments/square_compare/square_add.yaml --out data/resfit_square/raw_demos.pt
-base: ../resfit_square/_foundation.yaml
+# the method first, so resfit_square's task values override its defaults
+base:
+  - ../../methods/resfit.yaml
+  - ../resfit_square/_foundation.yaml
 
 experiment:
   num_agents: 3

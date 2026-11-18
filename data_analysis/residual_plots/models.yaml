@@ -1,0 +1,231 @@
+# The diffusion-policy bases and their demo datasets, for data_analysis/demo_residual_analysis.ipynb's cell 2: copy an
+# entry's task_name, dataset, model_run and model_checkpoint into TASK_NAME, DATASET, MODEL_RUN and MODEL_CHECKPOINT
+# (paths are relative to the repo root: DATASET = REPO / "<dataset>", MODEL_RUN = REPO / "<model_run>").
+#
+#   status             finished / training / queued (a training base's checkpoint is its best so far)
+#   base_success_rate  the base's best rollout success during BC training (50 episodes), the checkpoint's
+#   env                the task id; action_dim the action's width (ACTION_NAMES, ACTION_COLOURS, ACTION_SCALE and
+#                      ACTION_UNITS need one entry per dimension)
+#   action_names       ACTION_NAMES, one per action column in order (action_names_euler: after rot6d_columns' conversion)
+#                      robomimic OSC_POSE: deltas, 1 unit = 50 mm / 0.5 rad (x 50 for mm, x 0.5 * 180 / pi for deg),
+#                        gripper -1 open, +1 closed
+#                      dexmg_boxcleanup: each Panda's OSC_POSE delta in its own base frame (1 unit = 50 mm / 0.5 rad),
+#                        then its Inspire hand; right robot first
+#                      dexmg_coffee / dexmg_cansort: whole-body Mink IK, each hand's absolute world target (position m,
+#                        rotation axis-angle rad), right then left, then the right hand's fingers, then the left's
+#                      the hands' six inputs (robosuite's format_action): pinky, ring, middle, index, thumb bend
+#                        (its 2-3 joints together), thumb rotation
+#   action_scale       ACTION_SCALE, plot units per action unit, one per column (_euler: after rot6d_columns' conversion)
+#   action_units       ACTION_UNITS, the plot unit of each column (_euler: after rot6d_columns' conversion)
+#   bc_config          the config the base was trained with
+#   wandb_run          the BC run on wandb
+#   phases             FurnitureBench only: PHASES, the phase ids kept (2 insert, 3 screw); null every frame. A phase
+#                      entry's figures get "_phase<ids>" after the dataset's name, so they never overwrite the full task's
+#   rot6d_columns      ROT6D_COLUMNS, the action's rot6d columns converted to roll, pitch, yaw; null none
+#   relative_to_ee     RELATIVE_TO_EE: the base and executed actions taken relative to the robot's current state, read
+#                      from the observation (the residual = executed - base keeps its meaning); null: as they are.
+#                      poses: per hand, its target position - the hand's position (world axes); its target rotation
+#                      R_target R_hand^T (world axes), R_hand the observed rotation times obs_rot_offset (the observed
+#                      frame -> the target's frame), given back in the action's own parametrisation (rotvec: axis-angle;
+#                      rot6d: left for rot6d_columns, which turns it into roll, pitch, yaw). fingers: the finger command
+#                      columns (each a position servo's target angle, rad), as the change in target: the command - the
+#                      target the servo holds (the previous step's executed command; 0 at an episode's first step,
+#                      robosuite's initial gripper goal)
+#                      GR1 (coffee, cansort): obs_rot_offset is the fixed eef_quat -> grip_site rotation, measured in
+#                      the sim; boxcleanup's arms are OSC deltas already, so only its fingers
+#   action_names       ACTION_NAMES, one per action column in order (action_names_euler: after rot6d_columns' conversion)
+#                      robomimic OSC_POSE: deltas, 1 unit = 50 mm / 0.5 rad (x 50 for mm, x 0.5 * 180 / pi for deg),
+#                        gripper -1 open, +1 closed
+#                      dexmg_boxcleanup: each Panda's OSC_POSE delta in its own base frame (1 unit = 50 mm / 0.5 rad),
+#                        then its Inspire hand; right robot first
+#                      dexmg_coffee / dexmg_cansort: whole-body Mink IK, each hand's absolute world target (position m,
+#                        rotation axis-angle rad), right then left, then the right hand's fingers, then the left's
+#                      the hands' six inputs (robosuite's format_action): pinky, ring, middle, index, thumb bend
+#                        (its 2-3 joints together), thumb rotation
+#   action_scale       ACTION_SCALE, plot units per action unit, one per column (_euler: after rot6d_columns' conversion)
+#   action_units       ACTION_UNITS, the plot unit of each column (_euler: after rot6d_columns' conversion)
+#   bc_config          the config the base was trained with
+#   wandb_run          the BC run on wandb
+#   phases             FurnitureBench only: PHASES, the phase ids kept (2 insert, 3 screw); null every frame. A phase
+#                      entry's figures get "_phase<ids>" after the dataset's name, so they never overwrite the full task's
+#   rot6d_columns      ROT6D_COLUMNS, the action's rot6d columns converted to roll, pitch, yaw; null none
+#   relative_to_ee     RELATIVE_TO_EE: the base and executed actions taken relative to the EE's current pose, read from
+#                      the observation -- position: target - EE position (world axes); rotation (with rot6d_columns):
+#                      roll, pitch, yaw of R_target R_ee^T (world axes). action_pos the action's position columns,
+#                      obs_pos / obs_rot (rot6d) the EE's in the observation; null: the actions as they are (absolute)
+
+robomimic_can:
+  task_name: robomimic_can
+  dataset: data/robomimic_can_mh_300
+  model_run: runs/robomimic_can/bc_resfit_can/bc_resfit_can_a0
+  model_checkpoint: actor_chkpt_best_success_rate.pt
+  phases: null
+  rot6d_columns: null
+  relative_to_ee: null
+  status: finished
+  base_success_rate: 0.80
+  env: Robosuite-Can-LowDim-v0
+  action_dim: 7
+  action_names: [x, y, z, rx, ry, rz, gripper]
+  action_scale: [50.0, 50.0, 50.0, 28.64788975654116, 28.64788975654116, 28.64788975654116, 1.0]
+  action_units: [mm, mm, mm, deg, deg, deg, unit]
+  bc_config: configs/experiments/resfit_can/bc_resfit_can.yaml
+  wandb_run: hur/resfit_validation/asz6ed2w
+
+robomimic_square:
+  task_name: robomimic_square
+  dataset: data/robomimic_square_mh_300
+  model_run: runs/resfit_validation/bc_resfit_square/bc_resfit_square_a0
+  model_checkpoint: actor_chkpt_best_success_rate.pt
+  phases: null
+  rot6d_columns: null
+  relative_to_ee: null
+  status: finished
+  base_success_rate: 0.64
+  env: Robosuite-Square-LowDim-v0
+  action_dim: 7
+  action_names: [x, y, z, rx, ry, rz, gripper]
+  action_scale: [50.0, 50.0, 50.0, 28.64788975654116, 28.64788975654116, 28.64788975654116, 1.0]
+  action_units: [mm, mm, mm, deg, deg, deg, unit]
+  bc_config: configs/experiments/resfit_square/bc_resfit_square.yaml
+  wandb_run: hur/resfit_validation/jx10lamh
+
+dexmg_boxcleanup:
+  task_name: dexmg_boxcleanup
+  dataset: data/dexmg_boxcleanup_1000
+  model_run: runs/resfit_validation/bc_resfit_boxcleanup/bc_resfit_boxcleanup_a0
+  model_checkpoint: actor_chkpt_best_success_rate.pt
+  phases: null
+  rot6d_columns: null
+  relative_to_ee:
+    poses: []
+    fingers: [6, 7, 8, 9, 10, 11, 18, 19, 20, 21, 22, 23]
+  status: finished
+  base_success_rate: 0.76
+  env: Robosuite-BoxCleanup-LowDim-v0
+  action_dim: 24
+  action_names: [right_x, right_y, right_z, right_rx, right_ry, right_rz, right_pinky, right_ring, right_middle, right_index, right_thumb_bend, right_thumb_rot, left_x, left_y, left_z, left_rx, left_ry, left_rz, left_pinky, left_ring, left_middle, left_index, left_thumb_bend, left_thumb_rot]
+  action_scale: [50.0, 50.0, 50.0, 28.64788975654116, 28.64788975654116, 28.64788975654116, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 50.0, 50.0, 50.0, 28.64788975654116, 28.64788975654116, 28.64788975654116, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  action_units: [mm, mm, mm, deg, deg, deg, unit, unit, unit, unit, unit, unit, mm, mm, mm, deg, deg, deg, unit, unit, unit, unit, unit, unit]
+  bc_config: configs/experiments/resfit_boxcleanup/bc_resfit_boxcleanup.yaml
+  wandb_run: hur/resfit_validation/3nhkiz72
+
+dexmg_cansort:
+  task_name: dexmg_cansort
+  dataset: data/dexmg_cansort_1000
+  model_run: runs/resfit_validation/bc_resfit_cansort/bc_resfit_cansort_a0
+  model_checkpoint: actor_chkpt_best_success_rate.pt
+  phases: null
+  rot6d_columns: null
+  relative_to_ee:
+    poses:
+      - {action_pos: [0, 3], action_rot: [3, 6], action_rot_param: rotvec, obs_pos: [0, 3], obs_rot: [3, 7], obs_rot_param: quat_xyzw, obs_rot_offset: [[0, 0, -1], [-1, 0, 0], [0, 1, 0]]}
+      - {action_pos: [6, 9], action_rot: [9, 12], action_rot_param: rotvec, obs_pos: [18, 21], obs_rot: [21, 25], obs_rot_param: quat_xyzw, obs_rot_offset: [[0, 0, -1], [-1, 0, 0], [0, 1, 0]]}
+    fingers: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+  status: finished
+  base_success_rate: 0.46
+  env: Robosuite-CanSort-LowDim-v0
+  action_dim: 24
+  action_names: [right_x, right_y, right_z, right_rx, right_ry, right_rz, left_x, left_y, left_z, left_rx, left_ry, left_rz, right_pinky, right_ring, right_middle, right_index, right_thumb_bend, right_thumb_rot, left_pinky, left_ring, left_middle, left_index, left_thumb_bend, left_thumb_rot]
+  action_scale: [1000.0, 1000.0, 1000.0, 57.29577951308232, 57.29577951308232, 57.29577951308232, 1000.0, 1000.0, 1000.0, 57.29577951308232, 57.29577951308232, 57.29577951308232, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  action_units: [mm, mm, mm, deg, deg, deg, mm, mm, mm, deg, deg, deg, unit, unit, unit, unit, unit, unit, unit, unit, unit, unit, unit, unit]
+  bc_config: configs/experiments/resfit_cansort/bc_resfit_cansort.yaml
+  wandb_run: hur/resfit_validation/g9h7nvjo
+
+dexmg_coffee:
+  task_name: dexmg_coffee
+  dataset: data/dexmg_coffee_1000
+  model_run: runs/resfit_validation/bc_resfit_coffee/bc_resfit_coffee_a0
+  model_checkpoint: actor_chkpt_best_success_rate.pt
+  phases: null
+  rot6d_columns: null
+  relative_to_ee:
+    poses:
+      - {action_pos: [0, 3], action_rot: [3, 6], action_rot_param: rotvec, obs_pos: [0, 3], obs_rot: [3, 7], obs_rot_param: quat_xyzw, obs_rot_offset: [[0, 0, -1], [-1, 0, 0], [0, 1, 0]]}
+      - {action_pos: [6, 9], action_rot: [9, 12], action_rot_param: rotvec, obs_pos: [18, 21], obs_rot: [21, 25], obs_rot_param: quat_xyzw, obs_rot_offset: [[0, 0, -1], [-1, 0, 0], [0, 1, 0]]}
+    fingers: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+  status: finished
+  base_success_rate: 0.36
+  env: Robosuite-Coffee-LowDim-v0
+  action_dim: 24
+  action_names: [right_x, right_y, right_z, right_rx, right_ry, right_rz, left_x, left_y, left_z, left_rx, left_ry, left_rz, right_pinky, right_ring, right_middle, right_index, right_thumb_bend, right_thumb_rot, left_pinky, left_ring, left_middle, left_index, left_thumb_bend, left_thumb_rot]
+  action_scale: [1000.0, 1000.0, 1000.0, 57.29577951308232, 57.29577951308232, 57.29577951308232, 1000.0, 1000.0, 1000.0, 57.29577951308232, 57.29577951308232, 57.29577951308232, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  action_units: [mm, mm, mm, deg, deg, deg, mm, mm, mm, deg, deg, deg, unit, unit, unit, unit, unit, unit, unit, unit, unit, unit, unit, unit]
+  bc_config: configs/experiments/resfit_coffee/bc_resfit_coffee.yaml
+  wandb_run: hur/resfit_validation/hnqydo4z
+
+# FurnitureBench one_leg: the scaled_ablation residual's base and demos (the source pkls carry the phase tags). The action
+# is action.abs, 10 wide: the EE target's position (m, x 1000 for mm), its rotation as rot6d (6; rot6d_columns turns it
+# into roll, pitch, yaw, 3 wide, x 180 / pi for degrees), the gripper
+
+furniture_one_leg:  # the full task
+  task_name: furniture_one_leg
+  dataset: data/physic_aligned_tcp_300_envdata
+  model_run: runs/hybrid_demo_furniture/obs-fix_true-jacobian_50demos/obs-fix_true-jacobian_50demos_a0
+  model_checkpoint: actor_chkpt_best_success_rate.pt
+  phases: null
+  rot6d_columns: [3, 9]
+  relative_to_ee:
+    poses:
+      - {action_pos: [0, 3], action_rot: [3, 9], action_rot_param: rot6d, obs_pos: [0, 3], obs_rot: [3, 9], obs_rot_param: rot6d}
+    fingers: []
+  status: finished
+  base_success_rate: 0.55
+  env: Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
+  action_dim: 10
+  action_names: [x, y, z, rot6d_0, rot6d_1, rot6d_2, rot6d_3, rot6d_4, rot6d_5, gripper]
+  action_names_euler: [x, y, z, roll, pitch, yaw, gripper]
+  action_scale: [1000.0, 1000.0, 1000.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  action_units: [mm, mm, mm, unit, unit, unit, unit, unit, unit, unit]
+  action_scale_euler: [1000.0, 1000.0, 1000.0, 57.29577951308232, 57.29577951308232, 57.29577951308232, 1.0]
+  action_units_euler: [mm, mm, mm, deg, deg, deg, unit]
+  bc_config: configs/experiments/obs-fix_true-jacobian/bc_obs-fix_true-jacobian_50demos.yaml
+  wandb_run: hur/hybrid_demo_furniture/occ5eqly
+
+furniture_one_leg_insert:  # the insert phase alone
+  task_name: furniture_one_leg_insert
+  dataset: data/physic_aligned_tcp_300_envdata
+  model_run: runs/hybrid_demo_furniture/obs-fix_true-jacobian_50demos/obs-fix_true-jacobian_50demos_a0
+  model_checkpoint: actor_chkpt_best_success_rate.pt
+  phases: [2]
+  rot6d_columns: [3, 9]
+  relative_to_ee:
+    poses:
+      - {action_pos: [0, 3], action_rot: [3, 9], action_rot_param: rot6d, obs_pos: [0, 3], obs_rot: [3, 9], obs_rot_param: rot6d}
+    fingers: []
+  status: finished
+  base_success_rate: 0.55
+  env: Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
+  action_dim: 10
+  action_names: [x, y, z, rot6d_0, rot6d_1, rot6d_2, rot6d_3, rot6d_4, rot6d_5, gripper]
+  action_names_euler: [x, y, z, roll, pitch, yaw, gripper]
+  action_scale: [1000.0, 1000.0, 1000.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  action_units: [mm, mm, mm, unit, unit, unit, unit, unit, unit, unit]
+  action_scale_euler: [1000.0, 1000.0, 1000.0, 57.29577951308232, 57.29577951308232, 57.29577951308232, 1.0]
+  action_units_euler: [mm, mm, mm, deg, deg, deg, unit]
+  bc_config: configs/experiments/obs-fix_true-jacobian/bc_obs-fix_true-jacobian_50demos.yaml
+  wandb_run: hur/hybrid_demo_furniture/occ5eqly
+
+furniture_one_leg_screw:  # the screw phase alone
+  task_name: furniture_one_leg_screw
+  dataset: data/physic_aligned_tcp_300_envdata
+  model_run: runs/hybrid_demo_furniture/obs-fix_true-jacobian_50demos/obs-fix_true-jacobian_50demos_a0
+  model_checkpoint: actor_chkpt_best_success_rate.pt
+  phases: [3]
+  rot6d_columns: [3, 9]
+  relative_to_ee:
+    poses:
+      - {action_pos: [0, 3], action_rot: [3, 9], action_rot_param: rot6d, obs_pos: [0, 3], obs_rot: [3, 9], obs_rot_param: rot6d}
+    fingers: []
+  status: finished
+  base_success_rate: 0.55
+  env: Isaac-Furniture-OneLeg-FBAbs-ResiP-v0
+  action_dim: 10
+  action_names: [x, y, z, rot6d_0, rot6d_1, rot6d_2, rot6d_3, rot6d_4, rot6d_5, gripper]
+  action_names_euler: [x, y, z, roll, pitch, yaw, gripper]
+  action_scale: [1000.0, 1000.0, 1000.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  action_units: [mm, mm, mm, unit, unit, unit, unit, unit, unit, unit]
+  action_scale_euler: [1000.0, 1000.0, 1000.0, 57.29577951308232, 57.29577951308232, 57.29577951308232, 1.0]
+  action_units_euler: [mm, mm, mm, deg, deg, deg, unit]
+  bc_config: configs/experiments/obs-fix_true-jacobian/bc_obs-fix_true-jacobian_50demos.yaml
+  wandb_run: hur/hybrid_demo_furniture/occ5eqly

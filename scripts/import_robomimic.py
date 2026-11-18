@@ -7,6 +7,10 @@
         https://huggingface.co/datasets/MimicGen/dexmimicgen_datasets/resolve/main/generated/two_arm_coffee.hdf5
     python scripts/import_robomimic.py --hdf5 data/dexmimicgen/two_arm_coffee.hdf5 --out data/dexmg_coffee_1000 \
         --task_name Robosuite-Coffee-LowDim-v0 --replay --max_demos 1000
+    curl -L -o data/dexmimicgen/two_arm_can_sort_random.hdf5 \
+        https://huggingface.co/datasets/MimicGen/dexmimicgen_datasets/resolve/main/generated/two_arm_can_sort_random.hdf5
+    python scripts/import_robomimic.py --hdf5 data/dexmimicgen/two_arm_can_sort_random.hdf5 --out data/dexmg_cansort_1000 \
+        --task_name Robosuite-CanSort-LowDim-v0 --task_config configs/base/robosuite_cansort.yaml --replay --max_demos 1000
 
 Columns and conventions: ``my_project/demos/robomimic_hdf5.py``.
 """
@@ -25,15 +29,18 @@ def main(argv=None) -> int:
     parser.add_argument("--hdf5", required=True, help="the robomimic low_dim hdf5")
     parser.add_argument("--out", required=True, help="dataset directory to create")
     parser.add_argument("--task_name", default="Robosuite-Can-LowDim-v0")
+    parser.add_argument("--task_config", default=None,
+                        help="a config whose task.cfg is applied to the task's defaults (configs/base/robosuite_cansort.yaml: "
+                             "its robot, controller and observation)")
     parser.add_argument("--max_demos", type=int, default=None)
     parser.add_argument("--replay", action="store_true",
                         help="read the observations by replaying the recorded MuJoCo states (DexMimicGen files)")
     parser.add_argument("--workers", type=int, default=8, help="--replay's worker processes")
     args = parser.parse_args(argv)
     if args.replay:
-        print(import_replayed(args.hdf5, args.out, args.task_name, args.max_demos, args.workers))
+        print(import_replayed(args.hdf5, args.out, args.task_name, args.max_demos, args.workers, args.task_config))
     else:
-        print(import_robomimic(args.hdf5, args.out, args.task_name, args.max_demos))
+        print(import_robomimic(args.hdf5, args.out, args.task_name, args.max_demos, args.task_config))
     return 0
 
 

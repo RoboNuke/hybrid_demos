@@ -18,9 +18,9 @@
 #  * the base is our diffusion policy trained on the same 300 MH demos (theirs a LeRobot ACT, chunk 20);
 #  * the critic warm-up's target-policy noise is the exploration std (theirs 0 during the warm-up);
 #  * a demo's reward is 1 on its first successful step, which ends it (theirs on robomimic's last 5-6 done frames).
-base:
-  - ../../base/robosuite_can.yaml
-  - ../../methods/resfit.yaml
+# the method (configs/methods/resfit.yaml) is chained by the residual launch configs, not here: its MLP networks would
+# land in the BC base's diffusion model section
+base: ../../base/robosuite_can.yaml
 
 experiment:
   seed: 42
@@ -47,6 +47,8 @@ bc:
   rollout_loss_threshold: 1000.0
   rollout_progress: false
   max_hours: null
+  # a base good enough for the residual: stop at the first rollout above 60%
+  stop_success_rate: 0.6
   save_only_best_ckpt: true
   normalization: per_dim
   early_stop_patience: .inf

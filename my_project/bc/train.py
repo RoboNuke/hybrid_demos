@@ -19,7 +19,8 @@ gradient-step count, to one wandb run (``experiment.num_agents`` must be 1):
   ``epoch_mean_return``, ``n_success``, ``n_rollouts``, plus the package eval summary under
   ``rollout/``.
 
-Training stops early after ``bc.max_hours`` of wall-clock time, if set.
+Training stops early after ``bc.max_hours`` of wall-clock time, or after the first rollout above
+``bc.stop_success_rate``, if set.
 
 Checkpoints go to ``<run dir>/checkpoints/`` and each one is uploaded to the run's files as
 it is written (same name, so a rewrite replaces it): ``actor_chkpt_last.pt`` every epoch,
@@ -412,6 +413,8 @@ def _train(args, overrides, setup, app_launcher) -> int:
                         )
 
                 stop = stopper.update(test_loss)
+                reached = (bc.stop_success_rate is not None and "success_rate" in epoch_log
+                           and float(epoch_log["success_rate"]) > bc.stop_success_rate)
                 epoch_log["early_stopper/counter"] = scalar(stopper.counter)
                 epoch_log["early_stopper/best_loss"] = scalar(stopper.best_loss)
                 epoch_log["early_stopper/ema_loss"] = scalar(stopper.ema_loss)
@@ -432,6 +435,10 @@ def _train(args, overrides, setup, app_launcher) -> int:
             )
             if stop:
                 print(f"[train_bc] early stop at epoch {epoch + 1}", flush=True)
+                break
+            if is_eval and reached:
+                print(f"[train_bc] success {float(epoch_log['success_rate']):.2f} > bc.stop_success_rate "
+                      f"{bc.stop_success_rate} at epoch {epoch + 1}", flush=True)
                 break
             hours = (time.time() - training_started) / 3600.0
             if bc.max_hours is not None and hours >= bc.max_hours:

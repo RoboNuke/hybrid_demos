@@ -30,8 +30,9 @@ import numpy as np
 __all__ = ["import_robomimic", "import_replayed", "task_cfg_for"]
 
 
-def task_cfg_for(task_name: str):
-    """The task's cfg object, from its gym registration (``my_project/tasks/__init__.py``)."""
+def task_cfg_for(task_name: str, task_config: Optional[str] = None):
+    """The task's cfg object, from its gym registration (``my_project/tasks/__init__.py``), with ``task_config``'s
+    ``task.cfg`` applied (a config file, its ``base`` chain merged; its ``task.name`` must be ``task_name``)."""
     import importlib
 
     import gymnasium as gym
@@ -39,7 +40,19 @@ def task_cfg_for(task_name: str):
     import my_project.tasks  # noqa: F401  -- gym.register
 
     module, attr = gym.spec(task_name).kwargs["env_cfg_entry_point"].split(":")
-    return getattr(importlib.import_module(module), attr)()
+    cfg = getattr(importlib.import_module(module), attr)()
+    if task_config is None:
+        return cfg
+    from omegaconf import OmegaConf
+
+    from robonuke_rl_core.config import apply_task_cfg, load_file_chain, task_cfg_to_dict
+
+    merged = OmegaConf.merge(*[layer for _, layer in load_file_chain(Path(task_config))])
+    name = OmegaConf.select(merged, "task.name")
+    if name != task_name:
+        raise ValueError(f"{task_config} is task {name}; the import is for {task_name}")
+    overrides = OmegaConf.select(merged, "task.cfg", default=OmegaConf.create({}))
+    return apply_task_cfg(cfg, OmegaConf.to_container(OmegaConf.merge(task_cfg_to_dict(cfg), overrides)))
 
 
 def _writer(out: str, task_name: str, cfg, source: str):
@@ -69,10 +82,11 @@ def _summary(lengths: List[int], success_frames: List[int], out: str) -> Dict[st
             "success_frame_mean": float(np.mean(success_frames)), "out": str(Path(out).expanduser())}
 
 
-def import_robomimic(hdf5: str, out: str, task_name: str, max_demos: Optional[int] = None) -> Dict[str, Any]:
+def import_robomimic(hdf5: str, out: str, task_name: str, max_demos: Optional[int] = None,
+                     task_config: Optional[str] = None) -> Dict[str, Any]:
     import h5py
 
-    cfg = task_cfg_for(task_name)
+    cfg = task_cfg_for(task_name, task_config)
     source = Path(hdf5).expanduser()
     lengths, success_frames = [], []
     with h5py.File(source, "r") as f:
@@ -98,14 +112,37 @@ def import_robomimic(hdf5: str, out: str, task_name: str, max_demos: Optional[in
     return _summary(lengths, success_frames, out)
 
 
+#: env names a source file may carry for a task env: DexMimicGen's two_arm_can_sort_random.hdf5 says TwoArmCanSortBlue,
+#: but its demos hold both can colours (each demo's model file), as TwoArmCanSortRandom draws them
+SOURCE_ENV_ALIASES = {"TwoArmCanSortRandom": {"TwoArmCanSortBlue"}}
+#: TwoArmCanSortRandom's can colours (its _load_model)
+RED_CAN_RGBA, BLUE_CAN_RGBA = (0.58, 0.15, 0.10, 1.0), (0.53, 0.77, 0.95, 1.0)
+
+
+def _match_model_file(env, model_file: str) -> None:
+    """Env state a model file implies but loading it does not set. TwoArmCanSortRandom draws ``is_red`` (which bin
+    counts as success, the ``can_colour`` observation) at ``reset()``, and ``reset_from_xml_string`` keeps that draw:
+    it is set from the can's colour in the model file."""
+    if not hasattr(env, "is_red"):
+        return
+    import xml.etree.ElementTree as ET
+
+    colours = {tuple(float(v) for v in g.get("rgba").split()) for g in ET.fromstring(model_file).iter("geom")
+               if g.get("name", "").startswith("cube") and g.get("rgba")}
+    can = [c for c in colours if np.allclose(c, RED_CAN_RGBA) or np.allclose(c, BLUE_CAN_RGBA)]
+    if len(can) != 1:
+        raise ValueError(f"the model file's can colour is not one of TwoArmCanSortRandom's two: {sorted(colours)}")
+    env.is_red = bool(np.allclose(can[0], RED_CAN_RGBA))
+
+
 def _replay_worker(job) -> List[Dict[str, Any]]:
     """Replay ``names`` of ``hdf5`` in the task's env: each frame's observation row and the demo's success frame."""
     import h5py
 
     from my_project.tasks.robosuite_tasks import make_robosuite_env, obs_row
 
-    hdf5, task_name, names = job
-    cfg = task_cfg_for(task_name)
+    hdf5, task_name, task_config, names = job
+    cfg = task_cfg_for(task_name, task_config)
     env = make_robosuite_env(cfg)
     out = []
     with h5py.File(hdf5, "r") as f:
@@ -115,6 +152,7 @@ def _replay_worker(job) -> List[Dict[str, Any]]:
             env.reset()
             env.reset_from_xml_string(env.edit_model_xml(demo.attrs["model_file"]))
             env.sim.reset()
+            _match_model_file(env, demo.attrs["model_file"])
             rows, success_frame = [], None
             for t in range(states.shape[0]):
                 env.sim.set_state_from_flattened(states[t])
@@ -132,23 +170,24 @@ def _replay_worker(job) -> List[Dict[str, Any]]:
     return out
 
 
-def import_replayed(hdf5: str, out: str, task_name: str, max_demos: Optional[int] = None, workers: int = 8) -> Dict[str, Any]:
+def import_replayed(hdf5: str, out: str, task_name: str, max_demos: Optional[int] = None, workers: int = 8,
+                    task_config: Optional[str] = None) -> Dict[str, Any]:
     import multiprocessing as mp
 
     import h5py
 
-    cfg = task_cfg_for(task_name)
+    cfg = task_cfg_for(task_name, task_config)
     source = Path(hdf5).expanduser()
     with h5py.File(source, "r") as f:
         env_args = json.loads(f["data"].attrs["env_args"])
-        if env_args["env_name"] != cfg.env_name:
+        if env_args["env_name"] != cfg.env_name and env_args["env_name"] not in SOURCE_ENV_ALIASES.get(cfg.env_name, ()):
             raise ValueError(f"{source} is {env_args['env_name']}; {task_name} is {cfg.env_name}")
         names = sorted(f["data"].keys(), key=lambda s: int(s.split("_")[1]))[: max_demos]
     writer = _writer(out, task_name, cfg, f"{source.name} ({env_args['env_name']}, robosuite {env_args.get('env_version')}), "
                                           "observations replayed from its MuJoCo states")
     chunks = [names[i::workers] for i in range(workers)]
     with mp.get_context("spawn").Pool(workers) as pool:
-        results = {r["name"]: r for part in pool.map(_replay_worker, [(str(source), task_name, c) for c in chunks if c]) for r in part}
+        results = {r["name"]: r for part in pool.map(_replay_worker, [(str(source), task_name, task_config, c) for c in chunks if c]) for r in part}
     lengths, success_frames, failed = [], [], []
     for name in names:
         r = results[name]

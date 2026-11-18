@@ -1,12 +1,29 @@
-# DexMimicGen CanSort (TwoArmCanSortRandom, GR1 with fixed lower body, whole-body Mink IK with absolute world targets):
-# 20 Hz, 400-step episodes; low-dim observation (both hands' state 36, then the scene's joint positions 21). As ResFiT's code builds it (my_project/tasks/robosuite_tasks.py); sparse reward, the episode ended on
-# success. Everything here is the task's defaults.
-base: hpc.yaml
+# DexMimicGen CanSort (TwoArmCanSortRandom, whole-body Mink IK with absolute world targets): 20 Hz, 400-step episodes;
+# sparse reward, the episode ended on success (my_project/tasks/robosuite_tasks.py). Two ways ours differs from ResFiT's:
+#  * the robot is GR1ArmsOnly, the one DexMimicGen's two_arm_can_sort_random.hdf5 was recorded with (ResFiT's env has
+#    GR1FixedLowerBody, whose torso joints the recorded states lack), with that file's controller;
+#  * the low-dim observation (both hands' state 36, the scene's joint positions 21) ends with the can's colour (1): which
+#    bin counts as success is drawn per episode, and ResFiT's policy saw it through the cameras.
+base: hpc_robosuite.yaml
 
 task:
   name: Robosuite-CanSort-LowDim-v0
   # MuJoCo simulates it: the entry points never start Isaac Sim
   simulator: standalone
+  cfg:
+    robots:
+      - GR1ArmsOnly
+    controller_config: my_project/tasks/controllers/gr1_arms_only_mink_ik.json
+    obs_keys:
+      - robot0_right_eef_pos
+      - robot0_right_eef_quat
+      - robot0_right_gripper_qpos
+      - robot0_left_eef_pos
+      - robot0_left_eef_quat
+      - robot0_left_gripper_qpos
+      - object_joints
+      - can_colour
+    observation_space: 58
 
 wrappers:
   task_metrics:

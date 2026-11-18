@@ -478,10 +478,11 @@ scaled (multiplied, the gripper the base's) and additive with adaptive explorati
 | `env_name` | `PickPlaceCan` | the robosuite env (`robosuite.make`'s `env_name`) |
 | `robots` | `[Panda]` | its robots (ResFiT's `ENV_ROBOTS`); the first one's default composite controller, a composite IK's input frame set to `world` |
 | `import_module` | `""` | a module imported before making it (`dexmimicgen` registers the DexMimicGen envs) |
+| `controller_config` | `""` | a robosuite composite controller JSON (absolute, or relative to the repo root) in place of the first robot's default (a composite IK's input frame still set to `world`); `my_project/tasks/controllers/gr1_arms_only_mink_ik.json` is the one DexMimicGen's CanSort demos were recorded with (robosuite has no `GR1ArmsOnly` default) |
 | `horizon` | 200 | steps per episode (ResFiT's horizon for the task): truncated after it |
 | `control_freq` | 20 | control steps per second |
 | `lite_physics` | true | robosuite's `lite_physics` (ResFiT leaves robosuite's default) |
-| `obs_keys` | `[robot0_eef_pos, robot0_eef_quat, robot0_gripper_qpos, object]` | the observation's terms in order (`object`, `object_joints`: above) |
+| `obs_keys` | `[robot0_eef_pos, robot0_eef_quat, robot0_gripper_qpos, object]` | the observation's terms in order (`object`, `object_joints`: above; `can_colour`: TwoArmCanSortRandom's can, 1 red / 0 blue, which bin counts as success) |
 | `terminate_on_success` | true | end the episode on the step the task succeeds (ResFiT's `terminated = reward == 1`) |
 | `observation_space` | 23 | the observation's width; the env checks it against `obs_keys` |
 | `action_space` | 7 | the controller's input width; the env checks it against robosuite's |
@@ -796,6 +797,7 @@ when `trainer.learner` is `diffusion_bc`.
 | `bc.rollout_loss_threshold` | float | `0.1` | rollouts run only once the test loss is below this |
 | `bc.rollout_progress` | bool | `false` | show each rollout's progress (a tqdm bar of episode steps out of `eval.num_rollouts` x the episode length; an episode that ends early adds its unused steps) and print its success rate when it ends |
 | `bc.max_hours` | float | `null` | stop after this many hours of wall-clock training (checked after each epoch, after its checkpoints); `null`: no limit |
+| `bc.stop_success_rate` | float | `null` | stop after the first rollout whose success rate is above this (its checkpoint saved first, as the best one); needs rollouts (`bc.rollout_every` > 0); `null`: no success limit |
 | `bc.save_only_best_ckpt` | bool | `false` | keep only `actor_chkpt_best_success_rate.pt`, on disk and in wandb: written at the first rollout, then overwritten only when a rollout beats the best success rate (no last, periodic or best-test-loss checkpoints); needs `bc.rollout_every` > 0 |
 | `bc.normalization` | str | `per_dim` | how obs and actions are scaled to [-1, 1] from the demos' min / max: `per_dim` gives every dim its own range (robust-rearrangement's); `per_unit` gives every dim of one physical unit one shared range, taken over the observation and the action together -- positions (EE, parts, obstacle, the action's target), rot6d, linear velocity, angular velocity, finger width, gripper command (`families.obs_units` / `action_units`) -- so near-constant dims stay near-constant; furniture FBAbs tasks only. Either way a dim (unit) whose range is below `MinMaxNormalizer.NARROW_RANGE` (1e-4: constant up to float noise) gets `[mid - 1, mid + 1]` and maps to ~0, never noise stretched over [-1, 1] |
 | `bc.normalize_action` | bool | `true` | `false`: the action is used as it is, never rescaled -- its range is fixed at [-1, 1] (`MinMaxNormalizer.fit_identity`), so normalizing is the identity and a zero output is the zero action (the FBRel interface: hold the EE). Every demo action must lie in [-1, 1] (training raises naming the dims that leave it) unless `model.actor.clip_sample` is off, when it may take any value. Not with `bc.normalization: per_unit` |

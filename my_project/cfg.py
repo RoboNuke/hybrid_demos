@@ -634,6 +634,9 @@ class BCCfg:
     #: stop once training has run this long, hours of wall-clock time from the first epoch
     #: (checked after each epoch, whose checkpoints are saved first); null: no limit
     max_hours: Optional[float] = None
+    #: stop after the first rollout whose success rate is above this (its checkpoint saved first, as the best one);
+    #: null: no success limit
+    stop_success_rate: Optional[float] = None
     #: keep (and upload to wandb) only actor_chkpt_best_success_rate.pt: written at the first
     #: rollout, then overwritten only when a rollout's success rate beats the best so far. No
     #: last / periodic / best-test-loss checkpoints. Needs rollouts (bc.rollout_every > 0)
@@ -725,6 +728,10 @@ class BCCfg:
                 )
         if self.max_hours is not None and self.max_hours <= 0:
             raise ValueError(f"bc.max_hours must be > 0 or null, got {self.max_hours}")
+        if self.stop_success_rate is not None and not 0.0 <= self.stop_success_rate < 1.0:
+            raise ValueError(f"bc.stop_success_rate must be in [0, 1) or null, got {self.stop_success_rate}")
+        if self.stop_success_rate is not None and self.rollout_every <= 0:
+            raise ValueError("bc.stop_success_rate needs rollouts (bc.rollout_every > 0)")
         if self.num_demos is not None and self.num_demos < 1:
             raise ValueError(f"bc.num_demos must be >= 1 or null, got {self.num_demos}")
         if not 0.0 < self.test_split < 1.0:

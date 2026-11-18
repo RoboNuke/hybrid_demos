@@ -1,0 +1,25 @@
+# Cluster settings for the robosuite (MuJoCo) tasks: hpc.yaml plus what a standalone MuJoCo job needs. Every
+# configs/base/robosuite_*.yaml chains onto this file instead of hpc.yaml.
+#
+# The images carry no MuJoCo stack, so the job puts it on PYTHONPATH from ~/hpc-share/deps (made once by hand):
+#   robosuite/, dexmimicgen/  copies of ~/deps/robosuite and ~/deps/dexmimicgen (robosuite 1.5.1, rsync without .git)
+#   site/                     pip install --no-deps --target site mujoco==3.3.2 mink==0.0.7 etils==1.15.0 glfw==2.11.0
+#                             PyOpenGL==3.1.10 termcolor==3.3.0 (run with the image's python)
+base: hpc.yaml
+
+hpc:
+  # optimus (RTX 6000, 40 CPUs, 8 GPUs): MuJoCo steps on the CPU and the networks are small, so the H100s buy nothing
+  partitions: eecs2
+  constraint: rtx6000
+  # the envs step one after another in one process (a 3-agent Square job averages 1.1 cores; more threads change
+  # nothing), so 4 cores: five jobs fit on optimus' 40 beside other users
+  cpus: 4
+  # the CPU sets the pace on optimus' Xeon Gold 6230 (2-5x slower per step than a desktop CPU): 3 agents in one job ran
+  # ~5 iterations/s on Square, so 200k-500k steps take one to two days, past hpc.yaml's 9 h (eecs2 allows 7 days)
+  time: 4-00:00:00
+  # a list replaces hpc.yaml's: Furniture Bench stays (the entry scripts import furniture_lab)
+  extra_repos:
+    - ~/hpc-share/Robonuke_Furniture_Bench
+    - ~/hpc-share/deps/robosuite
+    - ~/hpc-share/deps/dexmimicgen
+    - ~/hpc-share/deps/site

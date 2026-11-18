@@ -13,7 +13,9 @@ robot state then the objects' (which theirs saw only through the cameras):
   poses relative to the gripper), as the robomimic low-dim datasets store it;
 * ``object_joints`` -- the DexMimicGen tasks publish no object observable: the position of every joint that is not the
   robot's or its grippers' (a free object's position and quaternion, an articulated part's angle), read from the sim, so
-  a recorded MuJoCo state gives exactly what the env gives (``my_project/demos/robomimic_hdf5.py`` replays them).
+  a recorded MuJoCo state gives exactly what the env gives (``my_project/demos/robomimic_hdf5.py`` replays them);
+* ``can_colour`` -- TwoArmCanSortRandom's can colour, 1 red / 0 blue: which bin counts as success, drawn per episode
+  (theirs saw the colour through the cameras; nothing else in the low-dim observation tells it).
 
 Each of the ``scene.num_envs`` envs is its own robosuite env, stepped one after another on the CPU; the tensors in and out
 live on ``device``. Like a Direct env: ``step`` returns ``({"policy": obs}, reward, terminated, truncated, extras)``
@@ -26,6 +28,7 @@ that finished this step).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
 import gymnasium as gym
@@ -46,6 +49,8 @@ ROBOT_KEYS = {
     "humanoid": ["robot0_right_eef_pos", "robot0_right_eef_quat", "robot0_right_gripper_qpos",
                  "robot0_left_eef_pos", "robot0_left_eef_quat", "robot0_left_gripper_qpos"],
 }
+#: the repo root: a relative controller_config is read from it
+_REPO = Path(__file__).resolve().parents[2]
 #: joints of the robot, its grippers and its mount: everything else is the scene's
 _ROBOT_JOINT_PREFIXES = ("robot", "gripper", "mount")
 
@@ -74,6 +79,10 @@ def obs_row(env, obs: Dict[str, np.ndarray], keys: Sequence[str]) -> np.ndarray:
             value = np.concatenate([qpos[s] for s in _object_joint_slices(env.sim)])
         elif key == "object":
             value = obs["object-state"]
+        elif key == "can_colour":
+            if getattr(env, "is_red", None) is None:
+                raise ValueError(f"can_colour: {type(env).__name__} draws no can colour (TwoArmCanSortRandom's is_red)")
+            value = float(env.is_red)
         else:
             value = obs[key]
         out.append(np.asarray(value, dtype=np.float32).reshape(-1))
@@ -90,7 +99,11 @@ def make_robosuite_env(cfg: "RobosuiteTaskCfg"):
 
         importlib.import_module(cfg.import_module)  # registers the DexMimicGen envs
     robots = list(cfg.robots)
-    controller = load_composite_controller_config(robot=robots[0])
+    if cfg.controller_config:
+        path = Path(cfg.controller_config)
+        controller = load_composite_controller_config(controller=str(path if path.is_absolute() else _REPO / path))
+    else:
+        controller = load_composite_controller_config(robot=robots[0])
     if "composite_controller_specific_configs" in controller:
         controller["composite_controller_specific_configs"]["ik_input_ref_frame"] = "world"
     return suite.make(
@@ -124,6 +137,8 @@ class RobosuiteTaskCfg:
     robots: List[str] = ["Panda"]
     #: a module to import before making it ("dexmimicgen" registers the DexMimicGen envs; "" none)
     import_module: str = ""
+    #: a robosuite composite controller JSON (absolute, or relative to the repo root); "" the first robot's default
+    controller_config: str = ""
     #: steps per episode (ResFiT's horizon for the task): truncated after it
     horizon: int = 200
     #: control steps per second
