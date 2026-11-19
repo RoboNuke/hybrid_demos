@@ -7,7 +7,7 @@
 #   can_scaled_fixed   scaled, sent = r * base, can_scaled's noise (multiplier units): U(1 +- 0.2), then N(0, 0.05)
 #   can_scaled_linfit  scaled, the noise added to r * base, std a1 |b| + a0 per dim (sent units, the fits above)
 #   can_add_mlp        additive, the std from an MLP on the agent's observation fitted to the demos
-# Everything here but the noise is shared. The critics' target smoothing keeps ResFiT's std, never clipped (target_clip
+# Everything here but the noise is shared; the gripper is the base's in every condition (drop_columns). The critics' target smoothing keeps ResFiT's std, never clipped (target_clip
 # 1e6) in every condition.
 base:
   - ../../methods/resfit.yaml
@@ -34,6 +34,12 @@ trainer:
 base_policy:
   enabled: true
   base_run: runs/robomimic_can/bc_resfit_can/bc_resfit_can_a0
+# no residual controls the gripper (in every condition, ResFiT's too): the base's own gripper command is sent, and
+# the residual acts on the 6 pose dims
+drop_columns:
+  enabled: true
+  action:
+    - 6
 
 ddpg:
   demo_transitions: data/resfit_can/raw_demos.pt
