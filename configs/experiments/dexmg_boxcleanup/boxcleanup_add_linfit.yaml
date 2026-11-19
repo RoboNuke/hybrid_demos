@@ -1,0 +1,27 @@
+# 3. Additive (ResFiT's scale, reach and clamp), the acting noise's std a1 |b| + a0 per dim in the sent action, fitted:
+# the notebook's slice fit (data_analysis/demo_residual_analysis.ipynb's last cell: the std of executed - base in 50 slices of |b|, weighted by count) on 206170 demo frames, sent (relative fingers) units; R2 per dim [0.518, 0.295, 0.03, 0.873, 0.969, 0.976, 0.981, 0.963, 0.942, 0.973, 0.968, 0.999, 0.813, 0.523, 0.025, 0.909, 0.912, 0.926, 0.887, 0.892, 0.893, 0.899, 0.96, 0.99]. The warm-up's uniform half width 1.96 x that. On the relative action (_relative.yaml).
+base:
+  - _foundation.yaml
+  - _relative.yaml
+
+wandb:
+  group: boxcleanup_add_linfit
+
+additive_residual:
+  enabled: true
+
+residual_noise:
+  mode: linear
+  linear:
+    # the notebook's slice fit, data/var_mlps/boxcleanup_residual.pt's report, as fitted (fixed here; s = |a1 |b| + a0|)
+    a1: [0.0980965, -0.0918121, -0.0158115, 0.20933, 0.139491, 0.316671, 0.842663, 0.948469, 0.945361, 0.913191, 0.648149, 0.948843, 0.109539, -0.127055, -0.0160288, 0.317422, 0.376549, 0.207382, 0.866484, 0.93007, 0.923684, 0.776204, 0.863017, 0.852371]
+    a0: [0.195586, 0.282709, 0.202935, 0.0601008, 0.0668062, 0.0550908, 0.0267451, 0.0141509, 0.0188447, 0.0209551, 0.0194444, 6.75954e-05, 0.164364, 0.244634, 0.203896, 0.0569561, 0.0548051, 0.0587894, 0.02059, 0.0145451, 0.0148193, 0.0211593, 0.00807318, -6.29342e-05]
+  warmup_scale: 1.96
+
+ddpg:
+  warmup_noise:
+    scale: registered
+    target_scale: 0.05
+  train_noise:
+    scale: registered
+    target_scale: 0.05

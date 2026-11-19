@@ -263,12 +263,34 @@ def test_r_range_clip_actor_clamps_the_actors_r_so_its_change_is_the_additive_on
     assert multiply(3, [1e-3], (-1.0, 3.0), limit).action_bound() is None  # the sent-action clamp has no actor clamp
 
 
-def test_the_additive_noise_factor_reads_the_base_after_the_observation_columns():
-    w = additive(2, torch.tensor([0.5, 0.0]))
-    w.obs_width = 3
-    factor = w.noise_factor()
+def linear_noise(a1, a0, warmup_scale=1.0):
+    return SimpleNamespace(residual_noise=SimpleNamespace(mode="linear", warmup_scale=warmup_scale,
+                                                          linear=SimpleNamespace(a1=a1, a0=a0)))
+
+
+def test_the_linear_noise_scale_reads_the_base_after_the_observation_columns_in_each_residuals_units():
+    from my_project.wrappers.residual_policy.noise_scale import build_noise_scale
+
     observations = torch.tensor([[9.0, 9.0, 9.0, -1.0, 4.0, 7.0, 7.0]])  # 3 columns, the base (2), then a history (2)
-    assert factor(observations).tolist() == [[2.0, 0.0]]
+    w = additive(2, torch.tensor([0.5, 0.0]))
+    w.obs_width, w.device = 3, torch.device("cpu")
+    scale = build_noise_scale(linear_noise(1.0, [0.1, 0.1], warmup_scale=2.0), w)
+    # s = |base| + 0.1 = [1.1, 4.1] in sent units; r units: / scale, 0 where the scale is 0; the warm-up x2
+    torch.testing.assert_close(scale(observations, "train"), torch.tensor([[2.2, 0.0]]))
+    torch.testing.assert_close(scale(observations, "warmup"), torch.tensor([[4.4, 0.0]]))
+    m = multiply(2, [1e-3], (-1.0, 3.0))
+    m.obs_width, m.action_dim = 3, 2
+    scale = build_noise_scale(linear_noise(1.0, 0.1), m)  # scaled: s is in r units already, used as it is
+    torch.testing.assert_close(scale(observations, "train"), torch.tensor([[1.1, 4.1]]))
+    assert build_noise_scale(SimpleNamespace(residual_noise=SimpleNamespace(mode="none")), m) is None
+
+
+def test_each_residuals_noise_target_is_the_demo_correction_in_its_noise_units():
+    w = additive(2, torch.tensor([0.5, 0.2]))
+    r = torch.tensor([[2.0, -1.0]])
+    torch.testing.assert_close(w.noise_target(r, torch.zeros(1, 2)), torch.tensor([[1.0, -0.2]]))  # executed - base
+    m = multiply(2, [1e-3], (-1.0, 3.0))
+    torch.testing.assert_close(m.noise_target(torch.tensor([[1.5, 0.25]]), torch.ones(1, 2)), torch.tensor([[0.5, -0.75]]))
 
 
 def test_a_per_phase_additive_scale_steps_each_env_with_its_phase_and_binds_each_routed_learners_noise():
@@ -283,9 +305,12 @@ def test_a_per_phase_additive_scale_steps_each_env_with_its_phase_and_binds_each
     torch.testing.assert_close(w.invert(torch.tensor([[1.5, 1.1], [1.2, 1.4]]), side), r)
     crit = w.critic_action()
     torch.testing.assert_close(crit(None, r, {SIDE: side}), torch.tensor([[1.5, 1.1], [1.2, 1.4]]))
-    factor = w.noise_factor()
+    from my_project.wrappers.residual_policy.noise_scale import build_noise_scale
+
+    w.device = torch.device("cpu")
+    scale = build_noise_scale(linear_noise(1.0, 0.0), w)  # s = |base| in sent units
     observations = torch.tensor([[9.0, 0.4, -0.2]])
     with pytest.raises(NotImplementedError, match="one residual per phase"):
-        factor(observations)  # unbound: one learner for every phase cannot tell a row's phase
-    torch.testing.assert_close(factor.for_route("insert")(observations), torch.tensor([[0.8, 2.0]]))
-    torch.testing.assert_close(factor.for_route("screw")(observations), torch.tensor([[2.0, 0.5]]))
+        scale(observations, "train")  # unbound: one learner for every phase cannot tell a row's phase
+    torch.testing.assert_close(scale.for_route("insert")(observations, "train"), torch.tensor([[0.8, 2.0]]))
+    torch.testing.assert_close(scale.for_route("screw")(observations, "train"), torch.tensor([[2.0, 0.5]]))

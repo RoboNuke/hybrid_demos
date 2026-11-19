@@ -1,0 +1,25 @@
+# 2. Additive (ResFiT's scale, reach and clamp), the acting noise's std 0.05 |b| per dim in the sent action (b the base's
+# action this step), the warm-up's uniform half width 4 x that (0.2 |b|).
+base:
+  - _foundation.yaml
+
+wandb:
+  group: square_add_lin005
+
+additive_residual:
+  enabled: true
+
+residual_noise:
+  mode: linear
+  linear:
+    a1: 0.05
+    a0: 0.0
+  warmup_scale: 4.0
+
+ddpg:
+  warmup_noise:
+    scale: registered
+    target_scale: 0.05
+  train_noise:
+    scale: registered
+    target_scale: 0.05

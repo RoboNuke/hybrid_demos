@@ -3,7 +3,8 @@
 
 * ``register_critic_action``: the critics take the sent action, rebuilt from the side input (the residual's
   :meth:`critic_action`);
-* ``register_exploration_scale``: DDPG's adaptive noise factor, read from agent observations (:meth:`noise_factor`);
+* ``register_noise_scale``: DDPG's noise scale per env and dim (``residual_noise``,
+  ``my_project/wrappers/residual_policy/noise_scale.py``);
 * ``register_neutral_action``: the r that sends the base's own action (0 added, 1 multiplied);
 * ``register_action_bound``: the clamp on DDPG's deterministic action (:meth:`action_bound`; ``multiply_residual.r_range_clip_actor``);
 * ``register_demo_loader``: raw demo episodes converted at load (``my_project/wrappers/residual_policy/demos.py``).
@@ -15,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["register_residual", "residual_action_bound", "residual_critic_action", "residual_exploration_scale",
+__all__ = ["register_residual", "residual_action_bound", "residual_critic_action", "residual_noise_scale",
            "residual_neutral_action"]
 
 
@@ -34,13 +35,15 @@ def residual_critic_action(cfg: Any, env: Any):
     return combine.critic_action()
 
 
-def residual_exploration_scale(cfg: Any, env: Any):
-    """DDPG's adaptive noise factor, ``observations -> (rows, A)``; None without a residual."""
+def residual_noise_scale(cfg: Any, env: Any):
+    """DDPG's noise scale, ``(observations, phase) -> (rows, A)`` in r units (``residual_noise``); None without a residual
+    or with ``residual_noise.mode: none``."""
     if not _enabled(cfg):
         return None
     from my_project.wrappers.residual_policy.combine import find_combine
+    from my_project.wrappers.residual_policy.noise_scale import build_noise_scale
 
-    return find_combine(env).noise_factor()
+    return build_noise_scale(cfg, find_combine(env))
 
 
 def residual_action_bound(cfg: Any, env: Any):
@@ -66,20 +69,22 @@ def register_residual() -> None:
     """Register the residual wrappers' config sections and package hooks (every entry script's ``setup()``)."""
     from robonuke_rl_core.config import register_section
     from robonuke_rl_core.learners.sac import (register_action_bound, register_critic_action, register_demo_loader,
-                                               register_exploration_scale, register_neutral_action)
+                                               register_neutral_action, register_noise_scale)
 
     from my_project.cfg import (AdditiveResidualCfg, BasePolicyCfg, DropColumnsCfg, EERelativeCfg, MultiplyResidualCfg,
-                                TargetTrackingCfg)
+                                RelativeActionCfg, ResidualNoiseCfg, TargetTrackingCfg)
     from my_project.wrappers.residual_policy.demos import residual_demo_loader
 
     register_section("base_policy", BasePolicyCfg)
+    register_section("relative_action", RelativeActionCfg)
     register_section("drop_columns", DropColumnsCfg)
     register_section("target_tracking", TargetTrackingCfg)
     register_section("ee_relative", EERelativeCfg)
     register_section("additive_residual", AdditiveResidualCfg)
     register_section("multiply_residual", MultiplyResidualCfg)
+    register_section("residual_noise", ResidualNoiseCfg)
     register_critic_action(residual_critic_action)
-    register_exploration_scale(residual_exploration_scale)
+    register_noise_scale(residual_noise_scale)
     register_neutral_action(residual_neutral_action)
     register_action_bound(residual_action_bound)
     register_demo_loader(residual_demo_loader)

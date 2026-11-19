@@ -1,0 +1,11 @@
+# 1. ResFiT exactly: additive, sent = base + scale * r, scale = 1.1 x max(the base's demo half range, 0.05) per dim, r =
+# 0.1 tanh(mu) unclamped, the executed action clamped to the demo range widened by 1.1 x its half range; warm-up U(+-0.2)
+# about 0, then N(0, 0.05) (r units). Only the target smoothing's clip differs (none). The absolute action, as ResFiT.
+base:
+  - _foundation.yaml
+
+wandb:
+  group: square_resfit
+
+additive_residual:
+  enabled: true

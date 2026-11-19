@@ -379,7 +379,8 @@ def residual_wrappers(cfg: Any, env: Any) -> Any:
     """The residual wrappers, in their one order, each when its section is enabled: the base policy, dropped columns,
     tracked targets, the EE-relative observation, then the additive or the multiplicative residual
     (``my_project/wrappers/__init__.py``). None enabled: ``env`` as it is."""
-    for name in ("base_policy", "drop_columns", "target_tracking", "ee_relative", "additive_residual", "multiply_residual"):
+    for name in ("base_policy", "relative_action", "drop_columns", "target_tracking", "ee_relative", "additive_residual",
+                 "multiply_residual"):
         if getattr(cfg, name, None) is None:
             raise ValueError(f"the {name} config section is not registered (scripts' setup(): register_project)")
     from my_project.cfg import residual_wrappers_check
@@ -388,6 +389,7 @@ def residual_wrappers(cfg: Any, env: Any) -> Any:
     if not cfg.base_policy.enabled:
         return env
     from my_project.wrappers.action_spaces.drop_columns import DropColumnsWrapper
+    from my_project.wrappers.action_spaces.relative_action import RelativeActionWrapper
     from my_project.wrappers.action_spaces.target_tracking import TargetTrackingWrapper
     from my_project.wrappers.observation_spaces.ee_relative import EERelativeWrapper
     from my_project.wrappers.residual_policy.additive import AdditiveResidual
@@ -395,7 +397,8 @@ def residual_wrappers(cfg: Any, env: Any) -> Any:
     from my_project.wrappers.residual_policy.multiply import MultiplyResidual
 
     env = BasePolicy(env, cfg)
-    for name, kind in (("drop_columns", DropColumnsWrapper), ("target_tracking", TargetTrackingWrapper),
+    for name, kind in (("relative_action", RelativeActionWrapper), ("drop_columns", DropColumnsWrapper),
+                       ("target_tracking", TargetTrackingWrapper),
                        ("ee_relative", EERelativeWrapper)):
         if getattr(cfg, name).enabled:
             env = kind(env, cfg)

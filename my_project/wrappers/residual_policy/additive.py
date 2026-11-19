@@ -9,9 +9,8 @@ EE-relative observation below), one of ResFiT's rules on the base's actions:
 correction; a phase without a residual gets 0). ``clip`` clamps the sent action to ``center +- clip x half range``.
 
 The critics take the sent action, ``base + scale * r``, rebuilt from the side input (the base action, then each env's
-scale with phase scales). The adaptive noise factor is the base action in r units, ``|base| / scale`` (per phase: each
-routed learner's own phase's, :class:`NoiseFactor`, bound by the package with ``for_route``), read from the
-agent's observation (the base action right after its observation columns); the neutral action is 0.
+scale with phase scales); the neutral action is 0. ``residual_noise`` scales are in the sent action's units, divided by
+the scale into r (``my_project/wrappers/residual_policy/noise_scale.py``).
 """
 
 from __future__ import annotations
@@ -27,9 +26,11 @@ __all__ = ["AdditiveResidual", "AdditiveCriticAction", "native_dims", "demo_acti
 
 
 def native_dims(wrapper) -> Optional[list]:
-    """The env's action dims the wrapper's action space keeps, in order, when every wrapper below leaves the action the
-    base's own (drop columns, the EE-relative observation); None when one changes what an action is (target tracking)."""
+    """The env's action dims the wrapper's action space keeps, in order, when every wrapper below keeps each dim the
+    base's own up to a shift (drop columns, the EE-relative observation, the relative action: a dim's change has the
+    same scale as the dim); None when one changes what an action is (target tracking)."""
     from my_project.wrappers.action_spaces.drop_columns import DropColumns
+    from my_project.wrappers.action_spaces.relative_action import RelativeAction
     from my_project.wrappers.observation_spaces.ee_relative import EERelative
 
     dims = list(range(wrapper.base_policy.action_dim))
@@ -37,9 +38,17 @@ def native_dims(wrapper) -> Optional[list]:
         conversion = node.conversion
         if isinstance(conversion, DropColumns):
             dims = [dims[k] for k in conversion.keep_act]
-        elif not isinstance(conversion, EERelative):
+        elif not isinstance(conversion, (EERelative, RelativeAction)):
             return None
     return dims
+
+
+def relative_action_of(wrapper):
+    """The chain's :class:`~my_project.wrappers.action_spaces.relative_action.RelativeAction`, or None."""
+    from my_project.wrappers.action_spaces.relative_action import RelativeAction
+
+    found = [node.conversion for node in wrapper.chain()[1:-1] if isinstance(getattr(node, "conversion", None), RelativeAction)]
+    return found[0] if found else None
 
 
 def demo_action_range(base_dir: Any) -> Dict[str, torch.Tensor]:
@@ -125,34 +134,9 @@ class AdditiveCriticAction:
         return base + self.scale.to(actions.device) * actions
 
 
-class NoiseFactor:
-    """``observations -> (rows, A)``: the base action in r units, ``|base| / scale``, read at ``[start, stop)`` of agent
-    observations (DDPG's adaptive noise factor). With per-phase scales (``table`` ``(L, A)``) the package binds each
-    routed learner's phase (:meth:`for_route`, train.py and the eval learner): its own phase's row; unbound, refused."""
-
-    def __init__(self, start: int, stop: int, scale: Optional[torch.Tensor] = None, table: Optional[torch.Tensor] = None,
-                 names=(), route: Optional[str] = None) -> None:
-        self.start, self.stop, self.table, self.names, self.route = start, stop, table, list(names), route
-        if table is not None and route is not None:
-            scale = table[self.names.index(route)]
-        self.scale = scale
-
-    def for_route(self, route: Optional[str]) -> "NoiseFactor":
-        return NoiseFactor(self.start, self.stop, self.scale if self.table is None else None, self.table, self.names, route)
-
-    def __call__(self, observations: torch.Tensor) -> torch.Tensor:
-        if self.scale is None:
-            raise NotImplementedError("the adaptive noise factor with a per-phase additive scale needs one residual per "
-                                      "phase (route_labels): one learner's observations do not say which phase's scale a "
-                                      "row has")
-        on = self.scale > 0
-        safe = torch.where(on, self.scale, torch.ones_like(self.scale))
-        base = observations[..., self.start : self.stop]
-        return torch.where(on, base.abs() / safe, torch.zeros_like(base))
-
-
 class AdditiveResidual(CombineWrapper):
     neutral = 0.0
+    noise_kind = "additive"
 
     def __init__(self, env: Any, cfg: Any) -> None:
         super().__init__(env, cfg)
@@ -178,7 +162,20 @@ class AdditiveResidual(CombineWrapper):
         else:
             self.scale, center, half = fraction_scale(self, cfg)
             if ac.clip is not None:
-                self.clip = (center - float(ac.clip) * half, center + float(ac.clip) * half)
+                lo, hi = center - float(ac.clip) * half, center + float(ac.clip) * half
+                relative = relative_action_of(self)
+                if relative is not None:
+                    # the clamp bounds the absolute action the env executes (ResFiT's executed clip), in the relative
+                    # action's map back to absolute -- before it keeps the fingers' executed command -- on the dims this
+                    # action keeps (the others unclamped)
+                    width = self.base_policy.action_dim
+                    full_lo = torch.full((width,), -float("inf"), device=self.device)
+                    full_hi = torch.full((width,), float("inf"), device=self.device)
+                    index = torch.tensor(native_dims(self), dtype=torch.long, device=self.device)
+                    full_lo[index], full_hi[index] = lo, hi
+                    relative.executed_clip = (full_lo, full_hi)
+                else:
+                    self.clip = (lo, hi)
             if ac.phase_stats is not None:
                 index = torch.tensor(native_dims(self), dtype=torch.long, device=self.device)
                 table = phase_scale_table(ac.phase_stats, self.phase_names, self.routes, policy.action_dim, self.device)
@@ -186,7 +183,9 @@ class AdditiveResidual(CombineWrapper):
         print(f"[additive_residual] sent = base + scale * r over the {self.action_dim}-wide action"
               + (f", per phase its scale ({ac.phase_stats or 'additive_residual.scale'})" if self.table is not None
                  else f", scale {[round(v, 5) for v in self.scale.tolist()]}")
-              + (f", clamped to the base's +-{ac.clip} x half range" if self.clip is not None else ""), flush=True)
+              + (f", clamped to the base's +-{ac.clip} x half range" if self.clip is not None else "")
+              + (f", the executed (absolute) action clamped to the base's +-{ac.clip} x half range"
+                 if getattr(relative_action_of(self), "executed_clip", None) is not None else ""), flush=True)
 
     def uses_phase_rows(self) -> bool:
         return self.table is not None
@@ -215,7 +214,7 @@ class AdditiveResidual(CombineWrapper):
     def critic_action(self) -> AdditiveCriticAction:
         return AdditiveCriticAction(self.action_dim, None if self.table is not None else self.scale, self.table is not None)
 
-    def noise_factor(self):
-        """The base action in r units, ``|base| / scale`` (:class:`NoiseFactor`), from agent observations (the base action
-        sits right after the observation columns; the history and the wrench, appended later, come after it)."""
-        return NoiseFactor(self.obs_width, self.obs_width + self.action_dim, self.scale, self.table, self.phase_names)
+    def noise_target(self, r: torch.Tensor, side: torch.Tensor) -> torch.Tensor:
+        """A demo frame's correction in ``residual_noise``'s units, the sent action's: ``scale * r``, the executed action
+        minus the base's (unclamped)."""
+        return self._scale_of(side) * r

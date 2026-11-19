@@ -1,0 +1,50 @@
+# dexmg_boxcleanup (the leading _ keeps launch_train from submitting this file on its own): DexMimicGen BoxCleanup (two Pandas: each an OSC_POSE delta, then its Inspire hand's six absolute servo targets; right robot first).
+# Six residual conditions on the same base, demos and learning (ResFiT's: configs/methods/resfit.yaml, the task's values
+# from ../resfit_boxcleanup/_foundation.yaml), 3 agents of one env each, 300k env steps:
+#   boxcleanup_resfit         ResFiT exactly: additive, sent = base + scale * r, warm-up U(+-0.2), then N(0, 0.05) (r units)
+#   boxcleanup_add_lin005     additive, the noise's std 0.05 |b| per dim (sent units), the warm-up's half width 4 x that
+#   boxcleanup_add_linfit     additive, the std a1 |b| + a0 per dim fitted to the demos, the warm-up 1.96 x that
+#   boxcleanup_scaled_fixed   scaled, sent = r * base, can_scaled's noise (multiplier units): U(1 +- 0.2), then N(0, 0.05)
+#   boxcleanup_scaled_linfit  scaled, the noise added to r * base, std a1 |b| + a0 per dim (sent units, the fits above)
+#   boxcleanup_add_mlp        additive, the std from an MLP on the agent's observation fitted to the demos
+# Everything here but the noise is shared. The critics' target smoothing keeps ResFiT's std, never clipped (target_clip
+# 1e6) in every condition.
+base:
+  - ../../methods/resfit.yaml
+  - ../resfit_boxcleanup/_foundation.yaml
+
+experiment:
+  num_agents: 3
+
+wandb:
+  project: residual_noise_compare
+
+task:
+  cfg:
+    scene:
+      num_envs: 3
+
+trainer:
+  learner: ddpg
+  total_timesteps: 300000
+  checkpoint_interval: 10000
+  write_interval: 1000
+  success_window: 10
+
+base_policy:
+  enabled: true
+  base_run: runs/resfit_validation/bc_resfit_boxcleanup/bc_resfit_boxcleanup_a0
+
+ddpg:
+  demo_transitions: data/resfit_boxcleanup/raw_demos.pt
+  state_preprocessor: demo
+  demo_storage: sample
+  demo_sampling_start: 0
+  demo_sampling_end: 1000000000
+  demo_batch_shared: true
+  save_memory_with_checkpoints: false
+  # the target smoothing's noise never clipped
+  warmup_noise:
+    target_clip: 1.0e6
+  train_noise:
+    target_clip: 1.0e6

@@ -1,0 +1,26 @@
+# 4. Scaled: sent = r * base per dim, r the multiplier in [-1, 3] starting at 1 (the actor's output bias 0 is the range's
+# midpoint), unclamped; can_scaled's noise in multiplier units: a uniform +-0.2 warm-up about 1, then N(0, 0.05), the
+# target smoothing's std 0.05. A demo's r = executed / base, 1 where |base| is under invert_floor.
+base:
+  - _foundation.yaml
+
+wandb:
+  group: can_scaled_fixed
+
+multiply_residual:
+  enabled: true
+  invert_floor: [0.01]
+
+ddpg:
+  action_range:
+    - -1.0
+    - 3.0
+  warmup_noise:
+    scale: 0.2
+    target_scale: 0.05
+  train_noise:
+    scale: 0.05
+
+model:
+  actor:
+    output_bias: 0.0

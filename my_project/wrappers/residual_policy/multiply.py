@@ -2,7 +2,7 @@
 space the wrapper below gives (:class:`MultiplyResidual`). r is the multiplier itself: its range and start are the
 learner's (``ddpg.action_range``, ``model.actor.output_bias``); the base alone is r = 1 (the neutral action). A dim it
 must not scale (the gripper) is dropped below (``drop_columns.action``). The critics take the sent action, ``r *
-base``, rebuilt from the side input (the base action); the adaptive noise factor is 1 (r = 1 is the base's own action).
+base``, rebuilt from the side input (the base action); ``residual_noise`` scales are in r units, the multiplier's.
 
 ``r_range_clip`` (not 0) limits the change as an additive residual with ``r`` in ``+-r_range_clip`` is limited: the sent
 action clamped to ``base +- r_range_clip x scale`` per dim, ``scale`` the additive residual's (``additive_residual.scale``
@@ -49,6 +49,7 @@ class MultiplyCriticAction:
 
 class MultiplyResidual(CombineWrapper):
     neutral = 1.0
+    noise_kind = "multiply"
 
     def __init__(self, env: Any, cfg: Any) -> None:
         super().__init__(env, cfg)
@@ -110,10 +111,7 @@ class MultiplyResidual(CombineWrapper):
 
         return window
 
-    def noise_factor(self):
-        start, stop = self.obs_width, self.obs_width + self.action_dim
-
-        def factor(observations: torch.Tensor) -> torch.Tensor:
-            return torch.ones_like(observations[..., start:stop])
-
-        return factor
+    def noise_target(self, r: torch.Tensor, side: torch.Tensor) -> torch.Tensor:
+        """A demo frame's correction in ``residual_noise``'s units, r's: ``r - 1``, the multiplier's departure from the
+        base's own action (``r`` as :meth:`invert` gives it: 1 under the floor, clamped to the range)."""
+        return r - self.neutral

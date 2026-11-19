@@ -62,7 +62,7 @@ Never create a new conda env; never vendor a copy of the package into this repo.
   space is a new conversion, never a flag on another wrapper, and it makes no assumption about the task beyond its own
   config's columns and the base action after the observation columns. r's range, start and exploration belong to the
   learner (`ddpg.action_range`, `model.actor.output_bias`). `wrappers/register.py`'s `register_residual()` registers the
-  sections and the package hooks (critic action, adaptive noise factor, neutral action, demo loader).
+  sections and the package hooks (critic action, noise scale (`residual_noise`), neutral action, demo loader).
   `history.*` (`ObservationHistory`) goes on outermost, after the residual, so the base's input never changes.
   Demos: `my_project/raw_demos.py` (`scripts/make_raw_demos.py`) writes raw episodes (observations, executed actions,
   the base's actions, FurnitureBench's env data); `wrappers/residual_policy/demos.py` converts them at load through the

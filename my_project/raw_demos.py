@@ -41,7 +41,7 @@ from typing import Any, Dict
 
 import torch
 
-__all__ = ["success_frame", "frame_infos", "executed_abs_actions", "raw_fingerprint", "base_plan_actions", "RAW_FORMAT",
+__all__ = ["success_frame", "frame_infos", "executed_abs_actions", "raw_fingerprint", "base_plan_actions", "build_raw_demos", "RAW_FORMAT",
            "ENV_DATA", "main"]
 
 #: ``data["format"]`` of a raw demo file
@@ -175,7 +175,22 @@ def main(argv=None) -> int:
     parser.add_argument("--dataset", default=None, help="the demo dataset (default: the base run's bc.dataset)")
     parser.add_argument("--out", required=True, help="the raw demo file to write (the experiment's demo_transitions)")
     args = parser.parse_args(argv)
+    data = build_raw_demos(_config(args.config), args.dataset)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(data, out)
+    meta = data["meta"]
+    frames = sum(int(e["states"].shape[0]) for e in data["episodes"])
+    print(f"[raw demos] {meta['episodes']} episodes, {frames} frames ({meta['dart_rows']} with a DART-perturbed executed "
+          f"action), skipped {meta['skipped']} -> {out}")
+    print(f"[raw demos] fingerprint {meta['fingerprint']}")
+    return 0
 
+
+def build_raw_demos(cfg: Any, dataset: Any = None, device: Any = "cpu") -> Dict[str, Any]:
+    """The raw demo file's content (``{format, episodes, meta}``, the module docstring) for ``cfg`` (:func:`_config`'s:
+    the base_policy section, the seed, the task, the wandb entity) from ``dataset`` (default: the base run's
+    ``bc.dataset``); the base plans on ``device``, everything returned on the CPU."""
     import numpy as np
     import pandas as pd
     from omegaconf import OmegaConf
@@ -184,12 +199,14 @@ def main(argv=None) -> int:
 
     from my_project.wrappers.residual_policy.base_policy import base_run_dir, load_base_policy, override_base
 
-    cfg = _config(args.config)
     rc = cfg.base_policy
     base_dir = base_run_dir(cfg)
     bc = OmegaConf.load(resolved_config_path(base_dir)).bc
-    dataset = Path(args.dataset).expanduser() if args.dataset else Path(bc.dataset).expanduser()
-    policy = load_base_policy(base_dir, rc.base_checkpoint, "cpu")
+    dataset = Path(dataset).expanduser() if dataset else Path(bc.dataset).expanduser()
+    policy = load_base_policy(base_dir, rc.base_checkpoint, device)
+
+    def plan(states: torch.Tensor) -> torch.Tensor:
+        return base_plan_actions(policy, states.to(device)).cpu()
     override_base(policy, rc)
     if policy.cfg.warm_start:
         raise ValueError("the raw demos plan the base cold (every chunk from pure noise, at the env's replan frames); the env's "
@@ -215,7 +232,7 @@ def main(argv=None) -> int:
             # a robomimic / DexMimicGen episode (its success frame recorded in episodes.jsonl): the dataset's actions are
             # the executed ones, and it has no env data
             T = int(success_frames[key]) + 1
-            episodes.append({"states": states[:T], "actions": labels[:T], "base_actions": base_plan_actions(policy, states[:T]),
+            episodes.append({"states": states[:T], "actions": labels[:T], "base_actions": plan(states[:T]),
                              "success_frame": T - 1, "file": Path(path).name})
             continue
         if not source:
@@ -233,21 +250,14 @@ def main(argv=None) -> int:
         T = last + 1
         dart_rows += int((actions[:T] - labels[:T]).abs().amax(dim=-1).gt(1e-6).sum())
         episodes.append({
-            "states": states[:T], "actions": actions[:T], "base_actions": base_plan_actions(policy, states[:T]),
+            "states": states[:T], "actions": actions[:T], "base_actions": plan(states[:T]),
             "success_frame": int(last), "file": Path(path).name, "infos": frame_infos(data, T),
             "reward_terms": {k: torch.tensor(v[:T], dtype=torch.float32) for k, v in data["reward_terms"].items()},
             "termination_terms": {k: torch.tensor(v[:T], dtype=torch.bool) for k, v in data["termination_terms"].items()},
         })
     meta = {"fingerprint": raw_fingerprint(rc, policy, dataset, cfg.task_name, cfg.wandb.entity), "episodes": len(episodes), "skipped": skipped,
             "dart_rows": dart_rows, "seed": cfg.seed}
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"format": RAW_FORMAT, "episodes": episodes, "meta": meta}, out)
-    frames = sum(int(e["states"].shape[0]) for e in episodes)
-    print(f"[raw demos] {len(episodes)} episodes, {frames} frames ({dart_rows} with a DART-perturbed executed action), "
-          f"skipped {skipped} -> {out}")
-    print(f"[raw demos] fingerprint {meta['fingerprint']}")
-    return 0
+    return {"format": RAW_FORMAT, "episodes": episodes, "meta": meta}
 
 
 if __name__ == "__main__":

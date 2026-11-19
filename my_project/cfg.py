@@ -397,6 +397,57 @@ class TargetTrackingCfg:
 
 
 @dataclass
+class RelativePoseCfg:
+    """One hand of ``relative_action.poses``: its target's columns in the action and its observed pose's in the
+    observation (``data_analysis/residual_plots/models.yaml``'s ``relative_to_ee.poses`` entries, the same keys)."""
+
+    action_pos: List[int] = field(default_factory=lambda: [0, 3])
+    obs_pos: List[int] = field(default_factory=lambda: [0, 3])
+    action_rot: Optional[List[int]] = None
+    action_rot_param: str = "rotvec"
+    obs_rot: Optional[List[int]] = None
+    obs_rot_param: str = "quat_xyzw"
+    #: the observed frame -> the target's frame (3 x 3), right-multiplied onto the observed rotation; null: none
+    obs_rot_offset: Optional[List[List[float]]] = None
+
+    def check(self, what: str) -> None:
+        _span(self.action_pos, f"{what}.action_pos")
+        _span(self.obs_pos, f"{what}.obs_pos")
+        if int(self.action_pos[1]) - int(self.action_pos[0]) != int(self.obs_pos[1]) - int(self.obs_pos[0]):
+            raise ValueError(f"{what}: action_pos and obs_pos must be as wide")
+        if (self.action_rot is None) != (self.obs_rot is None):
+            raise ValueError(f"{what}: set both action_rot and obs_rot, or neither")
+        if self.action_rot is not None:
+            _rot_span(self.action_rot, self.action_rot_param, f"{what}.action_rot")
+            _rot_span(self.obs_rot, self.obs_rot_param, f"{what}.obs_rot")
+        if self.obs_rot_offset is not None and (len(self.obs_rot_offset) != 3 or any(len(r) != 3 for r in self.obs_rot_offset)):
+            raise ValueError(f"{what}.obs_rot_offset is a 3 x 3 matrix or null")
+
+
+@dataclass
+class RelativeActionCfg:
+    """``my_project/wrappers/action_spaces/relative_action.py``: the action as a change from the robot's current state,
+    for an absolute action (DexMimicGen's): each pose relative to the hand's observed pose, each finger relative to the
+    previous step's sent command -- ``data_analysis/demo_residual_analysis.ipynb``'s ``relative_to_ee``. It sits right
+    above the base policy (observation columns are the env's own)."""
+
+    enabled: bool = False
+    poses: List[RelativePoseCfg] = field(default_factory=list)
+    #: action columns of position servos (finger target angles): each the change from the previous sent command
+    fingers: List[int] = field(default_factory=list)
+
+    def validate(self, cfg: Any) -> None:
+        if not self.enabled:
+            return
+        if not self.poses and not self.fingers:
+            raise ValueError("relative_action.enabled with no poses and no fingers")
+        for i, pose in enumerate(self.poses):
+            pose.check(f"relative_action.poses[{i}]")
+        if len(set(int(f) for f in self.fingers)) != len(self.fingers) or any(int(f) < 0 for f in self.fingers):
+            raise ValueError(f"relative_action.fingers is a list of distinct columns >= 0, got {list(self.fingers)}")
+
+
+@dataclass
 class PoseColumnsCfg:
     """A pose in the observation (``ee_relative.poses``): its position and rotation columns and the rotation's
     parametrisation."""
@@ -519,11 +570,97 @@ class MultiplyResidualCfg:
                              "sets what it can be")
 
 
+@dataclass
+class LinearNoiseCfg:
+    """``residual_noise.linear``: the noise scale ``s = |a1 * |base| + a0|`` per dim, ``|base|`` the base action this step
+    (the magnitude: a fitted line with a negative slope or intercept is used as fitted, never negative)."""
+
+    #: one number for every action dim, or a list, one per dim
+    a1: Any = 0.0
+    a0: Any = 0.0
+
+
+@dataclass
+class MlpNoiseCfg:
+    """``residual_noise.mlp``: the noise scale from an MLP fitted to the demo corrections (``scripts/fit_noise_std.py``)."""
+
+    #: the fitted file (``scripts/fit_noise_std.py --out``); required with ``mode: mlp``
+    path: Optional[str] = None
+    #: the MLP's input, checked against the file: "residual", the agent's observation (what the learner acts on);
+    #: "base", the observation the base policy is given
+    input: str = "residual"
+    #: times the predicted std (no refit needed)
+    gain: float = 1.0
+
+
+@dataclass
+class ResidualNoiseCfg:
+    """``my_project/wrappers/residual_policy/noise_scale.py``: DDPG's noise scale per env and dim from the base action or
+    the observation, for a learner phase with ``ddpg.<phase>_noise.scale: registered`` (the package's
+    ``register_noise_scale``). ``s`` is in the sent action's units for the additive residual (divided by its scale
+    into r) and in r units for the scaled one (the multiplier's; ``r * base`` then multiplies it by the base). A gaussian
+    phase draws ``N(0, s)``, a uniform one ``U(-s, s)``."""
+
+    #: "none": the noise scales are the ddpg section's numbers; "linear": ``|a1 * |base| + a0|``; "mlp": a fitted MLP
+    mode: str = "none"
+    #: the warm-up phase's scale is this times ``s``
+    warmup_scale: float = 1.0
+    #: the scaled residual's ``s``: "r", in r units, the noise then times the base (``r * base``); "sent", in the sent
+    #: action's units, added to ``r * base`` (r takes ``s / |base|``, ``|base|`` floored at 1e-6). The additive
+    #: residual's ``s`` is in the sent action's units always
+    scaled_units: str = "r"
+    linear: LinearNoiseCfg = field(default_factory=LinearNoiseCfg)
+    mlp: MlpNoiseCfg = field(default_factory=MlpNoiseCfg)
+
+    MODES = ("none", "linear", "mlp")
+    INPUTS = ("residual", "base")
+    SCALED_UNITS = ("r", "sent")
+
+    def validate(self, cfg: Any) -> None:
+        if self.mode not in self.MODES:
+            raise ValueError(f"residual_noise.mode must be one of {self.MODES}, got {self.mode!r}")
+        sec = q_section(cfg) if cfg is not None else None
+        registered = [f"ddpg.{phase}" for phase in ("warmup_noise", "train_noise")
+                      if sec is not None and getattr(getattr(sec, phase, None), "scale", None) == "registered"]
+        if self.mode == "none":
+            if registered:
+                raise ValueError(f"{registered}.scale is registered: set residual_noise.mode (linear or mlp)")
+            return
+        if cfg is not None:
+            if cfg.trainer.learner != "ddpg":
+                raise ValueError(f"residual_noise.mode {self.mode!r} sets DDPG's noise: trainer.learner: ddpg")
+            if not cfg.base_policy.enabled:
+                raise ValueError(f"residual_noise.mode {self.mode!r} reads the residual: base_policy.enabled")
+            if not registered:
+                raise ValueError(f"residual_noise.mode {self.mode!r}, and neither ddpg.warmup_noise nor ddpg.train_noise "
+                                 "has scale: registered: it would go unused")
+        if self.warmup_scale <= 0:
+            raise ValueError(f"residual_noise.warmup_scale must be > 0, got {self.warmup_scale}")
+        if self.scaled_units not in self.SCALED_UNITS:
+            raise ValueError(f"residual_noise.scaled_units must be one of {self.SCALED_UNITS}, got {self.scaled_units!r}")
+        if cfg is not None and self.scaled_units == "sent" and not cfg.multiply_residual.enabled:
+            raise ValueError("residual_noise.scaled_units: sent is the scaled residual's choice (multiply_residual); the "
+                             "additive residual's noise is in the sent action's units already")
+        if self.mode == "linear":
+            for name in ("a1", "a0"):
+                value = getattr(self.linear, name)
+                numbers = [value] if isinstance(value, (int, float)) else list(value)
+                if not numbers or any(not isinstance(v, (int, float)) or isinstance(v, bool) or v != v for v in numbers):
+                    raise ValueError(f"residual_noise.linear.{name} is a number or a list of numbers, got {value!r}")
+        if self.mode == "mlp":
+            if not self.mlp.path:
+                raise ValueError("residual_noise.mode: mlp needs residual_noise.mlp.path (scripts/fit_noise_std.py)")
+            if self.mlp.input not in self.INPUTS:
+                raise ValueError(f"residual_noise.mlp.input must be one of {self.INPUTS}, got {self.mlp.input!r}")
+            if self.mlp.gain <= 0:
+                raise ValueError(f"residual_noise.mlp.gain must be > 0, got {self.mlp.gain}")
+
+
 def residual_wrappers_check(cfg: Any) -> None:
     """The residual wrappers together (called from :meth:`BasePolicyCfg`'s owner check in ``project_env_wrappers``):
     every one of them needs the base policy, and exactly one combine runs with it."""
     combines = [name for name in ("additive_residual", "multiply_residual") if getattr(cfg, name).enabled]
-    others = [name for name in ("drop_columns", "target_tracking", "ee_relative") if getattr(cfg, name).enabled]
+    others = [name for name in ("relative_action", "drop_columns", "target_tracking", "ee_relative") if getattr(cfg, name).enabled]
     if not cfg.base_policy.enabled:
         if combines or others:
             raise ValueError(f"{combines + others} need base_policy.enabled")

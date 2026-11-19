@@ -1,0 +1,38 @@
+# 5. Scaled (as coffee_scaled_fixed: sent = r * base, r in [-1, 3] from 1), the acting noise added to r * base in the sent
+# action, unscaled by the base: sent = r_det * base + e, e ~ N(0, a1 |b| + a0) per dim (the uniform warm-up's half width
+# 1.96 x that), a1 / a0 condition 3's (coffee_add_linfit). The stored r carries e / base (|base| floored at 1e-6), so the
+# critics' r * base is the sent action. The target smoothing as coffee_scaled_fixed's (0.05, multiplier units). On the relative action (_relative.yaml). A finger's command is c_prev + r (base - c_prev): it follows the base while r stays in (0, 2).
+base:
+  - _foundation.yaml
+  - _relative.yaml
+
+wandb:
+  group: coffee_scaled_linfit
+
+multiply_residual:
+  enabled: true
+  invert_floor: [0.0005, 0.0005, 0.0005, 0.005, 0.005, 0.005, 0.0005, 0.0005, 0.0005, 0.005, 0.005, 0.005, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01]
+
+residual_noise:
+  mode: linear
+  linear:
+    # the notebook's slice fit, data/var_mlps/coffee_residual.pt's report, as fitted (fixed here; s = |a1 |b| + a0|)
+    a1: [0.138138, 0.0467597, 0.134939, 0.35921, 0.0422431, 0.0312194, 0.0879559, 0.154416, 0.101734, 0.380211, 0.114623, 0.114383, 0.230883, 0.564945, 0.323347, 0.95874, 0.561716, 0.921242, 0.814645, 0.803157, 0.750575, 0.778377, 0.754659, 0.986952]
+    a0: [0.0112977, 0.0120737, 0.0115999, 0.010823, 0.0143427, 0.0140025, 0.012776, 0.0116935, 0.0120506, 0.0124665, 0.0151548, 0.0138035, 0.000578783, 0.00033291, 0.000311842, 5.09658e-05, 0.0223658, 9.06672e-05, 0.0148, 0.0115143, 0.0104494, 0.00867699, 0.015515, 1.13753e-05]
+  warmup_scale: 1.96
+  scaled_units: sent
+
+ddpg:
+  action_range:
+    - -1.0
+    - 3.0
+  warmup_noise:
+    scale: registered
+    target_scale: 0.05
+  train_noise:
+    scale: registered
+    target_scale: 0.05
+
+model:
+  actor:
+    output_bias: 0.0

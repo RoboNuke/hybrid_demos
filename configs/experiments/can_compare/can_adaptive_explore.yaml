@@ -1,5 +1,6 @@
-# can_adaptive.yaml with the target smoothing NOT adaptive: only the acting noise (warm-up and exploration) is times the
-# base action in r units per dim (|base| / scale); the critics' target smoothing is can_add's, N(0, 0.05) clipped at 0.3.
+# Additive with adaptive exploration (residual_noise linear: a1 0.05, a0 0): the acting noise (warm-up and exploration)
+# is 0.05 |base| per dim in the sent action (the warm-up's uniform half width 4 x that); the critics' target smoothing is
+# can_add's, N(0, 0.05) clipped at 0.3.
 # 110k env steps, as can_add_v2 was stopped (its last checkpoint 109999).
 #   python scripts/train.py --config configs/experiments/can_compare/can_adaptive_explore.yaml --headless
 #   python scripts/watch_residual_eval.py --headless --run runs/init_explore_residual/can_adaptive_explore_v2/can_adaptive_explore_v2_a<i> \
@@ -15,13 +16,17 @@ trainer:
 additive_residual:
   enabled: true
 
+# the acting noise in the sent action: 0.05 |base| (exploration std), 0.2 |base| (the warm-up's uniform half width)
+residual_noise:
+  mode: linear
+  linear:
+    a1: 0.05
+  warmup_scale: 4.0
+
 ddpg:
   warmup_noise:
-    scale: 0.2
-    adaptive: true
+    scale: registered
     target_scale: 0.05
-    target_adaptive: false
   train_noise:
-    scale: 0.05
-    adaptive: true
-    target_adaptive: false
+    scale: registered
+    target_scale: 0.05

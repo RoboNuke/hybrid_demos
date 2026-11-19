@@ -1,0 +1,26 @@
+# 6. Additive (ResFiT's scale, reach and clamp), the acting noise's std per dim from an MLP (2 x 256) on the agent's
+# observation, fitted by Gaussian NLL to the demos' corrections (executed - base, sent units; scripts/fit_noise_std.py,
+# logged in wandb project var_mlps); the warm-up's uniform half width 1.96 x that.
+base:
+  - _foundation.yaml
+
+wandb:
+  group: can_add_mlp
+
+additive_residual:
+  enabled: true
+
+residual_noise:
+  mode: mlp
+  mlp:
+    path: data/var_mlps/can_residual.pt
+    input: residual
+  warmup_scale: 1.96
+
+ddpg:
+  warmup_noise:
+    scale: registered
+    target_scale: 0.05
+  train_noise:
+    scale: registered
+    target_scale: 0.05

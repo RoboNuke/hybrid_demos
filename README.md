@@ -513,6 +513,7 @@ innermost first, each on or off by its own section:
 | wrapper | section | what it does |
 | --- | --- | --- |
 | `BasePolicy` (`wrappers/residual_policy/base_policy.py`) | `base_policy` | runs the frozen base on the env's own observation (each env its own chunk clock: a new chunk every `action_horizon` steps or when its episode starts); keeps `base_obs`, `base_action`, `fresh`, `new_chunk` as fields every wrapper above reads; lays the agent's observation out as `[observation columns, base action]` and the critics' as the observation columns (an env's own critic group is kept); logs the sent action against the base's (`residual/position_mm`, `rot_deg` / `yaw_deg`, by the task's action layout) |
+| `RelativeActionWrapper` (`wrappers/action_spaces/relative_action.py`) | `relative_action` | the action as a change from the robot's current state, for an absolute action (DexMimicGen): each hand's target against its observed pose (position: target - hand, world axes; rotation: `R_target R_hand^T`, `R_hand` the observed rotation times `obs_rot_offset`, in the action's parametrisation), each finger servo's target against the previous executed command (0 at an episode's start); the other dims as they are. `data_analysis/demo_residual_analysis.ipynb`'s `relative_to_ee` exactly (`tests/residual/test_relative_action.py` checks it against the notebook's code), so a noise fitted there means the same here. Same width and dim order, so the base's scale per dim applies (`additive_residual.scale_fraction`); with `additive_residual.clip` the clamp bounds the absolute executed action, before the fingers keep it |
 | `DropColumnsWrapper` (`wrappers/action_spaces/drop_columns.py`) | `drop_columns` | removes observation columns (from both observations) and action dims; a dropped action dim is the base's (it leaves the base action too) |
 | `TargetTrackingWrapper` (`wrappers/action_spaces/target_tracking.py`) | `target_tracking` | sends the env an absolute target per tracked body (an arm's pose, a finger's joints); the agent's action is each target's change. A target starts at the body at an episode's start (and, `reset_at_chunk`, whenever the base re-plans); the base action above is the base's own planned change; the current targets, relative to their bodies, can join the agent's and the critics' observation |
 | `EERelativeWrapper` (`wrappers/observation_spaces/ee_relative.py`) | `ee_relative` | re-expresses listed observation poses (and vectors) relative to the EE, in its axes, and removes the EE's columns |
@@ -527,9 +528,9 @@ each env's scale with phase scales) as `infos["residual_base"]` / `["next_residu
 `residual/<size>` metric per task phase when the env publishes its phase (`residual/<size>_<phase>`), count each
 episode's agent steps (`episode/agent_steps`, `episode/count_offset`), and check that a phase-scale label is the one
 the env publishes. The package hooks they answer: the critics' action is the sent action (`base + scale * r` or `r *
-base`, rebuilt from the side input); DDPG's adaptive noise factor is the base action in r units, `|base| / scale`
-(additive) or 1 (multiply), read right after the agent's observation columns; the neutral action (a phase without a
-residual, the eval's base round, `base_only_episodes`) is 0 or 1. The inputs go out raw: the learner's
+base`, rebuilt from the side input); DDPG's noise scale per env and dim for a phase with `scale: registered`
+(`residual_noise`, below); the neutral action (a phase without a residual, the eval's base round,
+`base_only_episodes`) is 0 or 1. The inputs go out raw: the learner's
 `state_preprocessor` normalizes them (`demo`: fitted once on the demo rows).
 
 Three setups, the one_leg pinned run, smol2 and a robosuite task:
@@ -573,6 +574,9 @@ python scripts/make_raw_demos.py --config configs/experiments/can_compare/can_ad
 | `base_policy.base_action_horizon` | int \| null | `null` | override the base's executed horizon (at most its `horizon`); null: the run's own |
 | `base_policy.base_inference_steps` | int \| null | `null` | override the base's DDIM steps (at most its `num_diffusion_iters`); null: the run's own |
 | `base_policy.base_warm_start` | bool \| null | `null` | override the base's warm start (`false`: every chunk from pure noise, as the raw demos plan it); null: the run's own |
+| `relative_action.enabled` | bool | `false` | the action relative to the robot's current state (right above the base policy) |
+| `relative_action.poses` | list | `[]` | per hand `action_pos` / `obs_pos` (`[start, stop)`, as wide), and optionally `action_rot` / `obs_rot` with `action_rot_param` (default `rotvec`) / `obs_rot_param` (default `quat_xyzw`) and `obs_rot_offset` (3 x 3, the observed frame -> the target's, right-multiplied; null none): `models.yaml`'s `relative_to_ee.poses` entries, the same keys |
+| `relative_action.fingers` | list[int] | `[]` | action columns of position servos, each the change from the previous executed command |
 | `drop_columns.enabled` | bool | `false` | drop observation columns and action dims |
 | `drop_columns.observation` | list of `[start, stop)` | `[]` | observation columns removed from the agent's and the critics' observation (the env's own columns) |
 | `drop_columns.action` | list[int] | `[]` | action dims the agent no longer controls: the base's own value is sent there |
@@ -585,7 +589,7 @@ python scripts/make_raw_demos.py --config configs/experiments/can_compare/can_ad
 | `ee_relative.poses` | list of `{pos, rot, param}` | `[]` | poses re-expressed `(R_ee^T (p - p_ee), R_ee^T R)`, in their own columns and parametrisation |
 | `ee_relative.vectors` | list of `[start, stop)` | `[]` | 3-wide vectors rotated into the EE's axes (velocities) |
 | `additive_residual.enabled` | bool | `false` | `sent = base + scale * r` |
-| `additive_residual.scale` | list[float] \| `{phase: list[float]}` \| null | `null` | the scale per dim of the action below, the same in every phase or per phase (each env its current phase's from the env's tracker; every phase the residual acts in needs one; the critics get the row's scale in their side input, the demos invert each frame with its phase's, the adaptive noise factor divides by each routed learner's own phase's); null: one of the rules below (only where the action is still the base's own: the base policy, dropped dims and the EE-relative observation below) |
+| `additive_residual.scale` | list[float] \| `{phase: list[float]}` \| null | `null` | the scale per dim of the action below, the same in every phase or per phase (each env its current phase's from the env's tracker; every phase the residual acts in needs one; the critics get the row's scale in their side input, the demos invert each frame with its phase's, a `residual_noise` scale divides by each routed learner's own phase's); null: one of the rules below (only where the action is still the base's own: the base policy, dropped dims and the EE-relative observation below) |
 | `additive_residual.scale_fraction` | float | `0.1` | ResFiT's rule: `scale_fraction x` the base's half range per dim (`half_range_floor` set: of its demo dataset, floored) |
 | `additive_residual.half_range_floor` | float \| null | `null` | the floor on that half range (ResFiT: 0.05); null: the base normalizer's half range |
 | `additive_residual.phase_stats` | str \| null | `null` | per routed phase (`<learner>.route_labels`, phases from the env's tracker, `furniture.track_phases`) its own scale from this file; a phase without a residual gets 0; the critics' scale rides in the side input |
@@ -594,6 +598,46 @@ python scripts/make_raw_demos.py --config configs/experiments/can_compare/can_ad
 | `multiply_residual.invert_floor` | list[float] | `[1e-6]` | a demo's r is `executed / base`, 1 where `|base|` is under this (one number or one per dim), clamped to the range |
 | `multiply_residual.r_range_clip` | float | `0.0` | not 0: the sent action clamped to `base +- r_range_clip x` the additive residual's scale per dim (`additive_residual.scale` or `scale_fraction x` the demo half range), the change an additive residual with r in `+-r_range_clip` can make; the critics' action too. 0: no clamp |
 | `multiply_residual.r_range_clip_actor` | bool | `false` | true: `r_range_clip` clamps the policy's own action instead: the actor's r (unchanged) clamped so `r * base` stays within `base +- r_range_clip x scale`, i.e. r within `1 +- limit / \|base\|` (`register_action_bound`; straight-through: the actor's gradient passes the clamp); the exploration noise (times the base) is added after the clamp, so the sent action is `clamped r * base + noise * base`, and neither it nor the critics' action is clamped again. Needs `r_range_clip > 0` |
+
+**The noise scale can depend on the state** (`residual_noise`, `my_project/wrappers/residual_policy/noise_scale.py`):
+with `ddpg.warmup_noise.scale: registered` and/or `ddpg.train_noise.scale: registered`, that phase's scale per env
+and dim is `s` -- the gaussian's std, the uniform's half width -- from one of
+
+* `linear`: `s = |a1 * |base| + a0|` (the magnitude), the base action this step;
+* `mlp`: an MLP fitted to the demos' corrections by Gaussian NLL (`s(x)^2` estimates `E[c^2 | x]`), times `mlp.gain`,
+  its input the agent's observation (`residual`) or the observation the base policy is given (`base`).
+
+`s` is in the sent action's units for the additive residual (divided by its scale into r: `sent = base + scale * r`
+then adds `s`-sized noise) and in r units for the scaled one (`r * base` multiplies it by the base). The warm-up's is
+`warmup_scale * s`. The target smoothing keeps the ddpg section's numbers (`target_scale` must then be set).
+
+**Fitting the MLP** (`scripts/fit_noise_std.py`, `my_project/noise_fit.py`): give it the residual experiment and a
+demo dataset; it builds the raw demo episodes (the base's action planned at every frame, as `make_raw_demos.py`
+does), runs every frame through the run's own wrappers into the learner's transitions, and fits a 2 x 256 ReLU MLP
+(`--hidden`) by the zero-mean Gaussian NLL on the demos' corrections (the additive residual's `executed - base`, the
+scaled one's `r - 1`), keeping the best validation epoch. `--dataset base` uses the base run's own `bc.dataset`;
+`--demos <file>` reads a raw demo file instead. Every fit logs to wandb project `var_mlps` (`--wandb_project`; group
+the config's stem, run `<stem>_<input>[_<phase>]`), one point per epoch: `train/nll`, `train/grad_norm`, `train/lr`,
+`val/nll`, `val/nll_constant` (the best constant std's), `val/nll_gain` (constant - MLP, > 0: the input helps),
+`val/calibration` (`E[c^2 / s^2]`, 1 when the variance matches), `val/pred_std_mean`, and the last four per dim under
+`val_dims/`. The summary carries the best epoch, its NLL, the best `linear` fit's (`a1`, `a0` per dim in the
+`report/per_dim` table), and the fitted file goes up as a plain run file.
+
+```bash
+python scripts/fit_noise_std.py --config configs/experiments/can_compare/can_add.yaml --headless \
+    --dataset base --out data/resfit_can/noise_std_residual.pt [--input base] [--phase insert] [--save_raw raw.pt]
+```
+
+| field | type | default | what it does |
+| --- | --- | --- | --- |
+| `residual_noise.mode` | str | `"none"` | `none`: the ddpg section's noise numbers; `linear` or `mlp`: `s` as above, for every phase with `scale: registered` (one at least; `none` with a registered phase is refused). ddpg and `base_policy` only |
+| `residual_noise.warmup_scale` | float | `1.0` | the warm-up phase's scale is this times `s` (> 0) |
+| `residual_noise.scaled_units` | str | `"r"` | the scaled residual's `s`: `r`, in r units, the noise then times the base (`r * base`); `sent`, in the sent action's units and added to `r * base` (`sent = r_det * base + e`): the stored r carries `e / base` (`\|base\|` floored at 1e-6, under which the noise shrinks), so the critics' `r * base` is the sent action. Only with `multiply_residual` |
+| `residual_noise.linear.a1` | float \| list[float] | `0.0` | `s`'s slope on `\|base\|`, one number or one per action dim (`s = \|a1 \|base\| + a0\|`: the magnitude, so a negative slope or intercept is used as fitted) |
+| `residual_noise.linear.a0` | float \| list[float] | `0.0` | `s`'s constant, one number or one per action dim |
+| `residual_noise.mlp.path` | str \| null | `null` | the fitted file (`scripts/fit_noise_std.py --out`); required with `mode: mlp`. Refused when its input, residual (additive / multiply), action width or base (run, checkpoint, planning settings, task) is not this run's |
+| `residual_noise.mlp.input` | str | `"residual"` | the MLP's input: `residual` (the agent's observation) or `base` (the observation the base policy is given, read from its wrapper each step) |
+| `residual_noise.mlp.gain` | float | `1.0` | times the predicted std (> 0; no refit) |
 
 **The critic is asymmetric** on a Forge task: Forge gives the env a critic state (`task.cfg.state_order`: true peg and
 hole poses, joint positions, gains, ...), which the base policy wrapper keeps for the critics while the actor sees the

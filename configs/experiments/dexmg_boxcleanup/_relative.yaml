@@ -1,0 +1,7 @@
+# the action as a change from the robot's current state (my_project/wrappers/action_spaces/relative_action.py),
+# data_analysis/demo_residual_analysis.ipynb's relative_to_ee (data_analysis/residual_plots/models.yaml): each hand's
+# target against its observed pose, each finger servo's target against the previous executed command; the OSC dims
+# as they are (deltas already). Every condition but ResFiT's runs on it, and the noise fits were made in it
+relative_action:
+  enabled: true
+  fingers: [6, 7, 8, 9, 10, 11, 18, 19, 20, 21, 22, 23]

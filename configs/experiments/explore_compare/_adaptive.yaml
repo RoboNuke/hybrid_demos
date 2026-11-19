@@ -1,10 +1,17 @@
-# every noise adaptive: each draw (the warm-up's, the training's, both target smoothings) times the base's motion in r
-# units per dim, |d| / step_scale -- so the executed noise is 0.4 |d| (0.8 |d| uniform in the warm-up) whatever the
-# scale; a routed residual divides by its own phase's scale
+# the acting noise adaptive (residual_noise linear, a0 0): the warm-up's and the training's draws scale with the base's
+# motion per dim, 0.4 |d| (the exploration std) and 0.8 |d| (the warm-up's uniform half width) in the sent action,
+# whatever the residual's scale; a routed residual divides by its own phase's scale into r. The target smoothing is
+# _additive.yaml's (std 0.4 clipped at 2.4, in r units).
+# NOTE: the target smoothing was adaptive too before target_adaptive was removed.
+residual_noise:
+  mode: linear
+  linear:
+    a1: 0.4
+  # 0.8 / 0.4
+  warmup_scale: 2.0
 ddpg:
   warmup_noise:
-    adaptive: true
-    target_adaptive: true
+    scale: registered
   train_noise:
-    adaptive: true
-    target_adaptive: true
+    scale: registered
+    target_scale: 0.4

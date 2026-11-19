@@ -1,0 +1,37 @@
+# 5. Scaled (as square_scaled_fixed: sent = r * base, r in [-1, 3] from 1), the acting noise added to r * base in the sent
+# action, unscaled by the base: sent = r_det * base + e, e ~ N(0, a1 |b| + a0) per dim (the uniform warm-up's half width
+# 1.96 x that), a1 / a0 condition 3's (square_add_linfit). The stored r carries e / base (|base| floored at 1e-6), so the
+# critics' r * base is the sent action. The target smoothing as square_scaled_fixed's (0.05, multiplier units).
+base:
+  - _foundation.yaml
+
+wandb:
+  group: square_scaled_linfit
+
+multiply_residual:
+  enabled: true
+  invert_floor: [0.01]
+
+residual_noise:
+  mode: linear
+  linear:
+    # the notebook's slice fit, data/var_mlps/square_residual.pt's report, as fitted (fixed here; s = |a1 |b| + a0|)
+    a1: [0.0817527, 0.159215, 0.085702, 0.0676557, -0.0725245, 0.0694468, -19.1526]
+    a0: [0.0593059, 0.0482747, 0.0552521, 0.00668984, 0.02047, 0.0125573, 19.1325]
+  warmup_scale: 1.96
+  scaled_units: sent
+
+ddpg:
+  action_range:
+    - -1.0
+    - 3.0
+  warmup_noise:
+    scale: registered
+    target_scale: 0.05
+  train_noise:
+    scale: registered
+    target_scale: 0.05
+
+model:
+  actor:
+    output_bias: 0.0

@@ -12,8 +12,8 @@ and steps. Every step it also
 * checks, when it builds observations from the env's phase tracker (phase scales), that the label it used is the one
   the env publishes for the learner's routing (latched on the device, raised every ``LABEL_CHECK_EVERY`` steps).
 
-The package hooks registered for it (``my_project/wrappers/register.py``): the critics' action, the adaptive noise
-factor, the neutral action.
+The package hooks registered for it (``my_project/wrappers/register.py``): the critics' action, the noise scale
+(``residual_noise``), the neutral action.
 """
 
 from __future__ import annotations
@@ -49,6 +49,8 @@ def find_combine(env: Any) -> "CombineWrapper":
 class CombineWrapper(ChainWrapper):
     #: the r that sends the base's own action
     neutral: float = 0.0
+    #: the residual's rule for ``residual_noise`` (``my_project/wrappers/residual_policy/noise_scale.py``)
+    noise_kind: str = ""
 
     def __init__(self, env: Any, cfg: Any) -> None:
         super().__init__(env)
@@ -79,6 +81,10 @@ class CombineWrapper(ChainWrapper):
 
     def invert(self, executed: torch.Tensor, side: torch.Tensor) -> torch.Tensor:
         """A demo's executed action (this wrapper's inner action space) -> its r."""
+        raise NotImplementedError
+
+    def noise_target(self, r: torch.Tensor, side: torch.Tensor) -> torch.Tensor:
+        """A demo frame's correction in ``residual_noise``'s units (what ``scripts/fit_noise_std.py`` fits the std of)."""
         raise NotImplementedError
 
     def step_metrics(self, r: torch.Tensor, metrics) -> None:
