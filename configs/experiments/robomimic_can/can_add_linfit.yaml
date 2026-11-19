@@ -1,5 +1,5 @@
 # 3. Additive (ResFiT's scale, reach and clamp), the acting noise's std a1 |b| + a0 per dim in the sent action, fitted:
-# the notebook's slice fit (data_analysis/demo_residual_analysis.ipynb's last cell: the std of executed - base in 50 slices of |b|, weighted by count) on 61548 demo frames, sent (OSC commands) units; R2 per dim [0.911, 0.051, 0.829, 0.663, 0.682, 0.454, 0.525]. The warm-up's uniform half width 1.96 x that.
+# the notebook's slice fit (data_analysis/demo_residual_analysis.ipynb's last cell: the std of executed - base in 50 slices of |b|, weighted by count) on 61548 demo frames, sent (OSC commands, the 6 pose dims) units; R2 per dim [0.911, 0.051, 0.829, 0.663, 0.682, 0.454]. The warm-up's uniform half width 1.96 x that.
 base:
   - _foundation.yaml
 
@@ -13,8 +13,8 @@ residual_noise:
   mode: linear
   linear:
     # the notebook's slice fit, data/var_mlps/can_residual.pt's report, as fitted (fixed here; s = |a1 |b| + a0|)
-    a1: [0.156156, 0.0219285, 0.114109, 0.131757, 0.167059, 0.0661574, -6.68127]
-    a0: [0.0836655, 0.117191, 0.105534, 0.00874365, 0.0106301, 0.0160881, 6.93314]
+    a1: [0.156156, 0.0219285, 0.114109, 0.131757, 0.167059, 0.0661574]
+    a0: [0.0836655, 0.117191, 0.105534, 0.00874365, 0.0106301, 0.0160881]
   warmup_scale: 1.96
 
 ddpg:
