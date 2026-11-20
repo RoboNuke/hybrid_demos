@@ -1,0 +1,35 @@
+# 8. Additive (ResFiT's scale, reach and clamp), the acting noise's source per dim: the position (x, y, z) ResFiT's fixed
+# 0.05 (r units), the rotation (rx, ry, rz) square_add_linfit's fitted std a1 |b| + a0 (sent units); ResFiT's warm-up
+# (the method's: U(+-0.2) about 0) and target smoothing (0.05, r units). 200k env steps. The mirror of 7.
+base:
+  - _foundation.yaml
+
+wandb:
+  group: square_add_resfit_pos_linfit_rot
+
+trainer:
+  total_timesteps: 200000
+
+additive_residual:
+  enabled: true
+
+residual_noise:
+  mode:
+    - constant
+    - constant
+    - constant
+    - linear
+    - linear
+    - linear
+  linear:
+    # square_add_linfit's slice fit (read on the linear dims only)
+    a1: [0.0817527, 0.159215, 0.085702, 0.0676557, -0.0725245, 0.0694468]
+    a0: [0.0593059, 0.0482747, 0.0552521, 0.00668984, 0.02047, 0.0125573]
+  constant:
+    # ResFiT's train noise std (r units)
+    r: 0.05
+
+ddpg:
+  train_noise:
+    scale: registered
+    target_scale: 0.05

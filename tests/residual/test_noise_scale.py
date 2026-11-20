@@ -90,14 +90,14 @@ def test_the_mlp_scale_reads_its_input_times_the_gain_in_r_units(tmp_path, monke
     w = additive(2, torch.tensor([0.5, 0.0]))
     obs = torch.tensor([[0.3, 9.0, 9.0, 1.0, 1.0], [-0.1, 9.0, 9.0, 1.0, 1.0]])
     scale = ns.build_noise_scale(mlp_cfg(saved(tmp_path, 5), gain=2.0, warmup_scale=3.0), w)
-    scale.model = Const(5, 2, (4,))  # a known std: |obs[:, 0]|
+    scale.sources[0].model = Const(5, 2, (4,))  # a known std: |obs[:, 0]|
     # s = 2 |obs[:, 0]| in sent units; / 0.5 on dim 0, 0 where the scale is 0
     torch.testing.assert_close(scale(obs, "train"), torch.tensor([[1.2, 0.0], [0.4, 0.0]]))
     torch.testing.assert_close(scale(obs, "warmup"), torch.tensor([[3.6, 0.0], [1.2, 0.0]]))
     # base input: the base policy's observation this step, from its wrapper
     w.base_policy = SimpleNamespace(base_obs=torch.tensor([[0.5, 0.0], [0.25, 0.0]]))
     scale = ns.build_noise_scale(mlp_cfg(saved(tmp_path, 2, input="base"), input="base"), w)
-    scale.model = Const(2, 2, (4,))
+    scale.sources[0].model = Const(2, 2, (4,))
     torch.testing.assert_close(scale(obs, "train"), torch.tensor([[1.0, 0.0], [0.5, 0.0]]))
     w.base_policy.base_obs = torch.zeros(3, 2)  # not the rows acted on: refused
     with pytest.raises(ValueError, match="rows"):
@@ -150,7 +150,8 @@ def test_the_sections_rules():
 
 
 def test_the_linear_scale_is_the_magnitude_of_the_fitted_line():
-    s = ns.LinearScale(0, 2, torch.tensor([-2.0, 0.5]), torch.tensor([1.0, -0.1]), residual="multiply", warmup_scale=1.0)
+    s = ns.NoiseScale([ns.LinearSource(0, 2, torch.tensor([-2.0, 0.5]), torch.tensor([1.0, -0.1]))], [0, 0],
+                      residual="multiply", warmup_scale=1.0)
     obs = torch.tensor([[0.25, 0.1], [1.0, 1.0]])
     # dim 0: |-2 |b| + 1| -> 0.5 at 0.25, |-1| = 1 at 1; dim 1: |0.5 |b| - 0.1| -> 0.05, 0.4
     torch.testing.assert_close(s(obs, "train"), torch.tensor([[0.5, 0.05], [1.0, 0.4]]))
@@ -187,3 +188,46 @@ def test_each_epoch_reports_the_nll_its_gain_over_a_constant_and_the_calibration
     std, target = true_std(x[:1000]), c[:1000]
     metrics = ns.epoch_metrics(0, 0.0, 0.0, std, target, std.pow(2).mean(0).sqrt(), 1e-3)
     assert metrics["val/calibration"] == pytest.approx(1.0, abs=0.1)
+
+
+def test_each_dim_takes_its_own_source_linear_in_sent_units_constant_in_r_units():
+    # additive, scale [2, 4, 0.5]: the linear dims' s / scale, the constant dims' r as it is (whatever the scale)
+    scale = torch.tensor([2.0, 4.0, 0.5])
+    a1, a0 = torch.tensor([0.5, 0.5, 0.5]), torch.tensor([0.1, 0.2, 0.3])
+    sources = [ns.LinearSource(0, 3, a1, a0), ns.ConstantSource(torch.tensor([0.05, 0.05, 0.07]))]
+    s = ns.NoiseScale(sources, [0, 1, 1], residual="additive", warmup_scale=2.0, scale=scale)
+    obs = torch.tensor([[0.4, -1.0, 2.0], [0.0, 0.0, 0.0]])
+    expected = torch.tensor([[(0.5 * 0.4 + 0.1) / 2.0, 0.05, 0.07], [0.1 / 2.0, 0.05, 0.07]])
+    torch.testing.assert_close(s(obs, "train"), expected)
+    torch.testing.assert_close(s(obs, "warmup"), 2.0 * expected)  # the warm-up's: warmup_scale times every dim's
+    torch.testing.assert_close(s.for_route(None)(obs, "train"), expected)  # kept by the rebind
+    with pytest.raises(ValueError, match="every source serves"):
+        ns.NoiseScale(sources, [0, 0, 0], residual="additive", warmup_scale=1.0, scale=scale)
+    # the scaled residual, sent units: the linear dims / |base|, the constant dims as they are
+    m = ns.NoiseScale(sources, [1, 0, 1], residual="multiply", warmup_scale=1.0, scaled_units="sent", base_cols=(0, 3))
+    torch.testing.assert_close(m(obs[:1], "train"), torch.tensor([[0.05, (0.5 + 0.2) / 1.0, 0.07]]))
+    # built from the section: mode one source per dim, each source's settings full width; the other order too
+    cfg = SimpleNamespace(residual_noise=SimpleNamespace(
+        mode=["linear", "constant", "constant"], warmup_scale=1.0, scaled_units="r",
+        linear=SimpleNamespace(a1=[0.5] * 3, a0=[0.1, 0.2, 0.3]), constant=SimpleNamespace(r=[9.0, 0.05, 0.07])))
+    rows = torch.cat([torch.zeros(2, 3), obs], dim=1)
+    torch.testing.assert_close(ns.build_noise_scale(cfg, additive(3, scale))(rows, "train"), expected)
+    cfg.residual_noise.mode = ["constant", "linear", "linear"]
+    flipped = torch.tensor([[9.0, (0.5 * 1.0 + 0.2) / 4.0, (0.5 * 2.0 + 0.3) / 0.5], [9.0, 0.2 / 4.0, 0.3 / 0.5]])
+    torch.testing.assert_close(ns.build_noise_scale(cfg, additive(3, scale))(rows, "train"), flipped)
+    cfg.residual_noise.mode = "constant"  # one name: every dim's
+    torch.testing.assert_close(ns.build_noise_scale(cfg, additive(3, scale))(rows, "train"),
+                               torch.tensor([[9.0, 0.05, 0.07]] * 2))
+    cfg.residual_noise.mode = ["linear", "constant"]
+    with pytest.raises(ValueError, match="3 wide"):
+        ns.build_noise_scale(cfg, additive(3, scale))
+    # the section: a list of known sources, each used source's settings checked, the unused ones not
+    ResidualNoiseCfg(mode=["linear"] * 3 + ["constant"] * 3).validate(full_cfg())
+    ResidualNoiseCfg(mode=["constant"] * 6, linear=ns_linear(float("nan"), 0.0)).validate(full_cfg())
+    for bad, match in ((["linear", "none"], "mode"), (["linear", "fixed"], "mode"), ([], "mode"),
+                       (["constant"] * 6, "constant.r")):
+        section = ResidualNoiseCfg(mode=bad)
+        if match == "constant.r":
+            section.constant.r = [0.05, -0.1]
+        with pytest.raises(ValueError, match=match):
+            section.validate(full_cfg())

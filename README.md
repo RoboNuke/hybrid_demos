@@ -601,13 +601,16 @@ python scripts/make_raw_demos.py --config configs/experiments/can_compare/can_ad
 
 **The noise scale can depend on the state** (`residual_noise`, `my_project/wrappers/residual_policy/noise_scale.py`):
 with `ddpg.warmup_noise.scale: registered` and/or `ddpg.train_noise.scale: registered`, that phase's scale per env
-and dim is `s` -- the gaussian's std, the uniform's half width -- from one of
+and dim is `s` -- the gaussian's std, the uniform's half width -- each dim's from one source (`residual_noise.mode`:
+one source for every dim, or a list naming each dim's, e.g. `[linear, linear, linear, constant, constant, constant]`
+for the fit on the position and ResFiT's fixed std on the rotation):
 
 * `linear`: `s = |a1 * |base| + a0|` (the magnitude), the base action this step;
 * `mlp`: an MLP fitted to the demos' corrections by Gaussian NLL (`s(x)^2` estimates `E[c^2 | x]`), times `mlp.gain`,
-  its input the agent's observation (`residual`) or the observation the base policy is given (`base`).
+  its input the agent's observation (`residual`) or the observation the base policy is given (`base`);
+* `constant`: `s = constant.r`, a fixed std in r units (ResFiT's 0.05), used as it is on every residual.
 
-`s` is in the sent action's units for the additive residual (divided by its scale into r: `sent = base + scale * r`
+`linear`'s and `mlp`'s `s` is in the sent action's units for the additive residual (divided by its scale into r: `sent = base + scale * r`
 then adds `s`-sized noise) and in r units for the scaled one (`r * base` multiplies it by the base). The warm-up's is
 `warmup_scale * s`. The target smoothing keeps the ddpg section's numbers (`target_scale` must then be set).
 
@@ -621,7 +624,9 @@ the config's stem, run `<stem>_<input>[_<phase>]`), one point per epoch: `train/
 `val/nll`, `val/nll_constant` (the best constant std's), `val/nll_gain` (constant - MLP, > 0: the input helps),
 `val/calibration` (`E[c^2 / s^2]`, 1 when the variance matches), `val/pred_std_mean`, and the last four per dim under
 `val_dims/`. The summary carries the best epoch, its NLL, the best `linear` fit's (`a1`, `a0` per dim in the
-`report/per_dim` table), and the fitted file goes up as a plain run file.
+`report/per_dim` table), and the fitted file goes up as a plain run file. `--rows_out <file>` in place of `--out` writes
+the rows the fit would take (each demo frame's input, target and base action) and stops before fitting: the demo
+residual analysis notebook runs the MLP on them.
 
 ```bash
 python scripts/fit_noise_std.py --config configs/experiments/can_compare/can_add.yaml --headless \
@@ -630,7 +635,7 @@ python scripts/fit_noise_std.py --config configs/experiments/can_compare/can_add
 
 | field | type | default | what it does |
 | --- | --- | --- | --- |
-| `residual_noise.mode` | str | `"none"` | `none`: the ddpg section's noise numbers; `linear` or `mlp`: `s` as above, for every phase with `scale: registered` (one at least; `none` with a registered phase is refused). ddpg and `base_policy` only |
+| `residual_noise.mode` | str \| list[str] | `"none"` | `none`: the ddpg section's noise numbers; else the source of `s` as above, for every phase with `scale: registered` (one at least; `none` with a registered phase is refused): `linear`, `mlp` or `constant` for every action dim, or a list with one of them per residual action dim (a source's settings are read only when a dim names it). ddpg and `base_policy` only |
 | `residual_noise.warmup_scale` | float | `1.0` | the warm-up phase's scale is this times `s` (> 0) |
 | `residual_noise.scaled_units` | str | `"r"` | the scaled residual's `s`: `r`, in r units, the noise then times the base (`r * base`); `sent`, in the sent action's units and added to `r * base` (`sent = r_det * base + e`): the stored r carries `e / base` (`\|base\|` floored at 1e-6, under which the noise shrinks), so the critics' `r * base` is the sent action. Only with `multiply_residual` |
 | `residual_noise.linear.a1` | float \| list[float] | `0.0` | `s`'s slope on `\|base\|`, one number or one per action dim (`s = \|a1 \|base\| + a0\|`: the magnitude, so a negative slope or intercept is used as fitted) |
@@ -638,6 +643,7 @@ python scripts/fit_noise_std.py --config configs/experiments/can_compare/can_add
 | `residual_noise.mlp.path` | str \| null | `null` | the fitted file (`scripts/fit_noise_std.py --out`); required with `mode: mlp`. Refused when its input, residual (additive / multiply), action width or base (run, checkpoint, planning settings, task) is not this run's |
 | `residual_noise.mlp.input` | str | `"residual"` | the MLP's input: `residual` (the agent's observation) or `base` (the observation the base policy is given, read from its wrapper each step) |
 | `residual_noise.mlp.gain` | float | `1.0` | times the predicted std (> 0; no refit) |
+| `residual_noise.constant.r` | float \| list[float] | `0.05` | the `constant` source's `s`, in r units (what the noise adds to the actor's action, ResFiT's 0.05), one number or one per action dim (>= 0); never divided by the residual's scale. The warm-up's is `warmup_scale` times it |
 
 **The critic is asymmetric** on a Forge task: Forge gives the env a critic state (`task.cfg.state_order`: true peg and
 hole poses, joint positions, gains, ...), which the base policy wrapper keeps for the critics while the actor sees the

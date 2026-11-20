@@ -33,7 +33,7 @@ SIDE_INPUT = "residual_base"
 #: how often (env steps) the latched phase-label check is read to the host and raised on (one synchronization)
 LABEL_CHECK_EVERY = 100
 #: the per-step correction sizes logged (``residual/<name>``), split per phase when the phases are tracked
-RESIDUAL_SIZES = ("position_mm", "rot_deg", "yaw_deg", "multiplier")
+RESIDUAL_SIZES = ("position_mm", "rot_deg", "yaw_deg", "multiplier", "x", "y", "z", "rx", "ry", "rz")
 
 
 def find_combine(env: Any) -> "CombineWrapper":

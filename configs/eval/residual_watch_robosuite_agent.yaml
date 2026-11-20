@@ -1,0 +1,17 @@
+# scripts/watch_residual_eval.py for one agent of a robosuite residual run (--run <group>/<group>_a<i>; a standalone
+# env has no per-agent split, so a 3-agent run gets three watchers, side by side in one job): 100 episodes,
+# deterministic (the actor's mean), in one round of 100 envs. Chained on hpc_robosuite.yaml for the MuJoCo stack.
+base: ../base/hpc_robosuite.yaml
+
+hpc:
+  # a Can or Square env holds ~120 MB (measured: 20 envs +2.8 GB): three watchers of 100 envs take ~36 GB beside the
+  # processes' own ~5 GB each
+  mem: 80G
+
+eval:
+  num_rollouts: 100
+
+task:
+  cfg:
+    scene:
+      num_envs: 100

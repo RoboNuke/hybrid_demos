@@ -7,6 +7,9 @@
 #   square_scaled_fixed   scaled, sent = r * base, can_scaled's noise (multiplier units): U(1 +- 0.2), then N(0, 0.05)
 #   square_scaled_linfit  scaled, the noise added to r * base, std a1 |b| + a0 per dim (sent units, the fits above)
 #   square_add_mlp        additive, the std from an MLP on the agent's observation fitted to the demos
+#   square_add_linfit_pos_resfit_rot  additive, per dim: linfit's std on the position, ResFiT's 0.05 (r) on the rotation;
+#                                     ResFiT's warm-up, 200k steps
+#   square_add_resfit_pos_linfit_rot  the mirror: ResFiT's 0.05 (r) on the position, linfit's std on the rotation
 # Everything here but the noise is shared; the gripper is the base's in every condition (drop_columns). The critics' target smoothing keeps ResFiT's std, never clipped (target_clip
 # 1e6) in every condition.
 base:

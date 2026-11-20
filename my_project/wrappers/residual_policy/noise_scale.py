@@ -1,16 +1,18 @@
 """``residual_noise.*``: DDPG's noise scale per env and dim (the package's ``register_noise_scale``, for a learner phase
 with ``ddpg.<phase>_noise.scale: registered``), from the base action or the observation.
 
-Every mode computes ``s`` per env and action dim:
+Each action dim takes its ``s`` per env from one source (``mode``: one source for every dim, or a list naming each
+dim's):
 
 * ``linear``: ``s = |a1 * |base| + a0|``, ``base`` the base action this step (read from the agent's observation, where it
   sits right after the observation columns); the magnitude, so a fitted line with a negative slope (or intercept) never
   gives a negative scale, and the line is otherwise used as fitted;
 * ``mlp``: an MLP fitted to the demo corrections by Gaussian NLL (``scripts/fit_noise_std.py``, :func:`fit_std_mlp`):
   ``s(x)^2`` estimates ``E[c^2 | x]``, ``c`` the demo's correction on the base, times ``mlp.gain``; ``x`` the agent's
-  observation (``mlp.input: residual``) or the observation the base policy is given (``base``).
+  observation (``mlp.input: residual``) or the observation the base policy is given (``base``);
+* ``constant``: ``s = constant.r``, a fixed std in r units (ResFiT's 0.05), used as it is on every residual.
 
-``s`` is in the residual's own correction units, and turned into r units -- what the package's noise adds to the actor's
+``linear``'s and ``mlp``'s ``s`` is in the residual's own correction units, and turned into r units -- what the package's noise adds to the actor's
 action -- by the residual's rule:
 
 * additive (``sent = base + scale * r``): ``s`` is in the sent action's units, so ``r``'s scale is ``s / scale`` (0 on a
@@ -34,8 +36,8 @@ from typing import Any, Dict, List, Optional, Sequence
 import torch
 from torch import nn
 
-__all__ = ["NoiseScale", "LinearScale", "MlpScale", "StdMLP", "fit_std_mlp", "save_std_mlp", "load_std_mlp",
-           "build_noise_scale", "nll", "MLP_FORMAT", "check_raw_fingerprint", "base_fingerprint"]
+__all__ = ["NoiseScale", "ScaleSource", "LinearSource", "MlpSource", "ConstantSource", "StdMLP", "fit_std_mlp",
+           "save_std_mlp", "load_std_mlp", "build_noise_scale", "dim_sources", "nll", "MLP_FORMAT", "check_raw_fingerprint", "base_fingerprint"]
 
 #: the fitted MLP file's format tag (``scripts/fit_noise_std.py``)
 MLP_FORMAT = "residual_noise_std_mlp/v1"
@@ -281,84 +283,38 @@ def check_raw_fingerprint(made: Dict[str, Any], now: Dict[str, Any], what: str, 
         raise ValueError(f"{what} was made for another base or task (file -> this run): {off}; {fix}")
 
 
-# ------------------------------------------------------------------------------------------------------ the scales
-class NoiseScale:
-    """The common part: the conversion of ``s`` into r units (additive: ``/ scale``, per routed phase with per-phase
-    scales; scaled: as it is) and the warm-up factor. Subclasses implement :meth:`s`."""
+# ----------------------------------------------------------------------------------------------------- the sources
+class ScaleSource:
+    """One way to compute ``s`` for every action dim, ``(..., A)`` from the agent's observations ``(..., obs)``.
+    :attr:`units` says what :class:`NoiseScale` does with it: ``"correction"``, the residual's own correction units
+    (turned into r by the residual's rule); ``"r"``, r units already (used as it is). A source is the same for every
+    routed learner: only the conversion depends on the route."""
 
-    def __init__(self, *, residual: str, warmup_scale: float, scale: Optional[torch.Tensor] = None,
-                 table: Optional[torch.Tensor] = None, names: Sequence[str] = (), route: Optional[str] = None,
-                 scaled_units: str = "r", base_cols: Optional[Sequence[int]] = None) -> None:
-        if residual not in ("additive", "multiply"):
-            raise ValueError(f"residual must be additive or multiply, got {residual!r}")
-        if scaled_units == "sent" and (residual != "multiply" or base_cols is None):
-            raise ValueError("scaled_units: sent is the scaled residual's, and reads the base action's columns")
-        self.residual, self.warmup_scale = residual, float(warmup_scale)
-        self.scaled_units, self.base_cols = scaled_units, None if base_cols is None else (int(base_cols[0]), int(base_cols[1]))
-        self.table, self.names, self.route = table, list(names), route
-        if table is not None and route is not None:
-            scale = table[self.names.index(route)]
-        self.scale = scale
-
-    def _rebind(self, route: Optional[str]) -> "NoiseScale":
-        raise NotImplementedError
-
-    def for_route(self, route: Optional[str]) -> "NoiseScale":
-        """This scale for the learner of phase ``route`` (its own phase's additive scale; None unrouted)."""
-        return self._rebind(route)
+    units = "correction"
 
     def s(self, observations: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 
-    def __call__(self, observations: torch.Tensor, phase: str) -> torch.Tensor:
-        s = self.s(observations)
-        if self.residual == "additive":
-            if self.scale is None:
-                raise NotImplementedError("the residual noise with a per-phase additive scale needs one residual per phase "
-                                          "(route_labels): one learner's observations do not say which phase's scale a "
-                                          "row has")
-            on = self.scale > 0
-            s = torch.where(on, s / torch.where(on, self.scale, torch.ones_like(self.scale)), torch.zeros_like(s))
-        elif self.scaled_units == "sent":  # the noise added to r * base: r takes s / |base|
-            base = observations[..., self.base_cols[0]:self.base_cols[1]].abs().clamp_min(SENT_FLOOR)
-            s = s / base
-        if phase == "warmup":
-            s = s * self.warmup_scale
-        return s
 
-    def _common(self) -> Dict[str, Any]:
-        return {"residual": self.residual, "warmup_scale": self.warmup_scale,
-                "scale": self.scale if self.table is None else None, "table": self.table, "names": self.names,
-                "scaled_units": self.scaled_units, "base_cols": self.base_cols}
-
-
-class LinearScale(NoiseScale):
+class LinearSource(ScaleSource):
     """``s = |a1 * |base| + a0|`` per dim, ``base`` at ``[start, stop)`` of the agent's observation."""
 
-    def __init__(self, start: int, stop: int, a1: torch.Tensor, a0: torch.Tensor, **common) -> None:
-        super().__init__(**common)
+    def __init__(self, start: int, stop: int, a1: torch.Tensor, a0: torch.Tensor) -> None:
         self.start, self.stop, self.a1, self.a0 = int(start), int(stop), a1, a0
-
-    def _rebind(self, route):
-        return LinearScale(self.start, self.stop, self.a1, self.a0, **self._common(), route=route)
 
     def s(self, observations: torch.Tensor) -> torch.Tensor:
         return (self.a1 * observations[..., self.start:self.stop].abs() + self.a0).abs()
 
 
-class MlpScale(NoiseScale):
+class MlpSource(ScaleSource):
     """``s = gain * mlp(x)``, ``x`` the agent's observation (``input: residual``) or the observation the base policy was
     given this step (``input: base``: :attr:`BasePolicy.base_obs <my_project.wrappers.residual_policy.base_policy.
     BasePolicy>`, read from the wrapper, so it serves the live env's acting step only)."""
 
-    def __init__(self, model: StdMLP, input: str, gain: float, base_wrapper: Any = None, **common) -> None:
-        super().__init__(**common)
+    def __init__(self, model: StdMLP, input: str, gain: float, base_wrapper: Any = None) -> None:
         self.model, self.input, self.gain, self.base_wrapper = model, input, float(gain), base_wrapper
         if input == "base" and base_wrapper is None:
             raise ValueError("residual_noise.mlp.input: base reads the base policy's observation, and no base policy wrapper was given")
-
-    def _rebind(self, route):
-        return MlpScale(self.model, self.input, self.gain, self.base_wrapper, **self._common(), route=route)
 
     def s(self, observations: torch.Tensor) -> torch.Tensor:
         x = observations if self.input == "residual" else self.base_wrapper.base_obs
@@ -369,6 +325,80 @@ class MlpScale(NoiseScale):
             return self.gain * self.model(x)
 
 
+class ConstantSource(ScaleSource):
+    """``s = r`` per dim, a fixed std in r units (what the package's noise adds to the actor's action: ResFiT's 0.05),
+    whatever the residual or its scale."""
+
+    units = "r"
+
+    def __init__(self, r: torch.Tensor) -> None:
+        self.r = r
+
+    def s(self, observations: torch.Tensor) -> torch.Tensor:
+        return self.r.expand(*observations.shape[:-1], self.r.shape[0])
+
+
+# ------------------------------------------------------------------------------------------------------- the scale
+class NoiseScale:
+    """The ``register_noise_scale`` answer: each action dim's ``s`` from one of :attr:`sources` (``pick[d]`` the index of
+    dim ``d``'s), the correction-unit ones turned into r units by the residual's rule (additive: ``/ scale``, per routed
+    phase with per-phase scales; scaled: as it is, or ``/ |base|`` with ``scaled_units: sent``), then the warm-up
+    factor. Every source runs on all dims; each dim keeps its own source's."""
+
+    def __init__(self, sources: Sequence[ScaleSource], pick: Sequence[int], *, residual: str, warmup_scale: float,
+                 scale: Optional[torch.Tensor] = None, table: Optional[torch.Tensor] = None, names: Sequence[str] = (),
+                 route: Optional[str] = None, scaled_units: str = "r",
+                 base_cols: Optional[Sequence[int]] = None, device: Any = None) -> None:
+        if residual not in ("additive", "multiply"):
+            raise ValueError(f"residual must be additive or multiply, got {residual!r}")
+        if scaled_units == "sent" and (residual != "multiply" or base_cols is None):
+            raise ValueError("scaled_units: sent is the scaled residual's, and reads the base action's columns")
+        self.sources, self.pick = list(sources), [int(k) for k in pick]
+        if not self.sources or sorted(set(self.pick)) != list(range(len(self.sources))):
+            raise ValueError(f"every source serves one dim at least, and every dim names a source: {len(self.sources)} "
+                             f"sources, pick {self.pick}")
+        self.device = device
+        pick_t = torch.tensor(self.pick, device=device)
+        #: per source, the dims it serves (on the sources' device: ``device``)
+        self._masks = [pick_t == k for k in range(len(self.sources))]
+        self.residual, self.warmup_scale = residual, float(warmup_scale)
+        self.scaled_units, self.base_cols = scaled_units, None if base_cols is None else (int(base_cols[0]), int(base_cols[1]))
+        self.table, self.names, self.route = table, list(names), route
+        if table is not None and route is not None:
+            scale = table[self.names.index(route)]
+        self.scale = scale
+
+    def for_route(self, route: Optional[str]) -> "NoiseScale":
+        """This scale for the learner of phase ``route`` (its own phase's additive scale; None unrouted)."""
+        return NoiseScale(self.sources, self.pick, residual=self.residual, warmup_scale=self.warmup_scale,
+                          scale=self.scale if self.table is None else None, table=self.table, names=self.names,
+                          route=route, scaled_units=self.scaled_units, base_cols=self.base_cols, device=self.device)
+
+    def _to_r(self, s: torch.Tensor, observations: torch.Tensor) -> torch.Tensor:
+        """A correction-unit ``s`` in r units."""
+        if self.residual == "additive":
+            if self.scale is None:
+                raise NotImplementedError("the residual noise with a per-phase additive scale needs one residual per phase "
+                                          "(route_labels): one learner's observations do not say which phase's scale a "
+                                          "row has")
+            on = self.scale > 0
+            return torch.where(on, s / torch.where(on, self.scale, torch.ones_like(self.scale)), torch.zeros_like(s))
+        if self.scaled_units == "sent":  # the noise added to r * base: r takes s / |base|
+            return s / observations[..., self.base_cols[0]:self.base_cols[1]].abs().clamp_min(SENT_FLOOR)
+        return s
+
+    def __call__(self, observations: torch.Tensor, phase: str) -> torch.Tensor:
+        s = None
+        for source, mask in zip(self.sources, self._masks):
+            part = source.s(observations)
+            if source.units == "correction":
+                part = self._to_r(part, observations)
+            s = part if s is None else torch.where(mask, part, s)
+        if phase == "warmup":
+            s = s * self.warmup_scale
+        return s
+
+
 def _per_dim(value: Any, width: int, what: str, device: Any) -> torch.Tensor:
     numbers = [float(value)] if isinstance(value, (int, float)) else [float(v) for v in value]
     if len(numbers) not in (1, width):
@@ -376,27 +406,56 @@ def _per_dim(value: Any, width: int, what: str, device: Any) -> torch.Tensor:
     return torch.tensor(numbers * (width if len(numbers) == 1 else 1), dtype=torch.float32, device=device)
 
 
+def dim_sources(mode: Any, width: int) -> List[str]:
+    """``residual_noise.mode`` as one source name per action dim: a name for every dim, or a list of ``width`` names."""
+    names = [mode] * width if isinstance(mode, str) else list(mode)
+    if len(names) != width:
+        raise ValueError(f"residual_noise.mode lists {len(names)} sources; the residual's action is {width} wide")
+    return names
+
+
 def build_noise_scale(cfg: Any, combine: Any) -> Optional[NoiseScale]:
     """The ``register_noise_scale`` answer for this run's residual ``combine``: None with ``residual_noise.mode: none``."""
     rn = cfg.residual_noise
-    if rn.mode == "none":
+    if isinstance(rn.mode, str) and rn.mode == "none":
         return None
     residual = combine.noise_kind
     width, device = combine.action_dim, combine.device
     start, stop = combine.obs_width, combine.obs_width + width
     units = getattr(rn, "scaled_units", "r")
-    common = {"residual": residual, "warmup_scale": rn.warmup_scale}
+    common = {"residual": residual, "warmup_scale": rn.warmup_scale, "device": device}
     if residual == "additive":
         common.update(scale=combine.scale, table=combine.table, names=combine.phase_names)
     elif units == "sent":
         common.update(scaled_units="sent", base_cols=(start, stop))
     unit_name = "sent" if residual == "additive" or units == "sent" else "r"
-    if rn.mode == "linear":
-        a1 = _per_dim(rn.linear.a1, width, "residual_noise.linear.a1", device)
-        a0 = _per_dim(rn.linear.a0, width, "residual_noise.linear.a0", device)
-        print(f"[residual_noise] linear: s = |{a1.tolist()} * |base| + {a0.tolist()}| ({unit_name} units), "
-              f"warm-up x{rn.warmup_scale}", flush=True)
-        return LinearScale(start, stop, a1, a0, **common)
+    names = dim_sources(rn.mode, width)
+    used = list(dict.fromkeys(names))  # in the order the dims first name them
+    sources: List[ScaleSource] = []
+    for name in used:
+        dims = [d for d, n in enumerate(names) if n == name]
+        if name == "linear":
+            a1 = _per_dim(rn.linear.a1, width, "residual_noise.linear.a1", device)
+            a0 = _per_dim(rn.linear.a0, width, "residual_noise.linear.a0", device)
+            print(f"[residual_noise] dims {dims} linear: s = |a1 * |base| + a0| ({unit_name} units), a1 "
+                  f"{a1[dims].tolist()}, a0 {a0[dims].tolist()}", flush=True)
+            sources.append(LinearSource(start, stop, a1, a0))
+        elif name == "constant":
+            r = _per_dim(rn.constant.r, width, "residual_noise.constant.r", device)
+            print(f"[residual_noise] dims {dims} constant: s = {r[dims].tolist()} (r units)", flush=True)
+            sources.append(ConstantSource(r))
+        elif name == "mlp":
+            sources.append(_mlp_source(cfg, combine, residual, width, device))
+            print(f"[residual_noise] dims {dims} mlp ({rn.mlp.input} input, {rn.mlp.path}), gain {rn.mlp.gain} "
+                  f"({unit_name} units)", flush=True)
+        else:
+            raise ValueError(f"residual_noise.mode: unknown source {name!r}")
+    print(f"[residual_noise] warm-up x{rn.warmup_scale}", flush=True)
+    return NoiseScale(sources, [used.index(n) for n in names], **common)
+
+
+def _mlp_source(cfg: Any, combine: Any, residual: str, width: int, device: Any) -> MlpSource:
+    rn = cfg.residual_noise
     fitted = load_std_mlp(rn.mlp.path)
     where = f"residual_noise.mlp.path {rn.mlp.path}"
     if fitted["input"] != rn.mlp.input:
@@ -407,7 +466,5 @@ def build_noise_scale(cfg: Any, combine: Any) -> Optional[NoiseScale]:
         raise ValueError(f"{where} predicts {fitted['model'].out_dim} dims; the residual's action is {width} wide")
     check_raw_fingerprint(fitted["fingerprint"], base_fingerprint(cfg, combine), where,
                           "refit it with scripts/fit_noise_std.py")
-    model = fitted["model"].to(device)
-    print(f"[residual_noise] mlp ({rn.mlp.input} input, {rn.mlp.path}), gain {rn.mlp.gain}, warm-up x{rn.warmup_scale}",
-          flush=True)
-    return MlpScale(model, rn.mlp.input, rn.mlp.gain, combine.base_policy if rn.mlp.input == "base" else None, **common)
+    return MlpSource(fitted["model"].to(device), rn.mlp.input, rn.mlp.gain,
+                     combine.base_policy if rn.mlp.input == "base" else None)

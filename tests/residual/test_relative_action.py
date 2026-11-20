@@ -168,8 +168,8 @@ def test_the_slice_fit_is_the_notebooks_last_cell():
 
 
 def test_the_scaled_residuals_sent_unit_noise_is_added_to_r_times_base_unscaled():
-    s = ns.LinearScale(3, 5, torch.tensor([0.0, 0.0]), torch.tensor([0.2, 0.2]), residual="multiply", warmup_scale=2.0,
-                       scaled_units="sent", base_cols=(3, 5))
+    s = ns.NoiseScale([ns.LinearSource(3, 5, torch.tensor([0.0, 0.0]), torch.tensor([0.2, 0.2]))], [0, 0],
+                      residual="multiply", warmup_scale=2.0, scaled_units="sent", base_cols=(3, 5))
     obs = torch.tensor([[9.0, 9.0, 9.0, 0.5, -0.1]])
     r_scale = s(obs, "train")
     torch.testing.assert_close(r_scale, torch.tensor([[0.4, 2.0]]))  # 0.2 / |base|
@@ -182,5 +182,5 @@ def test_the_scaled_residuals_sent_unit_noise_is_added_to_r_times_base_unscaled(
     sent = (1.0 + e) * base
     assert (sent - base).std(dim=0).tolist() == pytest.approx([0.2, 0.2], rel=0.05)
     with pytest.raises(ValueError, match="scaled residual"):
-        ns.LinearScale(3, 5, torch.zeros(2), torch.zeros(2), residual="additive", warmup_scale=1.0, scaled_units="sent",
-                       base_cols=(3, 5))
+        ns.NoiseScale([ns.LinearSource(3, 5, torch.zeros(2), torch.zeros(2))], [0, 0], residual="additive",
+                      warmup_scale=1.0, scaled_units="sent", base_cols=(3, 5))

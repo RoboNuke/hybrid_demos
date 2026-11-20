@@ -13,7 +13,8 @@ re-planned) as fields every wrapper above reads, and lays the observations out t
 
 It steps the env with the action it is given (the env's own) and logs the size of the correction, that action
 against the base's (``residual/position_mm``, ``residual/rot_deg`` or ``residual/yaw_deg``, by the task's action layout,
-:func:`~my_project.families.action_layout`).
+:func:`~my_project.families.action_layout`), and per direction ``residual/{x,y,z}`` (mm) and, for an axis-angle
+rotation, ``residual/{rx,ry,rz}`` (deg): each dim's ``|sent - base|``.
 """
 
 from __future__ import annotations
@@ -24,7 +25,13 @@ from typing import Any
 import gymnasium as gym
 import torch
 
-__all__ = ["BasePolicy", "base_source", "base_run_dir", "load_base_policy", "override_base", "find_wrapper"]
+__all__ = ["BasePolicy", "base_source", "base_run_dir", "load_base_policy", "override_base", "find_wrapper",
+           "POS_DIRECTIONS", "ROT_DIRECTIONS"]
+
+#: the per-direction correction metrics' names, ``residual/<name>``: the position dims (mm) and an axis-angle rotation's
+#: (deg)
+POS_DIRECTIONS = ("x", "y", "z")
+ROT_DIRECTIONS = ("rx", "ry", "rz")
 
 
 def base_source(cfg: Any) -> str:
@@ -175,7 +182,16 @@ class BasePolicy(gym.Wrapper):
 
         layout = self.layout
         correction = sent - base
-        metrics["residual/position_mm"] = correction[:, layout["pos"]].norm(dim=-1) * (1000.0 * layout.get("pos_m_per_unit", 1.0))
+        mm_per_unit = 1000.0 * layout.get("pos_m_per_unit", 1.0)
+        metrics["residual/position_mm"] = correction[:, layout["pos"]].norm(dim=-1) * mm_per_unit
+        # per direction, the correction's size on each dim: residual/{x,y,z} (mm) and, for an axis-angle rotation,
+        # residual/{rx,ry,rz} (deg)
+        for name, d in zip(POS_DIRECTIONS, range(layout["pos"].start, layout["pos"].stop)):
+            metrics[f"residual/{name}"] = correction[:, d].abs() * mm_per_unit
+        if "axis_angle" in layout:
+            deg_per_unit = layout.get("rad_per_unit", 1.0) * 180.0 / torch.pi
+            for name, d in zip(ROT_DIRECTIONS, range(layout["axis_angle"].start, layout["axis_angle"].stop)):
+                metrics[f"residual/{name}"] = correction[:, d].abs() * deg_per_unit
         if "axis_angle" in layout:
             metrics["residual/rot_deg"] = correction[:, layout["axis_angle"]].norm(dim=-1) * (layout.get("rad_per_unit", 1.0) * 180.0 / torch.pi)
         elif "yaw" in layout:

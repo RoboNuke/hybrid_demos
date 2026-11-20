@@ -594,6 +594,15 @@ class MlpNoiseCfg:
 
 
 @dataclass
+class ConstantNoiseCfg:
+    """``residual_noise.constant``: a fixed noise scale in r units (what the package's noise adds to the actor's action:
+    ResFiT's 0.05), the same on every residual."""
+
+    #: one number for every action dim, or a list, one per dim (>= 0)
+    r: Any = 0.05
+
+
+@dataclass
 class ResidualNoiseCfg:
     """``my_project/wrappers/residual_policy/noise_scale.py``: DDPG's noise scale per env and dim from the base action or
     the observation, for a learner phase with ``ddpg.<phase>_noise.scale: registered`` (the package's
@@ -601,8 +610,11 @@ class ResidualNoiseCfg:
     into r) and in r units for the scaled one (the multiplier's; ``r * base`` then multiplies it by the base). A gaussian
     phase draws ``N(0, s)``, a uniform one ``U(-s, s)``."""
 
-    #: "none": the noise scales are the ddpg section's numbers; "linear": ``|a1 * |base| + a0|``; "mlp": a fitted MLP
-    mode: str = "none"
+    #: "none": the noise scales are the ddpg section's numbers; else the source of ``s``, one name for every action dim or
+    #: a list naming each dim's: "linear": ``|a1 * |base| + a0|``; "mlp": a fitted MLP; "constant": ``constant.r``
+    #: (r units). E.g. ``[linear, linear, linear, constant, constant, constant]``: the fit on the position, ResFiT's
+    #: fixed std on the rotation
+    mode: Any = "none"
     #: the warm-up phase's scale is this times ``s``
     warmup_scale: float = 1.0
     #: the scaled residual's ``s``: "r", in r units, the noise then times the base (``r * base``); "sent", in the sent
@@ -611,18 +623,27 @@ class ResidualNoiseCfg:
     scaled_units: str = "r"
     linear: LinearNoiseCfg = field(default_factory=LinearNoiseCfg)
     mlp: MlpNoiseCfg = field(default_factory=MlpNoiseCfg)
+    constant: ConstantNoiseCfg = field(default_factory=ConstantNoiseCfg)
 
-    MODES = ("none", "linear", "mlp")
+    SOURCES = ("linear", "mlp", "constant")
     INPUTS = ("residual", "base")
     SCALED_UNITS = ("r", "sent")
 
+    def sources(self) -> List[str]:
+        """The distinct sources ``mode`` names (none for ``"none"``)."""
+        if isinstance(self.mode, str):
+            return [] if self.mode == "none" else [self.mode]
+        return list(dict.fromkeys(self.mode))
+
     def validate(self, cfg: Any) -> None:
-        if self.mode not in self.MODES:
-            raise ValueError(f"residual_noise.mode must be one of {self.MODES}, got {self.mode!r}")
+        names = [self.mode] if isinstance(self.mode, str) else list(self.mode)
+        if not names or (names != ["none"] and any(n not in self.SOURCES for n in names)):
+            raise ValueError(f"residual_noise.mode is none, one of {self.SOURCES} for every action dim, or a list of them "
+                             f"one per dim, got {self.mode!r}")
         sec = q_section(cfg) if cfg is not None else None
         registered = [f"ddpg.{phase}" for phase in ("warmup_noise", "train_noise")
                       if sec is not None and getattr(getattr(sec, phase, None), "scale", None) == "registered"]
-        if self.mode == "none":
+        if not self.sources():
             if registered:
                 raise ValueError(f"{registered}.scale is registered: set residual_noise.mode (linear or mlp)")
             return
@@ -641,13 +662,18 @@ class ResidualNoiseCfg:
         if cfg is not None and self.scaled_units == "sent" and not cfg.multiply_residual.enabled:
             raise ValueError("residual_noise.scaled_units: sent is the scaled residual's choice (multiply_residual); the "
                              "additive residual's noise is in the sent action's units already")
-        if self.mode == "linear":
+        if "linear" in self.sources():
             for name in ("a1", "a0"):
                 value = getattr(self.linear, name)
                 numbers = [value] if isinstance(value, (int, float)) else list(value)
                 if not numbers or any(not isinstance(v, (int, float)) or isinstance(v, bool) or v != v for v in numbers):
                     raise ValueError(f"residual_noise.linear.{name} is a number or a list of numbers, got {value!r}")
-        if self.mode == "mlp":
+        if "constant" in self.sources():
+            value = self.constant.r
+            numbers = [value] if isinstance(value, (int, float)) else list(value)
+            if not numbers or any(not isinstance(v, (int, float)) or isinstance(v, bool) or not v >= 0 for v in numbers):
+                raise ValueError(f"residual_noise.constant.r is a number or a list of numbers, >= 0, got {value!r}")
+        if "mlp" in self.sources():
             if not self.mlp.path:
                 raise ValueError("residual_noise.mode: mlp needs residual_noise.mlp.path (scripts/fit_noise_std.py)")
             if self.mlp.input not in self.INPUTS:

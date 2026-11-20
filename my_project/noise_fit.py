@@ -3,6 +3,9 @@
     python scripts/fit_noise_std.py --config configs/experiments/can_compare/can_add.yaml --headless \\
         --dataset base --out data/resfit_can/noise_std_residual.pt [--input residual|base] [--phase insert]
 
+``--rows_out <file>`` in place of ``--out`` writes the rows the fit would take (each frame's input, target and base
+action) and stops before fitting.
+
 The demos: ``--dataset <dir>`` (or ``base``, the base run's own ``bc.dataset``) builds the raw demo episodes from a demo
 dataset in-process, the base's action at every frame planned as the env runs it (``my_project/raw_demos.py:
 build_raw_demos``, what ``scripts/make_raw_demos.py`` writes; ``--save_raw`` keeps them); ``--demos <file>`` reads a raw
@@ -40,7 +43,10 @@ def main(argv=None, setup=None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_config_args(parser)
-    parser.add_argument("--out", required=True, help="the fitted file to write (residual_noise.mlp.path)")
+    parser.add_argument("--out", default=None, help="the fitted file to write (residual_noise.mlp.path)")
+    parser.add_argument("--rows_out", default=None,
+                        help="write the fit's rows (each demo frame's input, target and base action, exactly as the fit "
+                             "takes them) to this file and stop, no fit (the demo residual analysis notebook's MLP line)")
     parser.add_argument("--input", choices=("residual", "base"), default="residual",
                         help="the MLP's input: the agent's observation (residual) or the base policy's (base)")
     parser.add_argument("--dataset", default=None,
@@ -87,6 +93,8 @@ def main(argv=None, setup=None) -> int:
     sec = q_section(cfg)
     if args.dataset and args.demos:
         raise ValueError("pass --dataset (build the raw demos here) or --demos (a raw demo file), not both")
+    if (args.out is None) == (args.rows_out is None):
+        raise ValueError("pass --out (fit and write the MLP) or --rows_out (write the fit's rows only), one of them")
     if args.save_raw and not args.dataset:
         raise ValueError("--save_raw writes the raw demos --dataset builds: pass --dataset")
     device = args.fit_device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -155,6 +163,17 @@ def main(argv=None, setup=None) -> int:
     print(f"[fit_noise_std] {inputs.shape[0]} frames from {len(episodes)} episodes"
           + (f" (phase {args.phase})" if args.phase else "") + f"; input {args.input} ({inputs.shape[1]} columns), "
           f"target the {combine.noise_kind} residual's correction ({width} dims, {units} units)", flush=True)
+
+    if args.rows_out:
+        Path(args.rows_out).parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"inputs": inputs, "targets": targets, "base": base, "input": args.input,
+                    "residual": combine.noise_kind, "units": units, "phase": args.phase,
+                    "demos": str(Path(demos).resolve()), "config": str(args.config or args.from_run)}, args.rows_out)
+        print(f"[fit_noise_std] wrote the fit's {inputs.shape[0]} rows to {args.rows_out} (no fit)", flush=True)
+        env.close()
+        if app is not None:
+            app.app.close()
+        return 0
 
     hidden = [int(h) for h in str(args.hidden).split(",") if h.strip()]
     source = {"demos": str(Path(demos).resolve()), "built_from_dataset": bool(args.dataset), "phase": args.phase,
